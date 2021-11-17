@@ -1,0 +1,9 @@
+[workspace]
+members = [
+    "bsp-loader-gl",
+    "recursive-iter",
+]
+
+[profile.release]
+debug-assertions = true
+overflow-checks = true

@@ -1,0 +1,15 @@
+[package]
+name = "bsp-loader-gl"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1"
+glium = "0.30"
+nalgebra-glm = "0.15"
+png = "0.17"
+rand = "0.8"
+recursive-iter = { path = "../recursive-iter" }

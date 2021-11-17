@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"files.watcherExclude": {
+			"**/target/**": true,
+		},
+		"rust-analyzer.checkOnSave.allTargets": false,
+		"rust-analyzer.linkedProjects": [
+			"Cargo.toml",
+			"powerpc/Cargo.toml",
+		],
+	}
+}
