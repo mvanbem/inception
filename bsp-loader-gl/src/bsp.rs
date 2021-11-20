@@ -1,6 +1,7 @@
 use std::mem::size_of;
 use std::num::NonZeroUsize;
 
+use byteorder::{LittleEndian, ReadBytesExt};
 use nalgebra_glm::Vec3;
 use recursive_iter::*;
 
@@ -19,9 +20,20 @@ impl<'a> Bsp<'a> {
         unsafe { extract_at(self.0, 0) }
     }
 
+    pub fn planes(&self) -> &'a [Plane] {
+        // SAFETY: All bit patterns are valid for Plane.
+        unsafe { extract_slice(self.header().lumps[1].data(self.0)) }
+    }
+
     pub fn vertices(&self) -> &'a [Vec3] {
         // SAFETY: All bit patterns are valid for Vec3.
         unsafe { extract_slice(self.header().lumps[3].data(self.0)) }
+    }
+
+    pub fn visibility(&self) -> Visibility<'a> {
+        Visibility {
+            data: self.header().lumps[4].data(self.0),
+        }
     }
 
     pub fn nodes(&self) -> &'a [Node] {
@@ -65,11 +77,14 @@ impl<'a> Bsp<'a> {
         unsafe { extract_slice(self.header().lumps[16].data(self.0)) }
     }
 
-    pub fn iter_worldspawn_leaves(&self) -> impl Iterator<Item = &'a Leaf> {
-        self.iter_leaves_from_node(&self.nodes()[0])
+    pub fn enumerate_worldspawn_leaves(&self) -> impl Iterator<Item = (usize, &'a Leaf)> {
+        self.enumerate_leaves_from_node(&self.nodes()[0])
     }
 
-    pub fn iter_leaves_from_node(&self, node: &'a Node) -> impl Iterator<Item = &'a Leaf> {
+    pub fn enumerate_leaves_from_node(
+        &self,
+        node: &'a Node,
+    ) -> impl Iterator<Item = (usize, &'a Leaf)> {
         RecursiveIter::new(
             *self,
             LeavesIterFrame {
@@ -111,7 +126,7 @@ struct LeavesIterFrame<'a> {
 }
 
 impl<'a> Frame for LeavesIterFrame<'a> {
-    type Item = &'a Leaf;
+    type Item = (usize, &'a Leaf);
     type Context = Bsp<'a>;
 
     fn eval(&mut self, bsp: &mut Bsp<'a>) -> EvalResult<Self> {
@@ -125,7 +140,8 @@ impl<'a> Frame for LeavesIterFrame<'a> {
             .with_return(self.child_index == 2)
         } else {
             self.child_index += 1;
-            Yield(&bsp.leaves()[(-child) as usize]).with_return(self.child_index == 2)
+            let leaf_index = (-child) as usize;
+            Yield((leaf_index, &bsp.leaves()[leaf_index])).with_return(self.child_index == 2)
         }
     }
 }
@@ -220,6 +236,130 @@ pub struct Lump {
 impl Lump {
     pub fn data<'a>(&self, bsp_data: &'a [u8]) -> &'a [u8] {
         &(&bsp_data[self.fileofs as usize..])[..self.filelen as usize]
+    }
+}
+
+#[repr(C)]
+pub struct Plane {
+    pub normal: [f32; 3],
+    pub dist: f32,
+    pub type_: i32,
+}
+
+#[derive(Clone, Copy)]
+pub struct Visibility<'a> {
+    data: &'a [u8],
+}
+
+impl<'a> Visibility<'a> {
+    pub fn num_clusters(self) -> usize {
+        (&self.data[..]).read_i32::<LittleEndian>().unwrap() as usize
+    }
+
+    pub fn get_cluster(self, index: ClusterIndex) -> VisibilityBitmap<'a> {
+        let num_clusters = self.num_clusters();
+        assert!(index.0 < num_clusters);
+        let pvs_byte_ofs = (&self.data[8 * index.0 + 4..])
+            .read_i32::<LittleEndian>()
+            .unwrap() as usize;
+        VisibilityBitmap {
+            data: &self.data[pvs_byte_ofs..],
+            num_clusters,
+        }
+    }
+
+    pub fn iter_clusters(self) -> impl Iterator<Item = VisibilityBitmap<'a>> {
+        (0..self.num_clusters())
+            .into_iter()
+            .map(move |index| self.get_cluster(ClusterIndex(index)))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ClusterIndex(pub usize);
+
+#[derive(Clone, Copy)]
+pub struct VisibilityBitmap<'a> {
+    data: &'a [u8],
+    num_clusters: usize,
+}
+
+impl<'a> VisibilityBitmap<'a> {
+    pub fn iter_visible_clusters(self) -> impl Iterator<Item = ClusterIndex> + 'a {
+        VisibilityBitmapIter {
+            data: self.data,
+            cluster_index: 0,
+            num_clusters: self.num_clusters,
+            current_byte: 0,
+            current_bit: 0,
+        }
+    }
+
+    pub fn find_data(self) -> &'a [u8] {
+        // Length is unknown. Walk the data to find out.
+        let mut offset = 0;
+        let mut cluster_index = 0;
+        loop {
+            // Exit on reaching the end of the bitstream.
+            if cluster_index >= self.num_clusters {
+                return &self.data[..offset];
+            }
+
+            // Read a byte, which is either a skip instruction or another eight bits to scan.
+            let b = self.data[offset];
+            offset += 1;
+            if b == 0 {
+                let run_len = self.data[offset] as usize;
+                offset += 1;
+                cluster_index += 8 * run_len;
+            } else {
+                cluster_index += 8;
+            }
+        }
+    }
+}
+
+pub struct VisibilityBitmapIter<'a> {
+    data: &'a [u8],
+    cluster_index: usize,
+    num_clusters: usize,
+    current_byte: u8,
+    current_bit: u8,
+}
+
+impl<'a> Iterator for VisibilityBitmapIter<'a> {
+    type Item = ClusterIndex;
+
+    fn next(&mut self) -> Option<ClusterIndex> {
+        loop {
+            // Exit on reaching the end of the bitstream.
+            if self.cluster_index >= self.num_clusters {
+                return None;
+            }
+
+            // Scan bits until exhausted, yielding any that are set.
+            while self.current_bit != 0 {
+                let visible = (self.current_byte & self.current_bit) != 0;
+                self.current_bit <<= 1;
+                let cluster_index = self.cluster_index;
+                self.cluster_index += 1;
+                if visible {
+                    return Some(ClusterIndex(cluster_index));
+                }
+            }
+
+            // Read another byte, which is either a skip instruction or another eight bits to scan.
+            match self.data.read_u8().unwrap() {
+                0 => {
+                    let run_len = self.data.read_u8().unwrap() as usize;
+                    self.cluster_index += 8 * run_len;
+                }
+                x => {
+                    self.current_byte = x;
+                    self.current_bit = 1;
+                }
+            }
+        }
     }
 }
 

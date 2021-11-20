@@ -8,6 +8,7 @@ license = "MIT"
 
 [dependencies]
 anyhow = "1"
+byteorder = "1"
 glium = "0.30"
 nalgebra-glm = "0.15"
 png = "0.17"

@@ -101,6 +101,7 @@ name = "bsp-loader-gl"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "byteorder",
  "glium",
  "nalgebra-glm",
  "png",
@@ -113,6 +114,12 @@ name = "bytemuck"
 version = "1.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72957246c41db82b8ef88a5486143830adeb8227ef9837740bdec67724cf2c5b"
+
+[[package]]
+name = "byteorder"
+version = "1.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "14c189c53d098945499cdfa7ecc63567cf3886b3332b312a5b4585d8d3a6a610"
 
 [[package]]
 name = "calloop"

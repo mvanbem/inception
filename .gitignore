@@ -1,3 +1,5 @@
 /target/
+*.dat
 *.dll
 *.png
+*.tpl
