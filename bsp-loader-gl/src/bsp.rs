@@ -1,9 +1,12 @@
+use std::ffi::CStr;
+use std::io::Cursor;
 use std::mem::size_of;
 use std::num::NonZeroUsize;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use nalgebra_glm::Vec3;
 use recursive_iter::*;
+use zip::ZipArchive;
 
 use crate::transmute_utils::{extract_at, extract_slice};
 
@@ -23,6 +26,11 @@ impl<'a> Bsp<'a> {
     pub fn planes(&self) -> &'a [Plane] {
         // SAFETY: All bit patterns are valid for Plane.
         unsafe { extract_slice(self.header().lumps[1].data(self.0)) }
+    }
+
+    pub fn tex_datas(&self) -> &'a [TexData] {
+        // SAFETY: All bit patterns are valid for TexData.
+        unsafe { extract_slice(self.header().lumps[2].data(self.0)) }
     }
 
     pub fn vertices(&self) -> &'a [Vec3] {
@@ -77,14 +85,21 @@ impl<'a> Bsp<'a> {
         unsafe { extract_slice(self.header().lumps[16].data(self.0)) }
     }
 
-    pub fn enumerate_worldspawn_leaves(&self) -> impl Iterator<Item = (usize, &'a Leaf)> {
+    pub fn pak_file(&self) -> ZipArchive<Cursor<&'a [u8]>> {
+        ZipArchive::new(Cursor::new(self.header().lumps[40].data(self.0))).unwrap()
+    }
+
+    pub fn tex_data_strings(&self) -> TexDataStrings<'a> {
+        let table: &[i32] = unsafe { extract_slice(self.header().lumps[44].data(self.0)) };
+        let data = self.header().lumps[43].data(self.0);
+        TexDataStrings { table, data }
+    }
+
+    pub fn iter_worldspawn_leaves(&self) -> impl Iterator<Item = &'a Leaf> {
         self.enumerate_leaves_from_node(&self.nodes()[0])
     }
 
-    pub fn enumerate_leaves_from_node(
-        &self,
-        node: &'a Node,
-    ) -> impl Iterator<Item = (usize, &'a Leaf)> {
+    pub fn enumerate_leaves_from_node(&self, node: &'a Node) -> impl Iterator<Item = &'a Leaf> {
         RecursiveIter::new(
             *self,
             LeavesIterFrame {
@@ -126,7 +141,7 @@ struct LeavesIterFrame<'a> {
 }
 
 impl<'a> Frame for LeavesIterFrame<'a> {
-    type Item = (usize, &'a Leaf);
+    type Item = &'a Leaf;
     type Context = Bsp<'a>;
 
     fn eval(&mut self, bsp: &mut Bsp<'a>) -> EvalResult<Self> {
@@ -140,8 +155,7 @@ impl<'a> Frame for LeavesIterFrame<'a> {
             .with_return(self.child_index == 2)
         } else {
             self.child_index += 1;
-            let leaf_index = (-child) as usize;
-            Yield((leaf_index, &bsp.leaves()[leaf_index])).with_return(self.child_index == 2)
+            Yield(&bsp.leaves()[(-child) as usize]).with_return(self.child_index == 2)
         }
     }
 }
@@ -244,6 +258,16 @@ pub struct Plane {
     pub normal: [f32; 3],
     pub dist: f32,
     pub type_: i32,
+}
+
+#[repr(C)]
+pub struct TexData {
+    pub reflectivity: [f32; 3],
+    pub name_string_table_id: i32,
+    pub width: i32,
+    pub height: i32,
+    pub view_width: i32,
+    pub view_height: i32,
 }
 
 #[derive(Clone, Copy)]
@@ -441,6 +465,30 @@ pub struct Leaf {
 #[derive(Debug)]
 pub struct Edge {
     pub v: [u16; 2],
+}
+
+#[derive(Clone, Copy)]
+pub struct TexDataStrings<'a> {
+    table: &'a [i32],
+    data: &'a [u8],
+}
+
+impl<'a> TexDataStrings<'a> {
+    pub fn get(self, index: usize) -> &'a str {
+        let start = usize::try_from(self.table[index]).unwrap();
+        let end = start
+            + self.data[start..]
+                .iter()
+                .enumerate()
+                .find(|&(_index, &b)| b == 0)
+                .unwrap()
+                .0
+            + 1;
+        CStr::from_bytes_with_nul(&self.data[start..end])
+            .unwrap()
+            .to_str()
+            .unwrap()
+    }
 }
 
 pub type CompressedLightCube = [ColorRgbExp32; 6];

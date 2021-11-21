@@ -12,13 +12,14 @@ pub struct Shader {
 impl Shader {
     pub fn apply(&self) {
         unsafe {
-            GX_SetNumTevStages(
-                self.stages
-                    .iter()
-                    .map(|stage| if stage.is_some() { 1 } else { 0 })
-                    .sum(),
-            );
+            let num_tev_stages = self
+                .stages
+                .iter()
+                .map(|stage| if stage.is_some() { 1 } else { 0 })
+                .sum();
+            GX_SetNumTevStages(num_tev_stages);
             for (index, stage) in self.stages.iter().enumerate() {
+                assert_eq!(stage.is_some(), (index as u8) < num_tev_stages);
                 if let Some(stage) = stage.as_ref() {
                     stage.apply(index as u8);
                 }
@@ -26,13 +27,14 @@ impl Shader {
 
             GX_SetNumChans(self.num_chans);
 
-            GX_SetNumTexGens(
-                self.tex_gens
-                    .iter()
-                    .map(|tex_gen| if tex_gen.is_some() { 1 } else { 0 })
-                    .sum(),
-            );
+            let num_tex_gens = self
+                .tex_gens
+                .iter()
+                .map(|tex_gen| if tex_gen.is_some() { 1 } else { 0 })
+                .sum();
+            GX_SetNumTexGens(num_tex_gens);
             for (index, tex_gen) in self.tex_gens.iter().enumerate() {
+                assert_eq!(tex_gen.is_some(), (index as u32) < num_tex_gens);
                 if let Some(tex_gen) = tex_gen.as_ref() {
                     tex_gen.apply(index as u16);
                 }
@@ -40,6 +42,7 @@ impl Shader {
         }
     }
 
+    #[allow(dead_code)]
     pub const fn make_slow(mut self) -> Self {
         self.stages[0] = Self::make_stage_slow(self.stages[0]);
         self.stages[1] = Self::make_stage_slow(self.stages[1]);
@@ -60,6 +63,7 @@ impl Shader {
         self
     }
 
+    #[allow(dead_code)]
     const fn make_stage_slow(stage: Option<TevStage>) -> Option<TevStage> {
         if stage.is_none() {
             Some(TevStage {

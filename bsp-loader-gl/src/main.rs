@@ -6,6 +6,8 @@ use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::io::{BufWriter, Write};
 use std::iter::repeat_with;
+use std::path::Path;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -23,16 +25,25 @@ use glium::{
     implement_vertex, uniform, BackfaceCullingMode, Depth, DepthTest, Display, DrawParameters,
     IndexBuffer, Program, Surface, VertexBuffer,
 };
+use memmap::Mmap;
 use nalgebra_glm::{look_at, perspective, radians, rotate, translate, vec1, vec3};
+use try_insert_ext::EntryInsertExt;
 
 use crate::bsp::{Bsp, ClusterIndex};
 use crate::display_list::DisplayListBuilder;
+use crate::file::vpk::path::VpkPath;
+use crate::file::vpk::Vpk;
+use crate::file::zip::ZipArchiveLoader;
+use crate::file::{FallbackFileLoader, FileLoader};
 use crate::texture_atlas::{RgbU8Image, RgbU8TextureAtlas};
+use crate::vmt::Vmt;
 
 mod bsp;
 mod display_list;
+mod file;
 mod texture_atlas;
 mod transmute_utils;
+mod vmt;
 
 #[derive(Clone, Copy)]
 struct Vertex {
@@ -67,8 +78,19 @@ impl Hash for FloatByBits {
 }
 
 fn main() -> Result<()> {
-    let bsp_data = std::fs::read("C:\\Program Files (x86)\\Steam\\steamapps\\common\\Half-Life 2\\hl2\\maps\\d1_trainstation_01.bsp")?;
+    let hl2_base: &Path =
+        Path::new("C:\\Program Files (x86)\\Steam\\steamapps\\common\\Half-Life 2\\hl2");
+
+    let bsp_file = File::open(hl2_base.join("maps\\d1_trainstation_01.bsp"))?;
+    let bsp_data = unsafe { Mmap::map(&bsp_file) }?;
     let bsp = Bsp::new(&bsp_data);
+    let pak_loader = Rc::new(ZipArchiveLoader::new(bsp.pak_file()));
+
+    let material_loader = FallbackFileLoader::new(vec![
+        Box::new(pak_loader),
+        Box::new(Rc::new(Vpk::new(hl2_base.join("hl2_misc"))?)),
+    ]);
+    let mut _textures_vpk = Rc::new(Vpk::new(hl2_base.join("hl2_textures"))?);
 
     let (lightmap_image, lightmap_metadata_by_data_offset) = build_lightmaps(bsp)?;
 
@@ -84,7 +106,8 @@ fn main() -> Result<()> {
     let mut cluster_display_lists = repeat_with(|| DisplayListBuilder::new())
         .take(bsp.leaves().len())
         .collect::<Vec<_>>();
-    for (_leaf_index, leaf) in bsp.enumerate_worldspawn_leaves() {
+    let mut materials = HashMap::new();
+    for leaf in bsp.iter_worldspawn_leaves() {
         if leaf.cluster == -1 {
             // Leaf is not potentially visible from anywhere.
             continue;
@@ -99,6 +122,21 @@ fn main() -> Result<()> {
             }
             let lightmap_metadata = &lightmap_metadata_by_data_offset[&face.light_ofs];
             let tex_info = &bsp.tex_infos()[face.tex_info as usize];
+
+            if tex_info.tex_data != -1 {
+                // This is a textured face.
+                let tex_data = &bsp.tex_datas()[tex_info.tex_data as usize];
+                let name = bsp
+                    .tex_data_strings()
+                    .get(tex_data.name_string_table_id as usize);
+                let path = VpkPath::new_with_prefix_and_extension(name, "materials", "vmt");
+
+                let _material = materials.entry(path.clone()).or_try_insert_with_key(
+                    |path| -> Result<Vmt> {
+                        Ok(Vmt::new(&material_loader.load_file(&path)?.unwrap()))
+                    },
+                )?;
+            }
 
             let mut first_index = None;
             let mut first_gamecube_position_index = None;
@@ -545,7 +583,7 @@ fn build_lightmaps(bsp: Bsp) -> Result<(RgbU8Image, HashMap<i32, LightmapMetadat
     // Collect lightmap patches and insert them into a texture atlas.
     let mut lightmap_atlas = RgbU8TextureAtlas::new();
     let mut patch_ids_by_data_offset = HashMap::new();
-    for (_, leaf) in bsp.enumerate_worldspawn_leaves() {
+    for leaf in bsp.iter_worldspawn_leaves() {
         for face in bsp.iter_faces_from_leaf(leaf) {
             if face.light_ofs != -1 && face.tex_info != -1 {
                 // Import the lightmap patch if it hasn't already been imported.
