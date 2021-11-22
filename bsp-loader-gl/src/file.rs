@@ -2,10 +2,9 @@ use std::rc::Rc;
 
 use anyhow::{bail, Result};
 
-use crate::file::vpk::path::VpkPath;
+use crate::vpk::path::VpkPath;
 
 pub mod canonical_path;
-pub mod vpk;
 pub mod zip;
 
 pub trait FileLoader {
@@ -13,11 +12,11 @@ pub trait FileLoader {
 }
 
 pub struct FallbackFileLoader<'a> {
-    loaders: Vec<Box<Rc<dyn FileLoader + 'a>>>,
+    loaders: Vec<Rc<dyn FileLoader + 'a>>,
 }
 
 impl<'a> FallbackFileLoader<'a> {
-    pub fn new(loaders: Vec<Box<Rc<dyn FileLoader + 'a>>>) -> Self {
+    pub fn new(loaders: Vec<Rc<dyn FileLoader + 'a>>) -> Self {
         Self { loaders }
     }
 }

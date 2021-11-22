@@ -10,13 +10,18 @@ pub struct VpkPath {
 }
 
 impl VpkPath {
-    pub fn new_with_prefix_and_extension(name: &str, prefix: &str, extension: &str) -> Self {
+    pub fn new_with_prefix_and_extension(name: &str, mut prefix: &str, extension: &str) -> Self {
+        if name.starts_with(prefix) {
+            prefix = "";
+        }
+
         let path = CanonicalPathBuf::from_string(format!(
-            "{}{}{}.{}",
+            "{}{}{}{}{}",
             display_canonical(prefix),
-            if prefix.is_empty() { "" } else { "/" },
+            if !prefix.is_empty() { "/" } else { "" },
             display_canonical(name),
-            display_canonical(extension),
+            if !name.contains('.') { "." } else { "" },
+            display_canonical(if !name.contains('.') { extension } else { "" }),
         ))
         .unwrap();
         let last_slash_index = path.as_str().rfind('/');

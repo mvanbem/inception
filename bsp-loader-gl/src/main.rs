@@ -21,38 +21,41 @@ use glium::glutin::window::WindowBuilder;
 use glium::index::PrimitiveType;
 use glium::texture::compressed_srgb_texture2d::CompressedSrgbTexture2d;
 use glium::texture::{ClientFormat, CompressedMipmapsOption, CompressedSrgbFormat, RawImage2d};
+use glium::uniforms::{MagnifySamplerFilter, MinifySamplerFilter, Sampler};
 use glium::{
     implement_vertex, uniform, BackfaceCullingMode, Depth, DepthTest, Display, DrawParameters,
-    IndexBuffer, Program, Surface, VertexBuffer,
+    IndexBuffer, Program, Rect, Surface, VertexBuffer,
 };
 use memmap::Mmap;
 use nalgebra_glm::{look_at, perspective, radians, rotate, translate, vec1, vec3};
-use try_insert_ext::EntryInsertExt;
 
+use crate::asset::vmt::Shader;
+use crate::asset::vtf::{ImageData, ImageFormat};
+use crate::asset::AssetLoader;
 use crate::bsp::{Bsp, ClusterIndex};
 use crate::display_list::DisplayListBuilder;
-use crate::file::vpk::path::VpkPath;
-use crate::file::vpk::Vpk;
 use crate::file::zip::ZipArchiveLoader;
 use crate::file::{FallbackFileLoader, FileLoader};
 use crate::texture_atlas::{RgbU8Image, RgbU8TextureAtlas};
-use crate::vmt::Vmt;
+use crate::vpk::path::VpkPath;
+use crate::vpk::Vpk;
 
+mod asset;
 mod bsp;
 mod display_list;
 mod file;
 mod texture_atlas;
 mod transmute_utils;
-mod vmt;
+mod vpk;
 
 #[derive(Clone, Copy)]
 struct Vertex {
     position: [f32; 3],
-    lightmap_blend: f32,
     lightmap_coord: [f32; 2],
+    texture_coord: [f32; 2],
 }
 
-implement_vertex!(Vertex, position, lightmap_blend, lightmap_coord);
+implement_vertex!(Vertex, position, lightmap_coord, texture_coord);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct VertexKey {
@@ -86,16 +89,20 @@ fn main() -> Result<()> {
     let bsp = Bsp::new(&bsp_data);
     let pak_loader = Rc::new(ZipArchiveLoader::new(bsp.pak_file()));
 
-    let material_loader = FallbackFileLoader::new(vec![
-        Box::new(pak_loader),
-        Box::new(Rc::new(Vpk::new(hl2_base.join("hl2_misc"))?)),
-    ]);
-    let mut _textures_vpk = Rc::new(Vpk::new(hl2_base.join("hl2_textures"))?);
+    let material_loader = Rc::new(FallbackFileLoader::new(vec![
+        Rc::clone(&pak_loader) as Rc<dyn FileLoader>,
+        Rc::new(Vpk::new(hl2_base.join("hl2_misc"))?),
+    ]));
+    let texture_loader = Rc::new(FallbackFileLoader::new(vec![
+        Rc::clone(&pak_loader) as Rc<dyn FileLoader>,
+        Rc::new(Vpk::new(hl2_base.join("hl2_textures"))?),
+    ]));
+    let asset_loader = AssetLoader::new(material_loader, texture_loader);
 
     let (lightmap_image, lightmap_metadata_by_data_offset) = build_lightmaps(bsp)?;
 
     let mut vertices = Vec::new();
-    let mut indices = Vec::new();
+    let mut indices_by_material: HashMap<VpkPath, Vec<u16>> = HashMap::new();
     let mut emitted_vertices_by_source = HashMap::new();
     let mut gamecube_position_indices = HashMap::new();
     let mut gamecube_texcoord_indices = HashMap::new();
@@ -103,40 +110,43 @@ fn main() -> Result<()> {
     let mut next_gamecube_texcoord_index = 0;
     let mut gamecube_position_data = Vec::new();
     let mut gamecube_texcoord_data = Vec::new();
-    let mut cluster_display_lists = repeat_with(|| DisplayListBuilder::new())
+    let mut gamecube_cluster_display_lists = repeat_with(|| DisplayListBuilder::new())
         .take(bsp.leaves().len())
         .collect::<Vec<_>>();
-    let mut materials = HashMap::new();
     for leaf in bsp.iter_worldspawn_leaves() {
         if leaf.cluster == -1 {
             // Leaf is not potentially visible from anywhere.
             continue;
         }
-        let mut gamecube_batch_builder =
-            cluster_display_lists[leaf.cluster as usize].build_batch(DisplayListBuilder::TRIANGLES);
+        let mut gamecube_batch_builder = gamecube_cluster_display_lists[leaf.cluster as usize]
+            .build_batch(DisplayListBuilder::TRIANGLES);
 
         for face in bsp.iter_faces_from_leaf(leaf) {
             if face.light_ofs == -1 || face.tex_info == -1 {
                 // Not a textured lightmapped surface.
                 continue;
             }
+
             let lightmap_metadata = &lightmap_metadata_by_data_offset[&face.light_ofs];
             let tex_info = &bsp.tex_infos()[face.tex_info as usize];
-
-            if tex_info.tex_data != -1 {
-                // This is a textured face.
-                let tex_data = &bsp.tex_datas()[tex_info.tex_data as usize];
-                let name = bsp
-                    .tex_data_strings()
-                    .get(tex_data.name_string_table_id as usize);
-                let path = VpkPath::new_with_prefix_and_extension(name, "materials", "vmt");
-
-                let _material = materials.entry(path.clone()).or_try_insert_with_key(
-                    |path| -> Result<Vmt> {
-                        Ok(Vmt::new(&material_loader.load_file(&path)?.unwrap()))
-                    },
-                )?;
+            if tex_info.tex_data == -1 {
+                // Not textured.
+                // TODO: Determine whether any such faces need to be drawn.
+                continue;
             }
+
+            // This is a textured face.
+            let tex_data = &bsp.tex_datas()[tex_info.tex_data as usize];
+            let material_path = VpkPath::new_with_prefix_and_extension(
+                bsp.tex_data_strings()
+                    .get(tex_data.name_string_table_id as usize),
+                "materials",
+                "vmt",
+            );
+            let _material = asset_loader.get_material(&material_path)?;
+            let indices = indices_by_material
+                .entry(material_path.clone())
+                .or_default();
 
             let mut first_index = None;
             let mut first_gamecube_position_index = None;
@@ -150,12 +160,12 @@ fn main() -> Result<()> {
                     *emitted_vertices_by_source.get(&key).unwrap()
                 } else {
                     let vertex = convert_vertex(
-                        bsp,
-                        vertex_index,
-                        tex_info,
-                        face,
                         lightmap_metadata,
                         &lightmap_image,
+                        bsp,
+                        face,
+                        tex_info,
+                        vertex_index,
                     );
 
                     // Emit the vertex.
@@ -256,9 +266,9 @@ fn main() -> Result<()> {
         }
         {
             let mut built_display_lists = Vec::new();
-            let mut offset = (8 * cluster_display_lists.len() as u32 + 31) & !31;
+            let mut offset = (8 * gamecube_cluster_display_lists.len() as u32 + 31) & !31;
             let mut index = Vec::new();
-            for display_list in cluster_display_lists {
+            for display_list in gamecube_cluster_display_lists {
                 let built_display_list = display_list.build();
                 let len = built_display_list.len() as u32;
                 index
@@ -350,42 +360,118 @@ fn main() -> Result<()> {
         #version 330
 
         uniform mat4 mvp_matrix;
+        uniform vec2 inv_base_map_size;
 
         in vec3 position;
-        in float lightmap_blend;
         in vec2 lightmap_coord;
+        in vec2 texture_coord;
 
-        out float interpolated_lightmap_blend;
         out vec2 interpolated_lightmap_coord;
+        out vec2 interpolated_texture_coord;
 
         void main() {
             gl_Position = mvp_matrix * vec4(position, 1.0);
-            interpolated_lightmap_blend = lightmap_blend;
             interpolated_lightmap_coord = lightmap_coord;
+            interpolated_texture_coord = texture_coord * inv_base_map_size;
         }
     "#;
     const FRAGMENT_SHADER_SOURCE: &str = r#"
         #version 330
 
         uniform sampler2D lightmap;
+        uniform sampler2D base_map;
 
-        in float interpolated_lightmap_blend;
         in vec2 interpolated_lightmap_coord;
+        in vec2 interpolated_texture_coord;
 
         out vec4 rendered_color;
 
         void main() {
-            vec4 plain_color = vec4(1.0, 0.0, 1.0, 1.0);
             vec4 lightmap_color = vec4(texture(lightmap, interpolated_lightmap_coord).rgb, 1.0);
-            // vec4 lightmap_color = vec4(interpolated_lightmap_coord.st, 0.0, 1.0);
-            rendered_color = mix(plain_color, lightmap_color, interpolated_lightmap_blend);
+            vec4 base_color = texture(base_map, interpolated_texture_coord);
+            rendered_color = lightmap_color * base_color * 2.0;
         }
     "#;
     let program =
         Program::from_source(&display, VERTEX_SHADER_SOURCE, FRAGMENT_SHADER_SOURCE, None)?;
 
     let vertex_buffer = VertexBuffer::new(&display, &vertices)?;
-    let index_buffer = IndexBuffer::new(&display, PrimitiveType::TrianglesList, &indices)?;
+    struct Batch {
+        index_buffer: IndexBuffer<u16>,
+        base_map_path: VpkPath,
+        inv_base_map_size: [f32; 2],
+    }
+    let mut batches = Vec::new();
+    let mut total_texture_size = 0;
+    let mut textures_by_path = HashMap::new();
+    for material_path in indices_by_material.keys() {
+        let material = asset_loader.get_material(material_path)?;
+        if let Shader::LightmappedGeneric { base_texture, .. } = material.shader() {
+            if !textures_by_path.contains_key(base_texture.path()) {
+                // Load this texture.
+                let (base_map_width, base_map_height, mips) = match material.shader() {
+                    Shader::LightmappedGeneric { base_texture, .. } => match base_texture.data() {
+                        Some(ImageData {
+                            format: ImageFormat::Dxt1,
+                            mips,
+                        }) => (base_texture.width(), base_texture.height(), mips),
+                        None => continue,
+                    },
+                    _ => continue,
+                };
+
+                let base_map_texture = CompressedSrgbTexture2d::empty_with_format(
+                    &display,
+                    CompressedSrgbFormat::S3tcDxt1NoAlpha,
+                    CompressedMipmapsOption::EmptyMipmapsMax(mips.len() as u32 - 1),
+                    base_map_width,
+                    base_map_height,
+                )?;
+                for (mip_level, mip_data) in mips.iter().enumerate() {
+                    let mip_texture = base_map_texture.mipmap(mip_level as u32).unwrap();
+                    let mip_width = mip_texture.width();
+                    let mip_height = mip_texture.height();
+                    assert_eq!(
+                        mip_width.max(4) as usize * mip_height.max(4) as usize / 2,
+                        mip_data.len(),
+                    );
+                    total_texture_size += mip_data.len();
+                    mip_texture
+                        .write_compressed_data(
+                            Rect {
+                                left: 0,
+                                bottom: 0,
+                                width: mip_width,
+                                height: mip_height,
+                            },
+                            mip_data,
+                            mip_width,
+                            mip_height,
+                            CompressedSrgbFormat::S3tcDxt1NoAlpha,
+                        )
+                        .unwrap();
+                }
+                textures_by_path.insert(base_texture.path().to_owned(), base_map_texture);
+            }
+        }
+    }
+    for (material_path, indices) in indices_by_material {
+        let material = asset_loader.get_material(&material_path)?;
+        if let Shader::LightmappedGeneric { base_texture, .. } = material.shader() {
+            let index_buffer = IndexBuffer::new(&display, PrimitiveType::TrianglesList, &indices)?;
+            if let Some(base_map_texture) = textures_by_path.get(base_texture.path()) {
+                batches.push(Batch {
+                    index_buffer,
+                    base_map_path: base_texture.path().to_owned(),
+                    inv_base_map_size: [
+                        1.0 / base_map_texture.width() as f32,
+                        1.0 / base_map_texture.height() as f32,
+                    ],
+                });
+            }
+        }
+    }
+    println!("Total texture size: {}", total_texture_size);
     let lightmap_texture = CompressedSrgbTexture2d::with_format(
         &display,
         RawImage2d {
@@ -426,9 +512,9 @@ fn main() -> Result<()> {
             let right = vec3(-yaw.sin(), -yaw.cos(), 0.0);
             let up = vec3(0.0, 0.0, 1.0);
             let delta_pos = if held_keys[&VirtualKeyCode::LShift] {
-                10000.0
-            } else {
                 1000.0
+            } else {
+                100.0
             } * dt;
             if held_keys[&VirtualKeyCode::W] {
                 pos += delta_pos * forward;
@@ -468,28 +554,35 @@ fn main() -> Result<()> {
 
             let mut target = display.draw();
             target.clear_color_and_depth((0.5, 0.5, 0.5, 0.0), 1.0);
-            target
-                .draw(
-                    &vertex_buffer,
-                    &index_buffer,
-                    &program,
-                    &uniform! {
-                        mvp_matrix: mvp_matrix.data.0,
-                        lightmap: &lightmap_texture,
-                    },
-                    &DrawParameters {
-                        depth: Depth {
-                            test: DepthTest::IfLess,
-                            write: true,
+            for batch in &batches {
+                target
+                    .draw(
+                        &vertex_buffer,
+                        &batch.index_buffer,
+                        &program,
+                        &uniform! {
+                            mvp_matrix: mvp_matrix.data.0,
+                            lightmap: &lightmap_texture,
+                            base_map: Sampler::new(&textures_by_path[&batch.base_map_path])
+                                .magnify_filter(MagnifySamplerFilter::Linear)
+                                .minify_filter(MinifySamplerFilter::LinearMipmapLinear),
+                            inv_base_map_size: batch.inv_base_map_size,
+                        },
+                        &DrawParameters {
+                            depth: Depth {
+                                test: DepthTest::IfLess,
+                                write: true,
+                                ..Default::default()
+                            },
+                            backface_culling: BackfaceCullingMode::CullCounterClockwise,
                             ..Default::default()
                         },
-                        backface_culling: BackfaceCullingMode::CullCounterClockwise,
-                        ..Default::default()
-                    },
-                )
-                .unwrap();
+                    )
+                    .unwrap();
+            }
             target.finish().unwrap();
 
+            display.gl_window().window().request_redraw();
             let next_frame_time = Instant::now() + Duration::from_nanos(10_000_000);
             *control_flow = ControlFlow::WaitUntil(next_frame_time);
         }
@@ -532,14 +625,15 @@ fn main() -> Result<()> {
 }
 
 fn convert_vertex(
-    bsp: Bsp,
-    vertex_index: usize,
-    tex_info: &bsp::TexInfo,
-    face: &bsp::Face,
     lightmap_metadata: &LightmapMetadata,
     lightmap_image: &RgbU8Image,
+    bsp: Bsp,
+    face: &bsp::Face,
+    tex_info: &bsp::TexInfo,
+    vertex_index: usize,
 ) -> Vertex {
     let vertex = &bsp.vertices()[vertex_index];
+
     let patch_s = tex_info.lightmap_vecs[0][0] * vertex.x
         + tex_info.lightmap_vecs[0][1] * vertex.y
         + tex_info.lightmap_vecs[0][2] * vertex.z
@@ -562,14 +656,24 @@ fn convert_vertex(
     } else {
         (patch_s, patch_t)
     };
-    let s =
+    let lightmap_s =
         (patch_s + lightmap_metadata.luxel_offset[0] as f32 + 0.5) / lightmap_image.width() as f32;
-    let t =
+    let lightmap_t =
         (patch_t + lightmap_metadata.luxel_offset[1] as f32 + 0.5) / lightmap_image.height() as f32;
+
+    let texture_s = tex_info.texture_vecs[0][0] * vertex.x
+        + tex_info.texture_vecs[0][1] * vertex.y
+        + tex_info.texture_vecs[0][2] * vertex.z
+        + tex_info.texture_vecs[0][3];
+    let texture_t = tex_info.texture_vecs[1][0] * vertex.x
+        + tex_info.texture_vecs[1][1] * vertex.y
+        + tex_info.texture_vecs[1][2] * vertex.z
+        + tex_info.texture_vecs[1][3];
+
     let vertex = Vertex {
         position: [vertex.x, vertex.y, vertex.z],
-        lightmap_blend: 1.0,
-        lightmap_coord: [s, t],
+        lightmap_coord: [lightmap_s, lightmap_t],
+        texture_coord: [texture_s, texture_t],
     };
     vertex
 }

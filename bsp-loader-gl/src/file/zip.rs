@@ -5,8 +5,8 @@ use anyhow::Result;
 use zip::result::ZipError;
 use zip::ZipArchive;
 
-use crate::file::vpk::path::VpkPath;
 use crate::file::FileLoader;
+use crate::vpk::path::VpkPath;
 
 pub struct ZipArchiveLoader<R> {
     archive: RefCell<ZipArchive<R>>,
