@@ -42,25 +42,24 @@ impl Vtf {
 }
 
 impl Asset for Vtf {
-    fn from_data(loader: &AssetLoader, path: &VpkPath, data: Vec<u8>) -> Result<Rc<Self>> {
+    fn from_data(_loader: &AssetLoader, path: &VpkPath, data: Vec<u8>) -> Result<Rc<Self>> {
         let mut r = &*data;
         let signature = r.read_u32::<LittleEndian>()?;
         assert_eq!(signature, 0x00465456);
-        let major_version = r.read_u32::<LittleEndian>()?;
-        let minor_version = r.read_u32::<LittleEndian>()?;
+        let _major_version = r.read_u32::<LittleEndian>()?;
+        let _minor_version = r.read_u32::<LittleEndian>()?;
         let header_size = r.read_u32::<LittleEndian>()?;
         let width = r.read_u16::<LittleEndian>()?;
         let height = r.read_u16::<LittleEndian>()?;
-        let flags = r.read_i32::<LittleEndian>()?;
-        let frames = r.read_u16::<LittleEndian>()?;
-        let first_frame = r.read_u16::<LittleEndian>()?;
+        let _flags = r.read_i32::<LittleEndian>()?;
+        let _frames = r.read_u16::<LittleEndian>()?;
+        let _first_frame = r.read_u16::<LittleEndian>()?;
         r = &r[4..];
-        let reflectivity_r = f32::from_bits(r.read_u32::<LittleEndian>()?);
-        let reflectivity_g = f32::from_bits(r.read_u32::<LittleEndian>()?);
-        let reflectivity_b = f32::from_bits(r.read_u32::<LittleEndian>()?);
-        let reflectivity = [reflectivity_r, reflectivity_g, reflectivity_b];
+        let _reflectivity_r = f32::from_bits(r.read_u32::<LittleEndian>()?);
+        let _reflectivity_g = f32::from_bits(r.read_u32::<LittleEndian>()?);
+        let _reflectivity_b = f32::from_bits(r.read_u32::<LittleEndian>()?);
         r = &r[4..];
-        let bump_map_scale = f32::from_bits(r.read_u32::<LittleEndian>()?);
+        let _bump_map_scale = f32::from_bits(r.read_u32::<LittleEndian>()?);
         let high_res_image_format = r.read_u32::<LittleEndian>()?;
         let mipmap_count = r.read_u8()?;
         let low_res_image_format = r.read_u32::<LittleEndian>()?;

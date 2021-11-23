@@ -7,12 +7,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use byteorder::{LittleEndian, ReadBytesExt};
+use fully_occupied::{extract, FullyOccupied};
 use memmap::Mmap;
 use try_insert_ext::EntryInsertExt;
 
 use crate::file::canonical_path::CanonicalPathBuf;
 use crate::file::FileLoader;
-use crate::transmute_utils::extract_at;
 use crate::vpk::path::VpkPath;
 
 pub mod path;
@@ -60,12 +60,10 @@ impl Vpk {
         path.pop();
         let index_data = unsafe { Mmap::map(&index_file) }?;
 
-        // SAFETY: All bit patterns are valid for HeaderV1.
-        let v1_header: &HeaderV1 = unsafe { extract_at(&*index_data, 0) };
+        let v1_header: &HeaderV1 = extract(&*index_data);
         assert_eq!(v1_header.version, 2);
 
-        // SAFETY: All bit patterns are valid for HeaderV2.
-        let v2_header: &HeaderV2 = unsafe { extract_at(&*index_data, 0) };
+        let v2_header: &HeaderV2 = extract(&*index_data);
         let mut tree_data = &(&index_data[size_of::<HeaderV2>()..])[..v2_header.tree_size as usize];
         let mut entries_by_extension_parent_file_stem: HashMap<
             CanonicalPathBuf,
@@ -190,6 +188,8 @@ struct HeaderV1 {
     version: u32,
 }
 
+unsafe impl FullyOccupied for HeaderV1 {}
+
 #[derive(Debug)]
 #[repr(C)]
 struct HeaderV2 {
@@ -201,6 +201,8 @@ struct HeaderV2 {
     other_md5_section_size: u32,
     signature_section_size: u32,
 }
+
+unsafe impl FullyOccupied for HeaderV2 {}
 
 struct DirectoryEntry {
     _crc: u32,

@@ -1,7 +1,7 @@
 use std::rc::Rc;
 use std::str::from_utf8;
 
-use anyhow::bail;
+use anyhow::{bail, Result};
 
 use crate::asset::vmt::parse::{Entry, KeyValue, Object};
 use crate::asset::vtf::Vtf;
@@ -82,7 +82,13 @@ pub struct Vmt {
 }
 
 impl Vmt {
-    fn new(loader: &AssetLoader, data: Vec<u8>) -> anyhow::Result<Rc<Self>> {
+    pub fn shader(&self) -> &Shader {
+        &self.shader
+    }
+}
+
+impl Asset for Vmt {
+    fn from_data(loader: &AssetLoader, _path: &VpkPath, data: Vec<u8>) -> Result<Rc<Self>> {
         let root = parse::vmt(from_utf8(&data)?).unwrap();
 
         let shader = match root.name {
@@ -165,16 +171,6 @@ impl Vmt {
         };
 
         Ok(Rc::new(Self { shader }))
-    }
-
-    pub fn shader(&self) -> &Shader {
-        &self.shader
-    }
-}
-
-impl Asset for Vmt {
-    fn from_data(loader: &AssetLoader, path: &VpkPath, data: Vec<u8>) -> anyhow::Result<Rc<Self>> {
-        Self::new(loader, data)
     }
 }
 

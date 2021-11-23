@@ -1,5 +1,5 @@
 [package]
-name = "bsp-loader-gl"
+name = "source-reader"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
@@ -9,12 +9,10 @@ license = "MIT"
 [dependencies]
 anyhow = "1"
 byteorder = "1"
-glium = "0.30"
+fully-occupied = { path = "../fully-occupied" }
 memmap = "0.7"
 nalgebra-glm = "0.15"
 nom = "7"
-png = "0.17"
 recursive-iter = { path = "../recursive-iter" }
-source-reader = { path = "../source-reader" }
 try-insert-ext = "0.1"
 zip = "0.5"

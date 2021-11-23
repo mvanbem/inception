@@ -8,7 +8,7 @@ use nalgebra_glm::Vec3;
 use recursive_iter::*;
 use zip::ZipArchive;
 
-use crate::transmute_utils::{extract_at, extract_slice};
+use fully_occupied::{extract, extract_slice, extract_slice_unchecked, FullyOccupied};
 
 #[derive(Clone, Copy)]
 pub struct Bsp<'a>(&'a [u8]);
@@ -19,23 +19,20 @@ impl<'a> Bsp<'a> {
     }
 
     pub fn header(&self) -> &'a Header {
-        // SAFETY: All bit patterns are valid for Header.
-        unsafe { extract_at(self.0, 0) }
+        extract(self.0)
     }
 
     pub fn planes(&self) -> &'a [Plane] {
-        // SAFETY: All bit patterns are valid for Plane.
-        unsafe { extract_slice(self.header().lumps[1].data(self.0)) }
+        extract_slice(self.header().lumps[1].data(self.0))
     }
 
     pub fn tex_datas(&self) -> &'a [TexData] {
-        // SAFETY: All bit patterns are valid for TexData.
-        unsafe { extract_slice(self.header().lumps[2].data(self.0)) }
+        extract_slice(self.header().lumps[2].data(self.0))
     }
 
     pub fn vertices(&self) -> &'a [Vec3] {
         // SAFETY: All bit patterns are valid for Vec3.
-        unsafe { extract_slice(self.header().lumps[3].data(self.0)) }
+        unsafe { extract_slice_unchecked(self.header().lumps[3].data(self.0)) }
     }
 
     pub fn visibility(&self) -> Visibility<'a> {
@@ -45,18 +42,15 @@ impl<'a> Bsp<'a> {
     }
 
     pub fn nodes(&self) -> &'a [Node] {
-        // SAFETY: All bit patterns are valid for Node.
-        unsafe { extract_slice(self.header().lumps[5].data(self.0)) }
+        extract_slice(self.header().lumps[5].data(self.0))
     }
 
     pub fn tex_infos(&self) -> &'a [TexInfo] {
-        // SAFETY: All bit patterns are valid for TexInfo.
-        unsafe { extract_slice(self.header().lumps[6].data(self.0)) }
+        extract_slice(self.header().lumps[6].data(self.0))
     }
 
     pub fn faces(&self) -> &'a [Face] {
-        // SAFETY: All bit patterns are valid for Face.
-        unsafe { extract_slice(self.header().lumps[7].data(self.0)) }
+        extract_slice(self.header().lumps[7].data(self.0))
     }
 
     pub fn lighting(&self) -> Lighting<'a> {
@@ -66,23 +60,19 @@ impl<'a> Bsp<'a> {
     }
 
     pub fn leaves(&self) -> &'a [Leaf] {
-        // SAFETY: All bit patterns are valid for Leaf.
-        unsafe { extract_slice(self.header().lumps[10].data(self.0)) }
+        extract_slice(self.header().lumps[10].data(self.0))
     }
 
     pub fn edges(&self) -> &'a [Edge] {
-        // SAFETY: All bit patterns are valid for Edge.
-        unsafe { extract_slice(self.header().lumps[12].data(self.0)) }
+        extract_slice(self.header().lumps[12].data(self.0))
     }
 
     pub fn surf_edges(&self) -> &'a [i32] {
-        // SAFETY: All bit patterns are valid for i32.
-        unsafe { extract_slice(self.header().lumps[13].data(self.0)) }
+        extract_slice(self.header().lumps[13].data(self.0))
     }
 
     pub fn leaf_faces(&self) -> &'a [u16] {
-        // SAFETY: All bit patterns are valid for u16.
-        unsafe { extract_slice(self.header().lumps[16].data(self.0)) }
+        extract_slice(self.header().lumps[16].data(self.0))
     }
 
     pub fn pak_file(&self) -> ZipArchive<Cursor<&'a [u8]>> {
@@ -90,7 +80,7 @@ impl<'a> Bsp<'a> {
     }
 
     pub fn tex_data_strings(&self) -> TexDataStrings<'a> {
-        let table: &[i32] = unsafe { extract_slice(self.header().lumps[44].data(self.0)) };
+        let table: &[i32] = extract_slice(self.header().lumps[44].data(self.0));
         let data = self.header().lumps[43].data(self.0);
         TexDataStrings { table, data }
     }
@@ -238,6 +228,8 @@ pub struct Header {
     pub map_revision: i32,
 }
 
+unsafe impl FullyOccupied for Header {}
+
 #[repr(C)]
 #[derive(Debug)]
 pub struct Lump {
@@ -260,6 +252,8 @@ pub struct Plane {
     pub type_: i32,
 }
 
+unsafe impl FullyOccupied for Plane {}
+
 #[repr(C)]
 pub struct TexData {
     pub reflectivity: [f32; 3],
@@ -269,6 +263,8 @@ pub struct TexData {
     pub view_width: i32,
     pub view_height: i32,
 }
+
+unsafe impl FullyOccupied for TexData {}
 
 #[derive(Clone, Copy)]
 pub struct Visibility<'a> {
@@ -400,6 +396,8 @@ pub struct Node {
     pub padding: i16,
 }
 
+unsafe impl FullyOccupied for Node {}
+
 #[repr(C)]
 #[derive(Debug)]
 pub struct TexInfo {
@@ -408,6 +406,8 @@ pub struct TexInfo {
     pub flags: i32,
     pub tex_data: i32,
 }
+
+unsafe impl FullyOccupied for TexInfo {}
 
 #[repr(C)]
 #[derive(Debug)]
@@ -431,16 +431,15 @@ pub struct Face {
     pub smoothing_groups: u32,
 }
 
+unsafe impl FullyOccupied for Face {}
+
 pub struct Lighting<'a> {
     data: &'a [u8],
 }
 
 impl<'a> Lighting<'a> {
     pub fn at_offset(&self, offset: i32, count: usize) -> &'a [ColorRgbExp32] {
-        // SAFETY: All bit patterns are valid for ColorRgbExp32.
-        unsafe {
-            extract_slice(&(&self.data[offset as usize..])[..count * size_of::<ColorRgbExp32>()])
-        }
+        extract_slice(&(&self.data[offset as usize..])[..count * size_of::<ColorRgbExp32>()])
     }
 }
 
@@ -461,11 +460,15 @@ pub struct Leaf {
     pub padding: i16,
 }
 
+unsafe impl FullyOccupied for Leaf {}
+
 #[repr(C)]
 #[derive(Debug)]
 pub struct Edge {
     pub v: [u16; 2],
 }
+
+unsafe impl FullyOccupied for Edge {}
 
 #[derive(Clone, Copy)]
 pub struct TexDataStrings<'a> {
@@ -501,6 +504,8 @@ pub struct ColorRgbExp32 {
     pub b: u8,
     pub exponent: i8,
 }
+
+unsafe impl FullyOccupied for ColorRgbExp32 {}
 
 impl ColorRgbExp32 {
     pub fn to_rgb8(&self) -> [u8; 3] {

@@ -28,25 +28,20 @@ use glium::{
 };
 use memmap::Mmap;
 use nalgebra_glm::{look_at, perspective, radians, rotate, translate, vec1, vec3};
+use source_reader::asset::vmt::Shader;
+use source_reader::asset::vtf::{ImageData, ImageFormat};
+use source_reader::asset::AssetLoader;
+use source_reader::bsp::{self, Bsp};
+use source_reader::file::zip::ZipArchiveLoader;
+use source_reader::file::{FallbackFileLoader, FileLoader};
+use source_reader::vpk::path::VpkPath;
+use source_reader::vpk::Vpk;
 
-use crate::asset::vmt::Shader;
-use crate::asset::vtf::{ImageData, ImageFormat};
-use crate::asset::AssetLoader;
-use crate::bsp::{Bsp, ClusterIndex};
 use crate::display_list::DisplayListBuilder;
-use crate::file::zip::ZipArchiveLoader;
-use crate::file::{FallbackFileLoader, FileLoader};
 use crate::texture_atlas::{RgbU8Image, RgbU8TextureAtlas};
-use crate::vpk::path::VpkPath;
-use crate::vpk::Vpk;
 
-mod asset;
-mod bsp;
 mod display_list;
-mod file;
 mod texture_atlas;
-mod transmute_utils;
-mod vpk;
 
 #[derive(Clone, Copy)]
 struct Vertex {
@@ -243,7 +238,7 @@ fn main() -> Result<()> {
 
     // Scan visibility data.
     for (src_index, cluster) in bsp.visibility().iter_clusters().enumerate() {
-        let _src_index = ClusterIndex(src_index);
+        let _src_index = bsp::ClusterIndex(src_index);
         for _visible_cluster in cluster.iter_visible_clusters() {
             // todo
         }
