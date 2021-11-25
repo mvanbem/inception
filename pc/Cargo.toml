@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "bsp-loader-gl",
+    "inception-pack",
 ]
 
 [profile.release]

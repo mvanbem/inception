@@ -1,5 +1,3 @@
-/target/
-*.dat
-*.dll
-*.png
-*.tpl
+/build/
+/gc_wii/target/
+/pc/target/

@@ -1,5 +1,4 @@
 [workspace]
 members = [
     "bsp-loader-gx",
-    "ogc-sys",
 ]

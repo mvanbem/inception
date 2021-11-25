@@ -1,7 +1,8 @@
 #![deny(unsafe_op_in_unsafe_fn)]
+#![no_std]
 
-use std::mem::{align_of, size_of};
-use std::slice::from_raw_parts;
+use core::mem::{align_of, size_of};
+use core::slice::from_raw_parts;
 
 fn is_aligned<T>(ptr: *const T) -> bool {
     (ptr as usize) % align_of::<T>() == 0

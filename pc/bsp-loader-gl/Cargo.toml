@@ -14,7 +14,8 @@ memmap = "0.7"
 nalgebra-glm = "0.15"
 nom = "7"
 png = "0.17"
-recursive-iter = { path = "../recursive-iter" }
-source-reader = { path = "../source-reader" }
+recursive-iter = { path = "../../shared/recursive-iter" }
+source-reader = { path = "../../shared/source-reader" }
+texture-atlas = { path = "../../shared/texture-atlas" }
 try-insert-ext = "0.1"
 zip = "0.5"

@@ -20,3 +20,4 @@ derive_more = "0.99"
 libc = "0.2"
 libm = "0.2"
 ogc-sys = { path = "../ogc-sys", default-features = false }
+fully-occupied = { path = "../../shared/fully-occupied" }

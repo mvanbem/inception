@@ -1,7 +1,8 @@
 [package]
-name = "source-reader"
+name = "inception-pack"
 version = "0.1.0"
 edition = "2021"
+description = "Packs Source engine assets for use with Inception."
 license = "MIT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -9,10 +10,9 @@ license = "MIT"
 [dependencies]
 anyhow = "1"
 byteorder = "1"
-fully-occupied = { path = "../fully-occupied" }
+clap = "2"
 memmap = "0.7"
 nalgebra-glm = "0.15"
-nom = "7"
-recursive-iter = { path = "../recursive-iter" }
+source-reader = { path = "../../shared/source-reader" }
+texture-atlas = { path = "../../shared/texture-atlas" }
 try-insert-ext = "0.1"
-zip = "0.5"

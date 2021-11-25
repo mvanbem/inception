@@ -10,8 +10,8 @@
 		},
 		"rust-analyzer.checkOnSave.allTargets": false,
 		"rust-analyzer.linkedProjects": [
-			"Cargo.toml",
-			"powerpc/Cargo.toml",
+			"gc_wii/Cargo.toml",
+			"pc/Cargo.toml",
 		],
 	}
 }

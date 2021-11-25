@@ -27,13 +27,14 @@ mod visibility;
 #[repr(align(32))]
 struct Align32;
 
-static LIGHTMAP_DATA: &[u8] = include_bytes_align_as!(Align32, "../assets/lightmap_atlas_cmpr.tpl");
-static POSITION_DATA: &[u8] = include_bytes_align_as!(Align32, "../assets/position_data.dat");
-static TEXCOORD_DATA: &[u8] = include_bytes_align_as!(Align32, "../assets/texcoord_data.dat");
-static DISPLAY_LISTS_DATA: &[u8] = include_bytes_align_as!(Align32, "../assets/display_lists.dat");
-static BSP_NODE_DATA: &[u8] = include_bytes_align!(4, "../assets/bsp_nodes.dat");
-static BSP_LEAF_DATA: &[u8] = include_bytes_align!(2, "../assets/bsp_leaves.dat");
-static VISIBILITY_DATA: &[u8] = include_bytes_align_as!(u32, "../assets/vis.dat");
+static LIGHTMAP_DATA: &[u8] = include_bytes_align_as!(Align32, "../../../build/lightmap_cmpr.tpl");
+static POSITION_DATA: &[u8] = include_bytes_align_as!(Align32, "../../../build/position_data.dat");
+static TEXCOORD_DATA: &[u8] = include_bytes_align_as!(Align32, "../../../build/texcoord_data.dat");
+static DISPLAY_LISTS_DATA: &[u8] =
+    include_bytes_align_as!(Align32, "../../../build/display_lists.dat");
+static BSP_NODE_DATA: &[u8] = include_bytes_align!(4, "../../../build/bsp_nodes.dat");
+static BSP_LEAF_DATA: &[u8] = include_bytes_align!(2, "../../../build/bsp_leaves.dat");
+static VISIBILITY_DATA: &[u8] = include_bytes_align_as!(u32, "../../../build/vis.dat");
 
 static XFB: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 static DO_COPY: AtomicBool = AtomicBool::new(false);
