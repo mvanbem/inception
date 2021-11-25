@@ -166,7 +166,7 @@ impl Asset for Vmt {
                 }
                 bail!("patch material without include parameter")
             }
-            "UnlitGeneric" | "WorldVertexTransition" => Shader::Unsupported,
+            "UnlitGeneric" | "Water" | "WorldVertexTransition" => Shader::Unsupported,
             _ => panic!("unexpected shader: {}", root.name),
         };
 

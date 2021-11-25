@@ -188,7 +188,7 @@ impl RgbU8TextureAtlas {
                 height *= 2;
             }
 
-            if width > 2048 {
+            if width > 1024 {
                 panic!("unable to bake atlas within the size limit");
             }
         }

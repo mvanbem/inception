@@ -37,7 +37,7 @@ pub fn display_canonical(inner: &str) -> impl Display + '_ {
 //
 // # Canonical form
 // All ASCII letters are lowercase. Forward slashes may be present, but not backslashes.
-#[derive(PartialEq, Eq, Hash)]
+#[derive(PartialEq, PartialOrd, Eq, Ord, Hash)]
 #[repr(transparent)]
 pub struct CanonicalPath {
     inner: str,

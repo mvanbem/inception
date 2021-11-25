@@ -1,14 +1,15 @@
 #!/bin/bash
 set -e
 
-rm -rf build
+rm -rf build/*
 
 echo === Running inception-pack ===
 pushd pc
 
 cargo run -p inception-pack --release -- \
     --hl2-base ~/.steam/steam/steamapps/common/Half-Life\ 2/hl2 \
-    --dst ../build
+    --dst ../build \
+    "$@"
 
 popd
 
@@ -21,7 +22,7 @@ mv lightmap{,_cmpr}.tpl
 rm lightmap.h
 
 gxtexconv -i lightmap.png colfmt=6
-mv lightmap{,rgba}.tpl
+mv lightmap{,_rgba}.tpl
 rm lightmap.h
 
 popd

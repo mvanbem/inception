@@ -30,13 +30,6 @@ pub fn convert_vertex(
         + tex_info.lightmap_vecs[1][2] * vertex.z
         + tex_info.lightmap_vecs[1][3]
         - face.lightmap_texture_mins_in_luxels[1] as f32;
-    if patch_s < 0.0
-        || patch_s > face.lightmap_texture_size_in_luxels[0] as f32
-        || patch_t < 0.0
-        || patch_t > face.lightmap_texture_size_in_luxels[1] as f32
-    {
-        panic!("lightmap coord out of range: ({}, {})", patch_s, patch_t);
-    }
     let (patch_s, patch_t) = if lightmap_metadata.is_flipped {
         (patch_t, patch_s)
     } else {

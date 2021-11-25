@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::fmt::{self, Display, Formatter};
 
 use crate::file::canonical_path::{display_canonical, CanonicalPath, CanonicalPathBuf};
@@ -62,5 +63,17 @@ impl VpkPath {
 impl Display for VpkPath {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(f, "{}", self.path)
+    }
+}
+
+impl Ord for VpkPath {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.path.cmp(&other.path)
+    }
+}
+
+impl PartialOrd for VpkPath {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.path.partial_cmp(&other.path)
     }
 }

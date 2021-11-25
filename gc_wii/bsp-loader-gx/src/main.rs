@@ -6,10 +6,12 @@
 extern crate alloc;
 
 use core::ffi::c_void;
-use core::mem::{zeroed, MaybeUninit};
+use core::mem::zeroed;
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
+use alloc::vec::Vec;
+use fully_occupied::{extract_slice, FullyOccupied};
 use ogc_sys::*;
 
 use crate::shaders::flat_vertex_color::FLAT_VERTEX_COLOR_SHADER;
@@ -24,28 +26,73 @@ mod shader;
 mod shaders;
 mod visibility;
 
-#[repr(align(32))]
-struct Align32;
-
-static LIGHTMAP_DATA: &[u8] = include_bytes_align_as!(Align32, "../../../build/lightmap_cmpr.tpl");
-static POSITION_DATA: &[u8] = include_bytes_align_as!(Align32, "../../../build/position_data.dat");
-static TEXCOORD_DATA: &[u8] = include_bytes_align_as!(Align32, "../../../build/texcoord_data.dat");
-static DISPLAY_LISTS_DATA: &[u8] =
-    include_bytes_align_as!(Align32, "../../../build/display_lists.dat");
+static LIGHTMAP_DATA: &[u8] = include_bytes_align!(32, "../../../build/lightmap_cmpr.tpl");
+static POSITION_DATA: &[u8] = include_bytes_align!(32, "../../../build/position_data.dat");
+static LIGHTMAP_COORD_DATA: &[u8] =
+    include_bytes_align!(32, "../../../build/lightmap_coord_data.dat");
+static TEXTURE_COORD_DATA: &[u8] =
+    include_bytes_align!(32, "../../../build/texture_coord_data.dat");
+static DISPLAY_LISTS_DATA: &[u8] = include_bytes_align!(32, "../../../build/display_lists.dat");
 static BSP_NODE_DATA: &[u8] = include_bytes_align!(4, "../../../build/bsp_nodes.dat");
 static BSP_LEAF_DATA: &[u8] = include_bytes_align!(2, "../../../build/bsp_leaves.dat");
 static VISIBILITY_DATA: &[u8] = include_bytes_align_as!(u32, "../../../build/vis.dat");
+static TEXTURE_TABLE_DATA: &[u8] = include_bytes_align_as!(u32, "../../../build/texture_table.dat");
+static TEXTURE_DATA: &[u8] = include_bytes_align!(32, "../../../build/texture_data.dat");
 
 static XFB: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 static DO_COPY: AtomicBool = AtomicBool::new(false);
 
-unsafe fn display_list_for_cluster(cluster: u16) -> &'static [u8] {
-    unsafe {
-        let index_base = DISPLAY_LISTS_DATA.as_ptr() as *const u32;
-        let offset = *index_base.offset(2 * cluster as isize) as usize;
-        let size = *index_base.offset(2 * cluster as isize + 1) as usize;
-        &DISPLAY_LISTS_DATA[offset..offset + size]
-    }
+#[repr(C)]
+struct FirstDisplayListEntry {
+    second_index_start_offset: usize,
+    second_index_end_offset: usize,
+}
+
+unsafe impl FullyOccupied for FirstDisplayListEntry {}
+
+#[repr(C)]
+struct SecondDisplayListEntry {
+    texture_index: usize,
+    display_list_start_offset: usize,
+    display_list_end_offset: usize,
+}
+
+unsafe impl FullyOccupied for SecondDisplayListEntry {}
+
+struct TextureDisplayList {
+    texture_index: usize,
+    display_list: &'static [u8],
+}
+
+fn iter_display_lists_for_cluster(cluster: u16) -> impl Iterator<Item = TextureDisplayList> {
+    let first_entry = &extract_slice::<FirstDisplayListEntry>(DISPLAY_LISTS_DATA)[cluster as usize];
+    extract_slice::<SecondDisplayListEntry>(
+        &DISPLAY_LISTS_DATA
+            [first_entry.second_index_start_offset..first_entry.second_index_end_offset],
+    )
+    .iter()
+    .map(|second_entry| TextureDisplayList {
+        texture_index: second_entry.texture_index,
+        display_list: &DISPLAY_LISTS_DATA
+            [second_entry.display_list_start_offset..second_entry.display_list_end_offset],
+    })
+}
+
+#[repr(C)]
+struct TextureTableEntry {
+    width: u16,
+    height: u16,
+    mip_count: u8,
+    _padding1: u8,
+    _padding2: u16,
+    start_offset: usize,
+    end_offset: usize,
+}
+
+unsafe impl FullyOccupied for TextureTableEntry {}
+
+fn texture_table() -> &'static [TextureTableEntry] {
+    extract_slice::<TextureTableEntry>(TEXTURE_TABLE_DATA)
 }
 
 #[repr(C)]
@@ -78,27 +125,77 @@ unsafe fn traverse_bsp(pos: &guVector) -> *const BspLeaf {
     }
 }
 
+#[cfg(feature = "wii")]
+fn get_widescreen_setting() -> bool {
+    unsafe { CONF_GetAspectRatio() != 0 }
+}
+
+#[cfg(not(feature = "wii"))]
+fn get_widescreen_setting() -> bool {
+    false
+}
+
 #[start]
 fn main(_argc: isize, _argv: *const *const u8) -> isize {
     unsafe {
         let (width, height) = init_hardware();
 
-        let visibility = Visibility::new(VISIBILITY_DATA.as_ptr());
-
-        let mut texobj = MaybeUninit::uninit();
-        GX_InitTexObj(
-            texobj.as_mut_ptr(),
-            LIGHTMAP_DATA.as_ptr().offset(0x40) as *mut c_void,
-            1024,
-            1024,
-            GX_TF_CMPR as u8,
-            // GX_TF_RGBA8 as u8,
-            GX_CLAMP as u8,
-            GX_CLAMP as u8,
-            GX_FALSE as u8,
+        // Configure a texture object for the lightmap.
+        let mut lightmap_tpl = zeroed::<TPLFile>();
+        assert_eq!(
+            TPL_OpenTPLFromMemory(
+                &mut lightmap_tpl,
+                LIGHTMAP_DATA.as_ptr() as *mut c_void,
+                LIGHTMAP_DATA.len() as u32
+            ),
+            1,
         );
-        let texobj = texobj.assume_init_mut();
-        GX_LoadTexObj(texobj, GX_TEXMAP0 as u8);
+        let mut lightmap_texobj = zeroed::<GXTexObj>();
+        assert_eq!(
+            TPL_GetTexture(&mut lightmap_tpl, 0, &mut lightmap_texobj),
+            0,
+        );
+        GX_LoadTexObj(&mut lightmap_texobj, GX_TEXMAP0 as u8);
+
+        // Set up texture objects for all other textures.
+        let base_map_texobjs: Vec<GXTexObj> = texture_table()
+            .iter()
+            .map(|entry| {
+                let mut texobj = zeroed::<GXTexObj>();
+                GX_InitTexObj(
+                    &mut texobj,
+                    TEXTURE_DATA[entry.start_offset..entry.end_offset].as_ptr() as *mut c_void,
+                    entry.width,
+                    entry.height,
+                    GX_TF_CMPR as u8,
+                    GX_REPEAT as u8,
+                    GX_REPEAT as u8,
+                    if entry.mip_count > 0 {
+                        GX_TRUE
+                    } else {
+                        GX_FALSE
+                    } as u8,
+                );
+                GX_InitTexObjLOD(
+                    &mut texobj,
+                    if entry.mip_count > 0 {
+                        GX_LIN_MIP_LIN
+                    } else {
+                        GX_LINEAR
+                    } as u8,
+                    GX_LINEAR as u8,
+                    0.0,
+                    (entry.mip_count - 1) as f32,
+                    0.0,
+                    GX_ENABLE as u8,
+                    GX_ENABLE as u8,
+                    GX_ANISO_4 as u8,
+                );
+                texobj
+            })
+            .collect();
+
+        let visibility = Visibility::new(VISIBILITY_DATA.as_ptr());
 
         let mut game_state = GameState {
             pos: guVector {
@@ -109,6 +206,7 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
             yaw: core::f32::consts::PI,
             pitch: 0.0,
             inverted_pitch_control: false,
+            widescreen: get_widescreen_setting(),
         };
 
         let mut last_frame_timers = zeroed::<FrameTimers>();
@@ -122,9 +220,7 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
                 prepare_main_draw(width, height, &game_state, &mut proj, &mut view);
             });
             let (draw_calls_elapsed, view_cluster) = Timer::time_with_result(|| {
-                let view_cluster = do_main_draw(&game_state.pos, visibility);
-                GX_Flush();
-                view_cluster
+                do_main_draw(&game_state.pos, visibility, &base_map_texobjs)
             });
             let debug_draw_elapsed = Timer::time(|| {
                 do_debug_draw(
@@ -160,6 +256,17 @@ struct GameState {
     yaw: f32,
     pitch: f32,
     inverted_pitch_control: bool,
+    widescreen: bool,
+}
+
+impl GameState {
+    fn widescreen_factor(&self) -> f32 {
+        if self.widescreen {
+            4.0 / 3.0
+        } else {
+            1.0
+        }
+    }
 }
 
 pub struct Timer {
@@ -242,16 +349,19 @@ fn prepare_main_draw(
         GX_ClearVtxDesc();
         GX_SetVtxDesc(GX_VA_POS as u8, GX_INDEX16 as u8);
         GX_SetVtxDesc(GX_VA_TEX0 as u8, GX_INDEX16 as u8);
+        GX_SetVtxDesc(GX_VA_TEX1 as u8, GX_INDEX16 as u8);
         GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
         GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
+        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX1, GX_TEX_ST, GX_F32, 0);
         GX_SetArray(GX_VA_POS, POSITION_DATA.as_ptr() as *mut _, 12);
-        GX_SetArray(GX_VA_TEX0, TEXCOORD_DATA.as_ptr() as *mut _, 8);
+        GX_SetArray(GX_VA_TEX0, LIGHTMAP_COORD_DATA.as_ptr() as *mut _, 8);
+        GX_SetArray(GX_VA_TEX1, TEXTURE_COORD_DATA.as_ptr() as *mut _, 8);
         GX_InvVtxCache();
 
         guPerspective(
             proj.as_mut_ptr(),
             90.0,
-            width as f32 / height as f32,
+            width as f32 / height as f32 * game_state.widescreen_factor(),
             1.0,
             5000.0,
         );
@@ -295,7 +405,7 @@ fn prepare_main_draw(
     }
 }
 
-fn do_main_draw(pos: &guVector, visibility: Visibility) -> i16 {
+fn do_main_draw(pos: &guVector, visibility: Visibility, base_map_texobjs: &[GXTexObj]) -> i16 {
     unsafe {
         LIGHTMAPPED_SHADER.apply();
 
@@ -310,22 +420,30 @@ fn do_main_draw(pos: &guVector, visibility: Visibility) -> i16 {
                 .iter_visible_clusters()
                 .map(|cluster| cluster.0 as u16)
             {
-                let display_list = display_list_for_cluster(cluster);
-                if display_list.len() > 0 {
-                    GX_CallDispList(
-                        display_list.as_ptr() as *mut c_void,
-                        display_list.len() as u32,
+                for entry in iter_display_lists_for_cluster(cluster) {
+                    GX_LoadTexObj(
+                        &base_map_texobjs[entry.texture_index] as *const GXTexObj as *mut GXTexObj,
+                        GX_TEXMAP1 as u8,
                     );
+                    GX_CallDispList(
+                        entry.display_list.as_ptr() as *mut c_void,
+                        entry.display_list.len() as u32,
+                    );
+                    GX_Flush();
                 }
             }
         } else {
             for cluster in 0..visibility.num_clusters() as u16 {
-                let display_list = display_list_for_cluster(cluster);
-                if display_list.len() > 0 {
-                    GX_CallDispList(
-                        display_list.as_ptr() as *mut c_void,
-                        display_list.len() as u32,
+                for entry in iter_display_lists_for_cluster(cluster) {
+                    GX_LoadTexObj(
+                        &base_map_texobjs[entry.texture_index] as *const GXTexObj as *mut GXTexObj,
+                        GX_TEXMAP1 as u8,
                     );
+                    GX_CallDispList(
+                        entry.display_list.as_ptr() as *mut c_void,
+                        entry.display_list.len() as u32,
+                    );
+                    GX_Flush();
                 }
             }
         }

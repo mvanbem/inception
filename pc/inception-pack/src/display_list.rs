@@ -8,16 +8,13 @@ pub struct DisplayListOffset {
     pub size: NonZeroU32,
 }
 
+#[derive(Default)]
 pub struct DisplayListBuilder {
     data: Vec<u8>,
 }
 
 impl DisplayListBuilder {
     pub const TRIANGLES: u8 = 0x90;
-
-    pub fn new() -> Self {
-        DisplayListBuilder { data: Vec::new() }
-    }
 
     pub fn build_batch(&mut self, primitive: u8) -> BatchBuilder {
         BatchBuilder::new(&mut self.data, primitive)
