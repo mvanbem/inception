@@ -2,88 +2,33 @@ use crate::gx::*;
 use crate::shader::*;
 
 pub static LIGHTMAPPED_SHADER: Shader = Shader {
-    stages: [
-        Some(TevStage {
-            color_in: [
-                TevColorIn::Constant0,
-                TevColorIn::Constant0,
-                TevColorIn::Constant0,
-                TevColorIn::TexColor,
-            ],
-            color_op: TevOp::Add,
-            color_bias: TevBias::Zero,
-            color_scale: TevScale::K1,
-            color_clamp: false,
-            color_dst: TevReg::Prev,
-            alpha_in: [
-                TevAlphaIn::Constant0,
-                TevAlphaIn::Constant0,
-                TevAlphaIn::Constant0,
-                TevAlphaIn::Constant0,
-            ],
-            alpha_op: TevOp::Add,
-            alpha_bias: TevBias::Zero,
-            alpha_scale: TevScale::K1,
-            alpha_clamp: false,
-            alpha_dst: TevReg::Prev,
-            tex_coord: TevTexCoord::TexCoord0,
-            tex_map: TevTexMap::TEXMAP0,
-            channel: TevChannel::Null,
-        }),
-        Some(TevStage {
-            color_in: [
-                TevColorIn::Constant0,
+    stages: tev_builder()
+        .add_stage(
+            TevStage::color_only(TevStageColor::just(TevColorIn::TexColor))
+                .with_tex_coord(TevTexCoord::TexCoord0)
+                .with_tex_map(TevTexMap::TEXMAP0),
+        )
+        .add_stage(
+            TevStage::color_only(TevStageColor::mul(
                 TevColorIn::PrevColor,
                 TevColorIn::TexColor,
-                TevColorIn::Constant0,
-            ],
-            color_op: TevOp::Add,
-            color_bias: TevBias::Zero,
-            color_scale: TevScale::K1,
-            color_clamp: false,
-            color_dst: TevReg::Prev,
-            alpha_in: [
-                TevAlphaIn::Constant0,
-                TevAlphaIn::Constant0,
-                TevAlphaIn::Constant0,
-                TevAlphaIn::Constant0,
-            ],
-            alpha_op: TevOp::Add,
-            alpha_bias: TevBias::Zero,
-            alpha_scale: TevScale::K1,
-            alpha_clamp: false,
-            alpha_dst: TevReg::Prev,
-            tex_coord: TevTexCoord::TexCoord1,
-            tex_map: TevTexMap::TEXMAP1,
-            channel: TevChannel::Null,
-        }),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    ],
+            ))
+            .with_tex_coord(TevTexCoord::TexCoord1)
+            .with_tex_map(TevTexMap::TEXMAP1),
+        )
+        .build(),
     num_chans: 0,
     tex_gens: [
-        Some(TexGen {
-            type_: TexGenType::Mtx2x4,
-            src: TexGenSrc::Tex0,
-            mtx_index: TexMtxIndex::IDENTITY,
-        }),
-        Some(TexGen {
-            type_: TexGenType::Mtx2x4,
-            src: TexGenSrc::Tex1,
-            mtx_index: TexMtxIndex::IDENTITY,
-        }),
+        Some(TexGen::new(
+            TexGenType::Mtx2x4,
+            TexGenSrc::Tex0,
+            TexMtxIndex::IDENTITY,
+        )),
+        Some(TexGen::new(
+            TexGenType::Mtx2x4,
+            TexGenSrc::Tex1,
+            TexMtxIndex::IDENTITY,
+        )),
         None,
         None,
         None,
@@ -91,4 +36,5 @@ pub static LIGHTMAPPED_SHADER: Shader = Shader {
         None,
         None,
     ],
+    swap_table: [[0, 1, 2, 3]; 4],
 };

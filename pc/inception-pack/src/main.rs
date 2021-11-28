@@ -10,6 +10,7 @@ use anyhow::{bail, Context, Result};
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt, WriteBytesExt};
 use clap::{clap_app, crate_authors, crate_description, crate_version};
 use memmap::Mmap;
+use nalgebra_glm::{make_vec3, reflect, vec3, vec4, Mat3, Mat3x4, Mat4};
 use source_reader::asset::vmt::Shader;
 use source_reader::asset::vtf::{ImageData, ImageFormat};
 use source_reader::asset::AssetLoader;
@@ -20,13 +21,16 @@ use source_reader::geometry::convert_vertex;
 use source_reader::lightmap::{build_lightmaps, Lightmap};
 use source_reader::vpk::path::VpkPath;
 use source_reader::vpk::Vpk;
+use texture_atlas::RgbU8Image;
 use try_insert_ext::EntryInsertExt;
 
 use crate::counter::U16Counter;
 use crate::display_list::DisplayListBuilder;
+use crate::record_writer::RecordWriter;
 
 mod counter;
 mod display_list;
+mod record_writer;
 
 fn main() -> Result<()> {
     let matches = clap_app!(app =>
@@ -58,9 +62,10 @@ fn main() -> Result<()> {
     let lightmap = build_lightmaps(bsp)?;
     let ProcessedGeometry {
         position_data,
+        normal_data,
         lightmap_coord_data,
         texture_coord_data,
-        cluster_texture_display_lists,
+        display_lists_by_cluster_texture_plane,
         texture_ids,
         texture_paths,
     } = process_geometry(bsp, &lightmap, &asset_loader)?;
@@ -69,11 +74,18 @@ fn main() -> Result<()> {
     create_dir_all(dst_path)?;
 
     write_lightmap(dst_path, lightmap)?;
+    write_debug_env_maps(dst_path)?;
     write_textures(dst_path, &asset_loader, &texture_paths)?;
     write_position_data(dst_path, position_data)?;
+    write_normal_data(dst_path, normal_data)?;
     write_lightmap_coord_data(dst_path, lightmap_coord_data)?;
     write_texture_coord_data(dst_path, texture_coord_data)?;
-    write_display_lists(dst_path, texture_ids, cluster_texture_display_lists)?;
+    write_display_lists(
+        bsp,
+        dst_path,
+        texture_ids,
+        display_lists_by_cluster_texture_plane,
+    )?;
     write_bsp_nodes(dst_path, bsp)?;
     write_bsp_leaves(dst_path, bsp)?;
     write_vis(dst_path, bsp)?;
@@ -83,9 +95,10 @@ fn main() -> Result<()> {
 
 struct ProcessedGeometry {
     position_data: Vec<u8>,
+    normal_data: Vec<u8>,
     lightmap_coord_data: Vec<u8>,
     texture_coord_data: Vec<u8>,
-    cluster_texture_display_lists: Vec<BTreeMap<VpkPath, Vec<u8>>>,
+    display_lists_by_cluster_texture_plane: Vec<BTreeMap<VpkPath, BTreeMap<u16, Vec<u8>>>>,
     texture_ids: HashMap<VpkPath, u16>,
     texture_paths: Vec<VpkPath>,
 }
@@ -96,18 +109,22 @@ fn process_geometry(
     asset_loader: &AssetLoader,
 ) -> Result<ProcessedGeometry> {
     let mut position_indices = HashMap::new();
+    let mut normal_indices = HashMap::new();
     let mut lightmap_coord_indices = HashMap::new();
     let mut texture_coord_indices = HashMap::new();
     let mut position_counter = U16Counter::new();
+    let mut normal_counter = U16Counter::new();
     let mut lightmap_coord_counter = U16Counter::new();
     let mut texture_coord_counter = U16Counter::new();
     let mut position_data = Vec::new();
+    let mut normal_data = Vec::new();
     let mut lightmap_coord_data = Vec::new();
     let mut texture_coord_data = Vec::new();
-    let mut cluster_texture_display_lists: Vec<HashMap<VpkPath, DisplayListBuilder>> =
-        repeat_with(|| HashMap::new())
-            .take(bsp.leaves().len())
-            .collect::<Vec<_>>();
+    let mut display_lists_by_cluster_texture_plane: Vec<
+        BTreeMap<VpkPath, BTreeMap<u16, DisplayListBuilder>>,
+    > = repeat_with(|| BTreeMap::new())
+        .take(bsp.leaves().len())
+        .collect::<Vec<_>>();
     let mut texture_paths = Vec::new();
     let mut texture_ids = HashMap::new();
     for leaf in bsp.iter_worldspawn_leaves() {
@@ -161,15 +178,20 @@ fn process_geometry(
                     texture_paths.push(base_texture.path().clone());
                     index
                 });
-            let mut batch_builder = cluster_texture_display_lists[leaf.cluster as usize]
+            let display_lists_by_plane = display_lists_by_cluster_texture_plane
+                [leaf.cluster as usize]
                 .entry(base_texture.path().clone())
-                .or_default()
-                .build_batch(DisplayListBuilder::TRIANGLES);
+                .or_default();
+            let batch_builder = display_lists_by_plane
+                .entry(face.plane_num)
+                .or_insert_with(|| DisplayListBuilder::new(DisplayListBuilder::TRIANGLES));
 
             let mut first_position_index = None;
+            let mut first_normal_index = None;
             let mut first_lightmap_coord_index = None;
             let mut first_texture_coord_index = None;
             let mut prev_position_index = None;
+            let mut prev_normal_index = None;
             let mut prev_lightmap_coord_index = None;
             let mut prev_texture_coord_index = None;
             for vertex_index in bsp.iter_vertex_indices_from_face(face) {
@@ -192,6 +214,12 @@ fn process_geometry(
                         write_floats(&mut position_data, &vertex.position)?;
                         Ok(position_counter.next())
                     })?;
+                let normal_index = *normal_indices
+                    .entry(hashable_float(&vertex.normal))
+                    .or_try_insert_with(|| -> Result<_> {
+                        write_floats(&mut normal_data, &vertex.normal)?;
+                        Ok(normal_counter.next())
+                    })?;
                 let lightmap_coord_index = *lightmap_coord_indices
                     .entry(hashable_float(&vertex.lightmap_coord))
                     .or_try_insert_with(|| -> Result<_> {
@@ -207,46 +235,63 @@ fn process_geometry(
 
                 if first_position_index.is_none() {
                     first_position_index = Some(position_index);
+                    first_normal_index = Some(normal_index);
                     first_lightmap_coord_index = Some(lightmap_coord_index);
                     first_texture_coord_index = Some(texture_coord_index);
                 }
 
                 if prev_position_index.is_some() {
-                    let mut data = [0; 18];
+                    let mut data = [0; 24];
                     let mut w = &mut data[..];
                     w.write_u16::<BigEndian>(first_position_index.unwrap())?;
+                    w.write_u16::<BigEndian>(first_normal_index.unwrap())?;
                     w.write_u16::<BigEndian>(first_lightmap_coord_index.unwrap())?;
                     w.write_u16::<BigEndian>(first_texture_coord_index.unwrap())?;
                     w.write_u16::<BigEndian>(prev_position_index.unwrap())?;
+                    w.write_u16::<BigEndian>(prev_normal_index.unwrap())?;
                     w.write_u16::<BigEndian>(prev_lightmap_coord_index.unwrap())?;
                     w.write_u16::<BigEndian>(prev_texture_coord_index.unwrap())?;
                     w.write_u16::<BigEndian>(position_index)?;
+                    w.write_u16::<BigEndian>(normal_index)?;
                     w.write_u16::<BigEndian>(lightmap_coord_index)?;
                     w.write_u16::<BigEndian>(texture_coord_index)?;
                     batch_builder.emit_vertices(3, &data);
                 }
                 prev_position_index = Some(position_index);
+                prev_normal_index = Some(normal_index);
                 prev_lightmap_coord_index = Some(lightmap_coord_index);
                 prev_texture_coord_index = Some(texture_coord_index);
             }
         }
     }
 
-    let cluster_texture_display_lists = cluster_texture_display_lists
+    // Build all of the display list builders.
+    let display_lists_by_cluster_texture_plane = display_lists_by_cluster_texture_plane
         .into_iter()
-        .map(|cluster| {
-            cluster
+        .map(|display_lists_by_texture_plane| {
+            display_lists_by_texture_plane
                 .into_iter()
-                .map(|(path, builder)| (path, builder.build()))
-                .collect()
+                .map(|(texture, display_lists_by_plane)| {
+                    (
+                        texture,
+                        display_lists_by_plane
+                            .into_iter()
+                            .map(|(plane, display_list)| (plane, display_list.build()))
+                            .filter(|(_, x)| !x.is_empty())
+                            .collect::<BTreeMap<_, _>>(),
+                    )
+                })
+                .filter(|(_, x)| !x.is_empty())
+                .collect::<BTreeMap<_, _>>()
         })
         .collect();
 
     Ok(ProcessedGeometry {
         position_data,
+        normal_data,
         lightmap_coord_data,
         texture_coord_data,
-        cluster_texture_display_lists,
+        display_lists_by_cluster_texture_plane,
         texture_ids,
         texture_paths,
     })
@@ -301,6 +346,54 @@ fn write_lightmap(dst_path: &Path, lightmap: Lightmap) -> Result<()> {
     lightmap
         .image
         .write_to_png(dst_path.join("lightmap.png").to_str().unwrap())?;
+    Ok(())
+}
+
+fn write_debug_env_maps(dst_path: &Path) -> Result<()> {
+    let mut data = Vec::new();
+    for y in 0..256 {
+        for x in 0..256 {
+            let s = (x as f32 - 127.5) / 128.0;
+            let t = (y as f32 - 127.5) / 128.0;
+            let s2t2 = s * s + t * t;
+            let rz = (1.0 - s2t2) / (s2t2 + 1.0);
+            if rz >= -0.1 {
+                let rx = 2.0 * s / (s2t2 + 1.0);
+                let ry = 2.0 * t / (s2t2 + 1.0);
+
+                data.push(((rx * 0.5 + 0.5) * 255.0).clamp(0.0, 255.0) as u8);
+                data.push(((ry * 0.5 + 0.5) * 255.0).clamp(0.0, 255.0) as u8);
+                data.push(((rz * 0.5 + 0.5) * 255.0).clamp(0.0, 255.0) as u8);
+            } else {
+                data.extend_from_slice(&[0, 0, 0]);
+            }
+        }
+    }
+    RgbU8Image::new(256, 256, data)
+        .write_to_png(dst_path.join("envmap_front.png").to_str().unwrap())?;
+
+    let mut data = Vec::new();
+    for y in 0..256 {
+        for x in 0..256 {
+            let s = (x as f32 - 127.5) / 128.0;
+            let t = (y as f32 - 127.5) / 128.0;
+            let s2t2 = s * s + t * t;
+            let rz = (s2t2 - 1.0) / (s2t2 + 1.0);
+            if rz <= 0.1 {
+                let rx = 2.0 * s / (s2t2 + 1.0);
+                let ry = 2.0 * t / (s2t2 + 1.0);
+
+                data.push(((rx * 0.5 + 0.5) * 255.0).clamp(0.0, 255.0) as u8);
+                data.push(((ry * 0.5 + 0.5) * 255.0).clamp(0.0, 255.0) as u8);
+                data.push(((rz * 0.5 + 0.5) * 255.0).clamp(0.0, 255.0) as u8);
+            } else {
+                data.extend_from_slice(&[0, 0, 0]);
+            }
+        }
+    }
+    RgbU8Image::new(256, 256, data)
+        .write_to_png(dst_path.join("envmap_back.png").to_str().unwrap())?;
+
     Ok(())
 }
 
@@ -381,7 +474,17 @@ fn write_textures(
             texture_table.write_u16::<BigEndian>(texture.width() as u16)?;
             texture_table.write_u16::<BigEndian>(texture.height() as u16)?;
             texture_table.write_u8(mips_written)?;
-            texture_table.write_u8(0)?;
+            texture_table.write_u8(
+                if (texture.flags() & 0x4) != 0 {
+                    0x01
+                } else {
+                    0
+                } | if (texture.flags() & 0x8) != 0 {
+                    0x02
+                } else {
+                    0
+                },
+            )?;
             texture_table.write_u16::<BigEndian>(0)?;
             texture_table.write_u32::<BigEndian>(start_offset)?;
             texture_table.write_u32::<BigEndian>(end_offset)?;
@@ -445,6 +548,13 @@ fn write_position_data(dst_path: &Path, position_data: Vec<u8>) -> Result<()> {
     Ok(())
 }
 
+fn write_normal_data(dst_path: &Path, normal_data: Vec<u8>) -> Result<()> {
+    let mut f = BufWriter::new(File::create(dst_path.join("normal_data.dat"))?);
+    f.write_all(&normal_data)?;
+    f.flush()?;
+    Ok(())
+}
+
 fn write_lightmap_coord_data(dst_path: &Path, lightmap_coord_data: Vec<u8>) -> Result<()> {
     let mut f = BufWriter::new(File::create(dst_path.join("lightmap_coord_data.dat"))?);
     f.write_all(&lightmap_coord_data)?;
@@ -460,77 +570,129 @@ fn write_texture_coord_data(dst_path: &Path, texture_coord_data: Vec<u8>) -> Res
 }
 
 fn write_display_lists(
+    bsp: Bsp,
     dst_path: &Path,
     texture_ids: HashMap<VpkPath, u16>,
-    cluster_texture_display_lists: Vec<BTreeMap<VpkPath, Vec<u8>>>,
+    display_lists_by_cluster_texture_plane: Vec<BTreeMap<VpkPath, BTreeMap<u16, Vec<u8>>>>,
 ) -> Result<()> {
-    // Build the index.
-    //
-    // struct FirstIndexEntry {
-    //     second_index_start_offset: u32,
-    //     second_index_end_offset: u32,
+    // struct DisplayListsByClusterTexturePlaneEntry {
+    //     by_texture_plane_start_index: u32,
+    //     by_texture_plane_end_index: u32,
     // }
     //
-    // struct SecondIndexEntry {
+    const DISPLAY_LISTS_BY_TEXTURE_PLANE_SIZE: u64 = 12;
+    // struct DisplayListsByTexturePlaneEntry {
     //     texture_index: u32,
+    //     by_plane_start_index: u32,
+    //     by_plane_end_index: u32,
+    // }
+    //
+    const DISPLAY_LISTS_BY_PLANE_SIZE: u64 = 156;
+    // struct DisplayListsByPlaneEntry {
+    //     plane_index: u16,
+    //     _padding: u16,
+    //     reflect_front_paraboloid: [[f32; 4]; 3],
+    //     reflect_back_paraboloid: [[f32; 4]; 3],
+    //     reflect_paraboloid_z: [[f32; 4]; 3],
     //     display_list_start_offset: u32,
     //     display_list_end_offset: u32,
     // }
-    //
-    // We already know the size the index will be, so start placing display lists there.
-    let first_index_size = 8 * cluster_texture_display_lists.len() as u32;
-    let second_index_size = 12
-        * cluster_texture_display_lists
-            .iter()
-            .map(|texture_display_lists| texture_display_lists.len() as u32)
-            .sum::<u32>();
-    let mut second_index_offset = first_index_size;
-    let padding_offset = first_index_size + second_index_size;
-    let mut display_list_offset = (padding_offset + 31) & !31;
-    let padding_len = (display_list_offset - padding_offset) as usize;
-    let mut first_index = Vec::new();
-    let mut second_index = Vec::new();
-    for texture_display_lists in &cluster_texture_display_lists {
-        // Emit a FirstIndexEntry.
-        let len = 12 * texture_display_lists.len() as u32;
-        first_index
-            .write_u32::<BigEndian>(second_index_offset)
-            .unwrap();
-        first_index
-            .write_u32::<BigEndian>(second_index_offset + len)
-            .unwrap();
-        second_index_offset += len;
 
-        for (path, display_list) in texture_display_lists {
-            // Emit a SecondIndexEntry.
+    let mut file1 = BufWriter::new(File::create(
+        dst_path.join("display_lists_by_cluster_texture_plane.dat"),
+    )?);
+    let mut file2 = RecordWriter::new(
+        BufWriter::new(File::create(
+            dst_path.join("display_lists_by_texture_plane.dat"),
+        )?),
+        DISPLAY_LISTS_BY_TEXTURE_PLANE_SIZE,
+    );
+    let mut file3 = RecordWriter::new(
+        BufWriter::new(File::create(dst_path.join("display_lists_by_plane.dat"))?),
+        DISPLAY_LISTS_BY_PLANE_SIZE,
+    );
+    let mut file4 = BufWriter::new(File::create(dst_path.join("display_lists.dat"))?);
+
+    for diplay_lists_by_texture_plane in &display_lists_by_cluster_texture_plane {
+        // Emit part of a DisplayListsByClusterTexturePlaneEntry to the first index.
+        file1.write_u32::<BigEndian>(file2.index()? as u32)?;
+
+        for (path, display_lists_by_plane) in diplay_lists_by_texture_plane {
+            // Emit part of a DisplayListsByTexturePlaneEntry to the second index.
             let texture_index = texture_ids[path] as u32;
-            second_index.write_u32::<BigEndian>(texture_index).unwrap();
+            file2.write_u32::<BigEndian>(texture_index)?;
+            file2.write_u32::<BigEndian>(file3.index()? as u32)?;
 
-            let len = display_list.len() as u32;
-            assert!(len > 0);
-            second_index
-                .write_u32::<BigEndian>(display_list_offset)
-                .unwrap();
-            second_index
-                .write_u32::<BigEndian>(display_list_offset + len)
-                .unwrap();
-            display_list_offset += len;
+            for (&plane_index, display_list) in display_lists_by_plane {
+                let plane = &bsp.planes()[plane_index as usize];
+                let normal = make_vec3(&plane.normal);
+                let reflect = reflect(&Mat4::identity(), &normal);
+                let scale_and_bias = Mat3::from_rows(&[
+                    vec3(0.5, 0.0, 0.5).transpose(),
+                    vec3(0.0, 0.5, 0.5).transpose(),
+                    vec3(0.0, 0.0, 1.0).transpose(),
+                ]);
+                let reflect_front_paraboloid = scale_and_bias
+                    * Mat3x4::from_rows(&[
+                        vec4(1.0, 0.0, 0.0, 0.0).transpose(),
+                        vec4(0.0, 1.0, 0.0, 0.0).transpose(),
+                        vec4(0.0, 0.0, 1.0, 1.0).transpose(),
+                    ])
+                    * reflect;
+                let reflect_back_paraboloid = scale_and_bias
+                    * Mat3x4::from_rows(&[
+                        vec4(1.0, 0.0, 0.0, 0.0).transpose(),
+                        vec4(0.0, 1.0, 0.0, 0.0).transpose(),
+                        vec4(0.0, 0.0, -1.0, 1.0).transpose(),
+                    ])
+                    * reflect;
+                let reflect_paraboloid_z = scale_and_bias
+                    * Mat3x4::from_rows(&[
+                        vec4(0.0, 0.0, 1.0, 0.0).transpose(),
+                        vec4(0.0, 0.0, 0.0, 0.0).transpose(),
+                        vec4(0.0, 0.0, 0.0, 1.0).transpose(),
+                    ])
+                    * reflect;
+
+                // Emit part of a DisplayListsByPlaneEntry to the third index.
+                file3.write_u16::<BigEndian>(plane_index)?;
+                file3.write_u16::<BigEndian>(0)?;
+                for row in 0..3 {
+                    for col in 0..4 {
+                        file3.write_f32::<BigEndian>(reflect_front_paraboloid[(row, col)])?;
+                    }
+                }
+                for row in 0..3 {
+                    for col in 0..4 {
+                        file3.write_f32::<BigEndian>(reflect_back_paraboloid[(row, col)])?;
+                    }
+                }
+                for row in 0..3 {
+                    for col in 0..4 {
+                        file3.write_f32::<BigEndian>(reflect_paraboloid_z[(row, col)])?;
+                    }
+                }
+                file3.write_u32::<BigEndian>(file4.stream_position()? as u32)?;
+
+                // Write the display list data to the fourth file.
+                file4.write_all(display_list)?;
+
+                // Finish the DisplayListsByPlaneEntry in the third index.
+                file3.write_u32::<BigEndian>(file4.stream_position()? as u32)?;
+            }
+
+            // Finish the DisplayListsByTexturePlaneEntry in the second index.
+            file2.write_u32::<BigEndian>(file3.index()? as u32)?;
         }
+
+        // Finish the DisplayListsByClusterTexturePlaneEntry in the first index.
+        file1.write_u32::<BigEndian>(file2.index()? as u32)?;
     }
 
-    // Write out the index followed by all display lists.
-    let mut f = BufWriter::new(File::create(dst_path.join("display_lists.dat"))?);
-    f.write_all(&first_index)?;
-    f.write_all(&second_index)?;
-    // Pad the index. It will be loaded at a 32 byte aligned address, so padding to a 32 byte
-    // boundary here ensures that all following display lists will be 32 byte aligned.
-    f.write_all(&vec![0; padding_len])?;
-    for texture_display_lists in cluster_texture_display_lists {
-        for display_list in texture_display_lists.values() {
-            f.write_all(display_list)?;
-        }
-    }
-    f.flush()?;
+    file1.flush()?;
+    file2.flush()?;
+    file3.flush()?;
+    file4.flush()?;
     Ok(())
 }
 

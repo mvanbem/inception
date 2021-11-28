@@ -2,50 +2,13 @@ use crate::gx::*;
 use crate::shader::*;
 
 pub static FLAT_VERTEX_COLOR_SHADER: Shader = Shader {
-    stages: [
-        Some(TevStage {
-            color_in: [
-                TevColorIn::Constant0,
-                TevColorIn::Constant0,
-                TevColorIn::Constant0,
-                TevColorIn::RasColor,
-            ],
-            color_op: TevOp::Add,
-            color_bias: TevBias::Zero,
-            color_scale: TevScale::K1,
-            color_clamp: false,
-            color_dst: TevReg::Prev,
-            alpha_in: [
-                TevAlphaIn::Constant0,
-                TevAlphaIn::Constant0,
-                TevAlphaIn::Constant0,
-                TevAlphaIn::Constant0,
-            ],
-            alpha_op: TevOp::Add,
-            alpha_bias: TevBias::Zero,
-            alpha_scale: TevScale::K1,
-            alpha_clamp: false,
-            alpha_dst: TevReg::Prev,
-            tex_coord: TevTexCoord::Null,
-            tex_map: TevTexMap::NULL,
-            channel: TevChannel::Color0,
-        }),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    ],
+    stages: tev_builder()
+        .add_stage(
+            TevStage::color_only(TevStageColor::just(TevColorIn::RasColor))
+                .with_channel(TevChannel::Color0),
+        )
+        .build(),
     num_chans: 1,
     tex_gens: [None; 8],
+    swap_table: [[0, 1, 2, 3]; 4],
 };

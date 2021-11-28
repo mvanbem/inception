@@ -10,6 +10,7 @@ pub struct Vtf {
     path: VpkPath,
     width: u32,
     height: u32,
+    flags: u32,
     data: Option<ImageData>,
 }
 
@@ -36,6 +37,10 @@ impl Vtf {
         self.height
     }
 
+    pub fn flags(&self) -> u32 {
+        self.flags
+    }
+
     pub fn data(&self) -> Option<&ImageData> {
         self.data.as_ref()
     }
@@ -51,7 +56,7 @@ impl Asset for Vtf {
         let header_size = r.read_u32::<LittleEndian>()?;
         let width = r.read_u16::<LittleEndian>()?;
         let height = r.read_u16::<LittleEndian>()?;
-        let _flags = r.read_i32::<LittleEndian>()?;
+        let flags = r.read_i32::<LittleEndian>()?;
         let _frames = r.read_u16::<LittleEndian>()?;
         let _first_frame = r.read_u16::<LittleEndian>()?;
         r = &r[4..];
@@ -111,6 +116,7 @@ impl Asset for Vtf {
             path: path.to_owned(),
             width: width as u32,
             height: height as u32,
+            flags: flags as u32,
             data,
         }))
     }

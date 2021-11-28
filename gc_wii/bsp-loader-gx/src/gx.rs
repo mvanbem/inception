@@ -268,3 +268,28 @@ impl TexMtxIndex {
         self.0
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PostTransformTexMtxIndex(u32);
+
+impl PostTransformTexMtxIndex {
+    pub const IDENTITY: Self = Self(125);
+    pub const DTTMTX0: Self = Self(64);
+    pub const DTTMTX1: Self = Self(67);
+    pub const DTTMTX2: Self = Self(70);
+    pub const DTTMTX3: Self = Self(73);
+    pub const DTTMTX4: Self = Self(76);
+    pub const DTTMTX5: Self = Self(79);
+    pub const DTTMTX6: Self = Self(82);
+    pub const DTTMTX7: Self = Self(85);
+    pub const DTTMTX8: Self = Self(88);
+    pub const DTTMTX9: Self = Self(91);
+
+    pub fn from_u32(value: u32) -> Self {
+        Self(value)
+    }
+
+    pub fn as_u32(self) -> u32 {
+        self.0
+    }
+}

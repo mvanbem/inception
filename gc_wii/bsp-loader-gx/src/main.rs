@@ -1,12 +1,13 @@
 #![no_std]
 #![deny(unsafe_op_in_unsafe_fn)]
+#![feature(const_fn_trait_bound)]
 #![feature(default_alloc_error_handler)]
 #![feature(start)]
 
 extern crate alloc;
 
 use core::ffi::c_void;
-use core::mem::zeroed;
+use core::mem::{zeroed, MaybeUninit};
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
@@ -14,13 +15,16 @@ use alloc::vec::Vec;
 use fully_occupied::{extract_slice, FullyOccupied};
 use ogc_sys::*;
 
+use crate::display_list_data::iter_display_lists_for_cluster;
+use crate::gx::TevReg;
 use crate::shaders::flat_vertex_color::FLAT_VERTEX_COLOR_SHADER;
-use crate::shaders::lightmapped::LIGHTMAPPED_SHADER;
+use crate::shaders::lightmapped_env_shader::LIGHTMAPPED_ENV_SHADER;
 use crate::visibility::{ClusterIndex, Visibility};
 
 #[macro_use]
 mod include_bytes_align;
 
+mod display_list_data;
 mod gx;
 mod shader;
 mod shaders;
@@ -28,66 +32,35 @@ mod visibility;
 
 static LIGHTMAP_DATA: &[u8] = include_bytes_align!(32, "../../../build/lightmap_cmpr.tpl");
 static POSITION_DATA: &[u8] = include_bytes_align!(32, "../../../build/position_data.dat");
+static NORMAL_DATA: &[u8] = include_bytes_align!(32, "../../../build/normal_data.dat");
 static LIGHTMAP_COORD_DATA: &[u8] =
     include_bytes_align!(32, "../../../build/lightmap_coord_data.dat");
 static TEXTURE_COORD_DATA: &[u8] =
     include_bytes_align!(32, "../../../build/texture_coord_data.dat");
-static DISPLAY_LISTS_DATA: &[u8] = include_bytes_align!(32, "../../../build/display_lists.dat");
 static BSP_NODE_DATA: &[u8] = include_bytes_align!(4, "../../../build/bsp_nodes.dat");
 static BSP_LEAF_DATA: &[u8] = include_bytes_align!(2, "../../../build/bsp_leaves.dat");
 static VISIBILITY_DATA: &[u8] = include_bytes_align_as!(u32, "../../../build/vis.dat");
 static TEXTURE_TABLE_DATA: &[u8] = include_bytes_align_as!(u32, "../../../build/texture_table.dat");
 static TEXTURE_DATA: &[u8] = include_bytes_align!(32, "../../../build/texture_data.dat");
+static ENV_MAP_FRONT_DATA: &[u8] = include_bytes_align!(32, "../../../build/envmap_front.tpl");
+static ENV_MAP_BACK_DATA: &[u8] = include_bytes_align!(32, "../../../build/envmap_back.tpl");
 
 static XFB: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 static DO_COPY: AtomicBool = AtomicBool::new(false);
-
-#[repr(C)]
-struct FirstDisplayListEntry {
-    second_index_start_offset: usize,
-    second_index_end_offset: usize,
-}
-
-unsafe impl FullyOccupied for FirstDisplayListEntry {}
-
-#[repr(C)]
-struct SecondDisplayListEntry {
-    texture_index: usize,
-    display_list_start_offset: usize,
-    display_list_end_offset: usize,
-}
-
-unsafe impl FullyOccupied for SecondDisplayListEntry {}
-
-struct TextureDisplayList {
-    texture_index: usize,
-    display_list: &'static [u8],
-}
-
-fn iter_display_lists_for_cluster(cluster: u16) -> impl Iterator<Item = TextureDisplayList> {
-    let first_entry = &extract_slice::<FirstDisplayListEntry>(DISPLAY_LISTS_DATA)[cluster as usize];
-    extract_slice::<SecondDisplayListEntry>(
-        &DISPLAY_LISTS_DATA
-            [first_entry.second_index_start_offset..first_entry.second_index_end_offset],
-    )
-    .iter()
-    .map(|second_entry| TextureDisplayList {
-        texture_index: second_entry.texture_index,
-        display_list: &DISPLAY_LISTS_DATA
-            [second_entry.display_list_start_offset..second_entry.display_list_end_offset],
-    })
-}
 
 #[repr(C)]
 struct TextureTableEntry {
     width: u16,
     height: u16,
     mip_count: u8,
-    _padding1: u8,
+    flags: u8,
     _padding2: u16,
     start_offset: usize,
     end_offset: usize,
 }
+
+const TEXTURE_FLAG_CLAMP_S: u8 = 0x01;
+const TEXTURE_FLAG_CLAMP_T: u8 = 0x02;
 
 unsafe impl FullyOccupied for TextureTableEntry {}
 
@@ -135,27 +108,133 @@ fn get_widescreen_setting() -> bool {
     false
 }
 
+fn load_texture_tpl(data: &[u8]) -> GXTexObj {
+    unsafe {
+        let mut tpl_file = MaybeUninit::<TPLFile>::uninit();
+        assert_eq!(
+            TPL_OpenTPLFromMemory(
+                tpl_file.as_mut_ptr(),
+                data.as_ptr() as *mut c_void,
+                data.len() as u32,
+            ),
+            1,
+        );
+        let mut tpl_file = tpl_file.assume_init();
+        let mut texobj = MaybeUninit::<GXTexObj>::uninit();
+        assert_eq!(TPL_GetTexture(&mut tpl_file, 0, texobj.as_mut_ptr()), 0);
+        texobj.assume_init()
+    }
+}
+
+struct Memalign {
+    ptr: *mut c_void,
+    _size: usize,
+}
+
+impl Memalign {
+    unsafe fn _new(align: usize, size: usize) -> Self {
+        let ptr = unsafe { libc::memalign(align, size) };
+        assert!(!ptr.is_null());
+        Self { ptr, _size: size }
+    }
+}
+
+impl Drop for Memalign {
+    fn drop(&mut self) {
+        unsafe { libc::free(self.ptr) }
+    }
+}
+
 #[start]
 fn main(_argc: isize, _argv: *const *const u8) -> isize {
     unsafe {
         let (width, height) = init_hardware();
 
         // Configure a texture object for the lightmap.
-        let mut lightmap_tpl = zeroed::<TPLFile>();
-        assert_eq!(
-            TPL_OpenTPLFromMemory(
-                &mut lightmap_tpl,
-                LIGHTMAP_DATA.as_ptr() as *mut c_void,
-                LIGHTMAP_DATA.len() as u32
-            ),
-            1,
-        );
-        let mut lightmap_texobj = zeroed::<GXTexObj>();
-        assert_eq!(
-            TPL_GetTexture(&mut lightmap_tpl, 0, &mut lightmap_texobj),
-            0,
-        );
+        let mut lightmap_texobj = load_texture_tpl(LIGHTMAP_DATA);
         GX_LoadTexObj(&mut lightmap_texobj, GX_TEXMAP0 as u8);
+
+        // Configure texture objects for the envmap.
+        let mut envmap_front_texobj = load_texture_tpl(ENV_MAP_FRONT_DATA);
+        GX_InitTexObjWrapMode(&mut envmap_front_texobj, GX_CLAMP as u8, GX_CLAMP as u8);
+        GX_LoadTexObj(&mut envmap_front_texobj, GX_TEXMAP5 as u8);
+        let mut envmap_back_texobj = load_texture_tpl(ENV_MAP_BACK_DATA);
+        GX_InitTexObjWrapMode(&mut envmap_back_texobj, GX_CLAMP as u8, GX_CLAMP as u8);
+        GX_LoadTexObj(&mut envmap_back_texobj, GX_TEXMAP6 as u8);
+
+        // // Set up full screen render to texture.
+        // let screen_texture_color_data = Memalign::new(
+        //     32,
+        //     GX_GetTexBufferSize(640, 480, GX_TF_RGBA8, GX_FALSE as u8, 0) as usize,
+        // );
+        // {
+        //     let mut screen_texture_color_texobj = zeroed::<GXTexObj>();
+        //     GX_InitTexObj(
+        //         &mut screen_texture_color_texobj,
+        //         screen_texture_color_data.ptr,
+        //         640,
+        //         480,
+        //         GX_TF_RGBA8 as u8,
+        //         GX_CLAMP as u8,
+        //         GX_CLAMP as u8,
+        //         GX_FALSE as u8,
+        //     );
+        //     GX_InitTexObjFilterMode(
+        //         &mut screen_texture_color_texobj,
+        //         GX_NEAR as u8,
+        //         GX_NEAR as u8,
+        //     );
+        //     GX_LoadTexObj(&mut screen_texture_color_texobj, GX_TEXMAP6 as u8);
+        // }
+
+        // Configure a texture object for the identity map.
+        {
+            let data = libc::memalign(32, 256 * 256 * 4);
+            let mut texels = data as *mut u8;
+            for coarse_y in 0..64 {
+                for coarse_x in 0..64 {
+                    for fine_y in 0..4 {
+                        for fine_x in 0..4 {
+                            let x = (4 * coarse_x + fine_x) as u8;
+                            let _y = (4 * coarse_y + fine_y) as u8;
+                            // A
+                            (*texels) = 0;
+                            texels = texels.offset(1);
+                            // R
+                            (*texels) = x;
+                            texels = texels.offset(1);
+                        }
+                    }
+                    for fine_y in 0..4 {
+                        for fine_x in 0..4 {
+                            let _x = (4 * coarse_x + fine_x) as u8;
+                            let y = (4 * coarse_y + fine_y) as u8;
+                            // G
+                            (*texels) = y;
+                            texels = texels.offset(1);
+                            // B
+                            (*texels) = 0;
+                            texels = texels.offset(1);
+                        }
+                    }
+                }
+            }
+            DCFlushRange(data, 256 * 256 * 4);
+
+            let mut texobj = zeroed::<GXTexObj>();
+            GX_InitTexObj(
+                &mut texobj,
+                data,
+                256,
+                256,
+                GX_TF_RGBA8 as u8,
+                GX_CLAMP as u8,
+                GX_CLAMP as u8,
+                GX_FALSE as u8,
+            );
+            GX_InitTexObjFilterMode(&mut texobj, GX_LINEAR as u8, GX_LINEAR as u8);
+            GX_LoadTexObj(&mut texobj, GX_TEXMAP7 as u8);
+        }
 
         // Set up texture objects for all other textures.
         let base_map_texobjs: Vec<GXTexObj> = texture_table()
@@ -168,8 +247,16 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
                     entry.width,
                     entry.height,
                     GX_TF_CMPR as u8,
-                    GX_REPEAT as u8,
-                    GX_REPEAT as u8,
+                    if (entry.flags & TEXTURE_FLAG_CLAMP_S) != 0 {
+                        GX_CLAMP
+                    } else {
+                        GX_REPEAT
+                    } as u8,
+                    if (entry.flags & TEXTURE_FLAG_CLAMP_T) != 0 {
+                        GX_CLAMP
+                    } else {
+                        GX_REPEAT
+                    } as u8,
                     if entry.mip_count > 0 {
                         GX_TRUE
                     } else {
@@ -216,11 +303,12 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
             let game_logic_elapsed = Timer::time(|| {
                 do_game_logic(&mut game_state);
             });
-            let draw_setup_elapsed = Timer::time(|| {
+            let (main_draw_elapsed, view_cluster) = Timer::time_with_result(|| {
                 prepare_main_draw(width, height, &game_state, &mut proj, &mut view);
-            });
-            let (draw_calls_elapsed, view_cluster) = Timer::time_with_result(|| {
                 do_main_draw(&game_state.pos, visibility, &base_map_texobjs)
+            });
+            let copy_to_texture_elapsed = Timer::time(|| {
+                // do_copy_to_texture(&screen_texture_color_data);
             });
             let debug_draw_elapsed = Timer::time(|| {
                 do_debug_draw(
@@ -241,8 +329,8 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
 
             last_frame_timers = FrameTimers {
                 game_logic: game_logic_elapsed,
-                draw_setup: draw_setup_elapsed,
-                draw_calls: draw_calls_elapsed,
+                main_draw: main_draw_elapsed,
+                copy_to_texture: copy_to_texture_elapsed,
                 debug_draw: debug_draw_elapsed,
                 draw_done: draw_done_elapsed,
                 idle: idle_elapsed,
@@ -348,12 +436,15 @@ fn prepare_main_draw(
     unsafe {
         GX_ClearVtxDesc();
         GX_SetVtxDesc(GX_VA_POS as u8, GX_INDEX16 as u8);
+        GX_SetVtxDesc(GX_VA_NRM as u8, GX_INDEX16 as u8);
         GX_SetVtxDesc(GX_VA_TEX0 as u8, GX_INDEX16 as u8);
         GX_SetVtxDesc(GX_VA_TEX1 as u8, GX_INDEX16 as u8);
         GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_NRM, GX_NRM_XYZ, GX_F32, 0);
         GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
         GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX1, GX_TEX_ST, GX_F32, 0);
         GX_SetArray(GX_VA_POS, POSITION_DATA.as_ptr() as *mut _, 12);
+        GX_SetArray(GX_VA_NRM, NORMAL_DATA.as_ptr() as *mut _, 12);
         GX_SetArray(GX_VA_TEX0, LIGHTMAP_COORD_DATA.as_ptr() as *mut _, 8);
         GX_SetArray(GX_VA_TEX1, TEXTURE_COORD_DATA.as_ptr() as *mut _, 8);
         GX_InvVtxCache();
@@ -402,53 +493,166 @@ fn prepare_main_draw(
             view.as_mut_ptr(),
         );
         GX_LoadPosMtxImm(view.as_mut_ptr(), GX_PNMTX0);
+
+        let mut eye_offset = zeroed::<Mtx>();
+        c_guMtxTrans(
+            eye_offset.as_mut_ptr(),
+            -game_state.pos.x,
+            -game_state.pos.y,
+            -game_state.pos.z,
+        );
+        GX_LoadTexMtxImm(eye_offset.as_mut_ptr(), GX_TEXMTX0, GX_MTX3x4 as u8);
     }
 }
 
 fn do_main_draw(pos: &guVector, visibility: Visibility, base_map_texobjs: &[GXTexObj]) -> i16 {
     unsafe {
-        LIGHTMAPPED_SHADER.apply();
-
         GX_SetZMode(GX_TRUE as u8, GX_LEQUAL as u8, GX_TRUE as u8);
         GX_SetColorUpdate(GX_TRUE as u8);
 
         let view_leaf = traverse_bsp(pos);
         let view_cluster = (*view_leaf).cluster;
-        if view_cluster != -1 {
-            for cluster in visibility
-                .get_cluster(ClusterIndex(view_cluster as usize))
-                .iter_visible_clusters()
-                .map(|cluster| cluster.0 as u16)
-            {
-                for entry in iter_display_lists_for_cluster(cluster) {
-                    GX_LoadTexObj(
-                        &base_map_texobjs[entry.texture_index] as *const GXTexObj as *mut GXTexObj,
-                        GX_TEXMAP1 as u8,
-                    );
-                    GX_CallDispList(
-                        entry.display_list.as_ptr() as *mut c_void,
-                        entry.display_list.len() as u32,
-                    );
-                    GX_Flush();
+
+        const DEBUG: bool = false;
+        const PANES: u8 = if DEBUG { 2 } else { 1 };
+        for y in 0..PANES {
+            for x in 0..PANES {
+                let debug_stage = 2 * y + x;
+
+                if DEBUG {
+                    GX_SetViewport(320.0 * x as f32, 240.0 * y as f32, 320.0, 240.0, 0.0, 1.0);
                 }
-            }
-        } else {
-            for cluster in 0..visibility.num_clusters() as u16 {
-                for entry in iter_display_lists_for_cluster(cluster) {
-                    GX_LoadTexObj(
-                        &base_map_texobjs[entry.texture_index] as *const GXTexObj as *mut GXTexObj,
-                        GX_TEXMAP1 as u8,
-                    );
-                    GX_CallDispList(
-                        entry.display_list.as_ptr() as *mut c_void,
-                        entry.display_list.len() as u32,
-                    );
-                    GX_Flush();
+                let shader = &LIGHTMAPPED_ENV_SHADER;
+                shader.apply();
+                if DEBUG {
+                    GX_SetNumTevStages(shader.num_tev_stages().min(debug_stage + 1));
+                    if let Some(tev_stage) = shader.stages[debug_stage as usize] {
+                        tev_stage.with_color_dst(TevReg::Prev).apply(debug_stage);
+                    }
+                }
+
+                let mut last_texture = None;
+                let mut last_plane_index = None;
+                let mut draw_cluster = move |cluster| {
+                    for entry in iter_display_lists_for_cluster(cluster) {
+                        if Some(entry.texture_index) != last_texture {
+                            GX_LoadTexObj(
+                                &base_map_texobjs[entry.texture_index] as *const GXTexObj
+                                    as *mut GXTexObj,
+                                GX_TEXMAP1 as u8,
+                            );
+                            last_texture = Some(entry.texture_index);
+                        }
+                        if Some(entry.plane_index) != last_plane_index {
+                            GX_LoadTexMtxImm(
+                                entry.reflect_front_paraboloid.as_ptr() as *mut [f32; 4],
+                                GX_DTTMTX0,
+                                GX_MTX3x4 as u8,
+                            );
+                            GX_LoadTexMtxImm(
+                                entry.reflect_back_paraboloid.as_ptr() as *mut [f32; 4],
+                                GX_DTTMTX1,
+                                GX_MTX3x4 as u8,
+                            );
+                            GX_LoadTexMtxImm(
+                                entry.reflect_paraboloid_z.as_ptr() as *mut [f32; 4],
+                                GX_DTTMTX2,
+                                GX_MTX3x4 as u8,
+                            );
+                            last_plane_index = Some(entry.plane_index);
+                        }
+                        GX_CallDispList(
+                            entry.display_list.as_ptr() as *mut c_void,
+                            entry.display_list.len() as u32,
+                        );
+                        GX_Flush();
+                    }
+                };
+
+                if view_cluster != -1 {
+                    for cluster in visibility
+                        .get_cluster(ClusterIndex(view_cluster as usize))
+                        .iter_visible_clusters()
+                        .map(|cluster| cluster.0 as u16)
+                    {
+                        draw_cluster(cluster);
+                    }
+                } else {
+                    for cluster in 0..visibility.num_clusters() as u16 {
+                        draw_cluster(cluster);
+                    }
                 }
             }
         }
+        if DEBUG {
+            GX_SetViewport(0.0, 0.0, 640.0, 480.0, 0.0, 1.0);
+        }
+        GX_DrawDone();
 
         view_cluster
+    }
+}
+
+fn _do_copy_to_texture(screen_texture_color_data: &Memalign) {
+    unsafe {
+        // Copy the color buffer to a texture in main memory.
+        GX_SetTexCopySrc(0, 0, 640, 480); // TODO: Use the current mode.
+
+        DCInvalidateRange(
+            screen_texture_color_data.ptr,
+            screen_texture_color_data._size as u32,
+        );
+        GX_SetTexCopyDst(640, 480, GX_TF_RGBA8, GX_FALSE as u8);
+        GX_CopyTex(screen_texture_color_data.ptr, GX_FALSE as u8);
+
+        GX_PixModeSync();
+        GX_Flush();
+        GX_DrawDone();
+
+        // Draw with the color buffer texture.
+
+        // LIGHTMAPPED_REFLECTIVE_SHADER.apply();
+
+        GX_InvalidateTexAll();
+
+        GX_ClearVtxDesc();
+        GX_SetVtxDesc(GX_VA_POS as u8, GX_DIRECT as u8);
+        GX_SetVtxDesc(GX_VA_TEX0 as u8, GX_DIRECT as u8);
+        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_POS, GX_POS_XY, GX_U16, 0);
+        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX0, GX_TEX_ST, GX_U8, 0);
+
+        GX_SetZMode(GX_FALSE as u8, GX_ALWAYS as u8, GX_FALSE as u8);
+        GX_SetColorUpdate(GX_TRUE as u8);
+
+        let mut proj = zeroed::<Mtx44>();
+        guOrtho(proj.as_mut_ptr(), 0.0, 1.0, 0.0, 1.0, -1.0, 1.0);
+        GX_LoadProjectionMtx(proj.as_mut_ptr(), GX_ORTHOGRAPHIC as u8);
+
+        let mut view = zeroed::<Mtx>();
+        c_guMtxIdentity(view.as_mut_ptr());
+        GX_LoadPosMtxImm(view.as_mut_ptr(), GX_PNMTX0);
+
+        GX_Begin(GX_QUADS as u8, GX_VTXFMT0 as u8, 4);
+
+        (*wgPipe).U16 = 0;
+        (*wgPipe).U16 = 0;
+        (*wgPipe).U8 = 0;
+        (*wgPipe).U8 = 0;
+
+        (*wgPipe).U16 = 1;
+        (*wgPipe).U16 = 0;
+        (*wgPipe).U8 = 1;
+        (*wgPipe).U8 = 0;
+
+        (*wgPipe).U16 = 1;
+        (*wgPipe).U16 = 1;
+        (*wgPipe).U8 = 1;
+        (*wgPipe).U8 = 1;
+
+        (*wgPipe).U16 = 0;
+        (*wgPipe).U16 = 1;
+        (*wgPipe).U8 = 0;
+        (*wgPipe).U8 = 1;
     }
 }
 
@@ -467,11 +671,8 @@ fn do_debug_draw(
         GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_CLR0, GX_CLR_RGB, GX_RGB8, 0);
         GX_InvVtxCache();
 
-        GX_SetNumTexGens(0);
-
         FLAT_VERTEX_COLOR_SHADER.apply();
 
-        GX_SetCullMode(GX_CULL_NONE as u8);
         GX_SetZMode(GX_FALSE as u8, GX_ALWAYS as u8, GX_FALSE as u8);
         GX_SetColorUpdate(GX_TRUE as u8);
 
@@ -516,8 +717,8 @@ fn do_debug_draw(
 
         let x0 = 0;
         let x1 = x0 + last_frame_timers.game_logic;
-        let x2 = x1 + last_frame_timers.draw_setup;
-        let x3 = x2 + last_frame_timers.draw_calls;
+        let x2 = x1 + last_frame_timers.main_draw;
+        let x3 = x2 + last_frame_timers.copy_to_texture;
         let x4 = x3 + last_frame_timers.debug_draw;
         let x5 = x4 + last_frame_timers.draw_done;
         let x6 = x5 + last_frame_timers.idle;
@@ -639,7 +840,7 @@ fn init_hardware() -> (u16, u16) {
             GX_ZC_LINEAR as u8,
         );
 
-        GX_SetCullMode(GX_CULL_NONE as u8);
+        GX_SetCullMode(GX_CULL_BACK as u8);
         GX_CopyDisp(xfb, GX_TRUE as u8);
         GX_SetDispCopyGamma(GX_GM_1_0 as u8);
 
@@ -649,8 +850,8 @@ fn init_hardware() -> (u16, u16) {
 
 struct FrameTimers {
     game_logic: u32,
-    draw_setup: u32,
-    draw_calls: u32,
+    main_draw: u32,
+    copy_to_texture: u32,
     debug_draw: u32,
     draw_done: u32,
     idle: u32,

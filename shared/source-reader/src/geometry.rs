@@ -6,6 +6,7 @@ use crate::lightmap::LightmapMetadata;
 #[derive(Clone, Copy)]
 pub struct Vertex {
     pub position: [f32; 3],
+    pub normal: [f32; 3],
     pub lightmap_coord: [f32; 2],
     pub texture_coord: [f32; 2],
 }
@@ -18,7 +19,10 @@ pub fn convert_vertex(
     tex_info: &TexInfo,
     vertex_index: usize,
 ) -> Vertex {
+    let plane = &bsp.planes()[face.plane_num as usize];
     let vertex = &bsp.vertices()[vertex_index];
+
+    let normal = [plane.normal[0], plane.normal[1], plane.normal[2]];
 
     let patch_s = tex_info.lightmap_vecs[0][0] * vertex.x
         + tex_info.lightmap_vecs[0][1] * vertex.y
@@ -51,6 +55,7 @@ pub fn convert_vertex(
 
     let vertex = Vertex {
         position: [vertex.x, vertex.y, vertex.z],
+        normal,
         lightmap_coord: [lightmap_s, lightmap_t],
         texture_coord: [texture_s, texture_t],
     };

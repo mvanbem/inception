@@ -127,6 +127,7 @@ impl Asset for Vmt {
                         }
                         Entry::Object(Object { name, .. }) => match name.to_lowercase().as_str() {
                             "proxies" => println!("ignoring unsupported material proxy"),
+                            name if name.ends_with("_dx9") || name.contains("_hdr_") => (),
                             _ => println!("unexpected LightmappedGeneric object: {}", name),
                         },
                     }

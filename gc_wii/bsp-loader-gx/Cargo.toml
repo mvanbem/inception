@@ -17,7 +17,9 @@ wii = ["ogc-sys/wii"]
 
 [dependencies]
 derive_more = "0.99"
+fully-occupied = { path = "../../shared/fully-occupied" }
 libc = "0.2"
 libm = "0.2"
 ogc-sys = { path = "../ogc-sys", default-features = false }
-fully-occupied = { path = "../../shared/fully-occupied" }
+paste = "1"
+seq-macro = "0.2"

@@ -1,49 +1,21 @@
-use std::num::NonZeroU32;
-
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct DisplayListOffset {
-    pub offset: u32,
-    pub size: NonZeroU32,
-}
-
-#[derive(Default)]
 pub struct DisplayListBuilder {
     data: Vec<u8>,
+    start_offset: u32,
 }
 
 impl DisplayListBuilder {
     pub const TRIANGLES: u8 = 0x90;
 
-    pub fn build_batch(&mut self, primitive: u8) -> BatchBuilder {
-        BatchBuilder::new(&mut self.data, primitive)
-    }
-
-    /// Pad to a 32-byte boundary with NOP bytes.
-    fn pad(&mut self) {
-        while (self.data.len() & 31) != 0 {
-            self.data.push(0x00);
-        }
-    }
-
-    pub fn build(mut self) -> Vec<u8> {
-        self.pad();
-        self.data
-    }
-}
-
-pub struct BatchBuilder<'a> {
-    data: &'a mut Vec<u8>,
-    start_offset: u32,
-}
-
-impl<'a> BatchBuilder<'a> {
-    fn new(data: &'a mut Vec<u8>, primitive: u8) -> Self {
-        let start_offset = u32::try_from(data.len()).unwrap();
+    pub fn new(primitive: u8) -> Self {
+        let mut data = Vec::new();
         data.push(primitive);
         data.write_u16::<BigEndian>(0).unwrap();
-        Self { data, start_offset }
+        Self {
+            data,
+            start_offset: 0,
+        }
     }
 
     fn read_primitive(&self) -> u8 {
@@ -76,13 +48,17 @@ impl<'a> BatchBuilder<'a> {
             self.start_offset = new_start_offset;
         }
     }
-}
 
-impl<'a> Drop for BatchBuilder<'a> {
-    fn drop(&mut self) {
-        // If no vertices were written, back out the command and length.
-        if self.read_count() == 0 {
-            self.data.resize(self.data.len() - 3, 0);
+    pub fn build(mut self) -> Vec<u8> {
+        if self.data.len() == 3 {
+            // Nothing was written.
+            Vec::new()
+        } else {
+            // Pad to a 32-byte boundary with NOP bytes.
+            while (self.data.len() & 31) != 0 {
+                self.data.push(0x00);
+            }
+            self.data
         }
     }
 }
