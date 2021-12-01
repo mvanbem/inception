@@ -1,13 +1,15 @@
-pub struct U16Counter(u16);
+use num_traits::PrimInt;
 
-impl U16Counter {
+pub struct Counter<T>(T);
+
+impl<T: PrimInt> Counter<T> {
     pub fn new() -> Self {
-        Self(0)
+        Self(T::zero())
     }
 
-    pub fn next(&mut self) -> u16 {
+    pub fn next(&mut self) -> T {
         let result = self.0;
-        self.0 += 1;
+        self.0 = self.0.checked_add(&T::one()).unwrap();
         result
     }
 }

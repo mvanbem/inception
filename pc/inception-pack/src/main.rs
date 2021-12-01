@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{create_dir_all, File};
 use std::hash::{Hash, Hasher};
@@ -11,6 +12,7 @@ use byteorder::{BigEndian, LittleEndian, ReadBytesExt, WriteBytesExt};
 use clap::{clap_app, crate_authors, crate_description, crate_version};
 use memmap::Mmap;
 use nalgebra_glm::{make_vec3, reflect, vec3, vec4, Mat3, Mat3x4, Mat4};
+use num_traits::PrimInt;
 use source_reader::asset::vmt::Shader;
 use source_reader::asset::vtf::{ImageData, ImageFormat};
 use source_reader::asset::AssetLoader;
@@ -24,9 +26,10 @@ use source_reader::vpk::Vpk;
 use texture_atlas::RgbU8Image;
 use try_insert_ext::EntryInsertExt;
 
-use crate::counter::U16Counter;
+use crate::counter::Counter;
 use crate::display_list::DisplayListBuilder;
 use crate::record_writer::RecordWriter;
+use crate::write_big_endian::WriteBigEndian;
 
 mod counter;
 mod display_list;
@@ -103,28 +106,213 @@ struct ProcessedGeometry {
     texture_paths: Vec<VpkPath>,
 }
 
+struct LightmappedDisplayListsBuilder {
+    positions: AttributeBuilder<[FloatByBits; 3], u16>,
+    normals: AttributeBuilder<[FloatByBits; 3], u16>,
+    lightmap_coords: AttributeBuilder<[FloatByBits; 2], u16>,
+    texture_coords: AttributeBuilder<[FloatByBits; 2], u16>,
+    display_lists_by_texture: BTreeMap<VpkPath, DisplayListBuilder>,
+}
+
+impl LightmappedDisplayListsBuilder {
+    fn build(self) -> LightmappedDisplayLists {
+        LightmappedDisplayLists {
+            display_lists_by_texture: self
+                .display_lists_by_texture
+                .into_iter()
+                .map(|(texture, display_list)| (texture, display_list.build()))
+                .filter(|(_, x)| !x.is_empty())
+                .collect(),
+        }
+    }
+}
+
+struct LightmappedDisplayLists {
+    display_lists_by_texture: BTreeMap<VpkPath, Vec<u8>>,
+}
+
+struct LightmappedEnvmappedDisplayListsBuilder {
+    display_lists_by_texture_plane: BTreeMap<VpkPath, BTreeMap<u16, DisplayListBuilder>>,
+}
+
+impl LightmappedEnvmappedDisplayListsBuilder {
+    fn build(self) -> LightmappedEnvmappedDisplayLists {
+        LightmappedEnvmappedDisplayLists {
+            display_lists_by_texture_plane: self
+                .display_lists_by_texture_plane
+                .into_iter()
+                .map(|(texture, display_lists_by_plane)| {
+                    (
+                        texture,
+                        display_lists_by_plane
+                            .into_iter()
+                            .map(|(plane, display_list)| (plane, display_list.build()))
+                            .filter(|(_, x)| !x.is_empty())
+                            .collect::<BTreeMap<_, _>>(),
+                    )
+                })
+                .filter(|(_, x)| !x.is_empty())
+                .collect(),
+        }
+    }
+}
+
+struct LightmappedEnvmappedDisplayLists {
+    display_lists_by_texture_plane: BTreeMap<VpkPath, BTreeMap<u16, Vec<u8>>>,
+}
+
+mod write_big_endian {
+    use std::io::Write;
+
+    use anyhow::Result;
+    use byteorder::{BigEndian, WriteBytesExt};
+    use paste::paste;
+    use seq_macro::seq;
+
+    use crate::FloatByBits;
+
+    pub trait WriteBigEndian {
+        const SIZE: usize;
+
+        fn write_big_endian_to<W: Write>(&self, w: &mut W) -> Result<()>;
+    }
+
+    impl WriteBigEndian for u8 {
+        const SIZE: usize = 1;
+
+        fn write_big_endian_to<W: Write>(&self, w: &mut W) -> Result<()> {
+            Ok(w.write_u8(*self)?)
+        }
+    }
+
+    impl WriteBigEndian for u16 {
+        const SIZE: usize = 2;
+
+        fn write_big_endian_to<W: Write>(&self, w: &mut W) -> Result<()> {
+            Ok(w.write_u16::<BigEndian>(*self)?)
+        }
+    }
+
+    impl WriteBigEndian for f32 {
+        const SIZE: usize = 4;
+
+        fn write_big_endian_to<W: Write>(&self, w: &mut W) -> Result<()> {
+            Ok(w.write_f32::<BigEndian>(*self)?)
+        }
+    }
+
+    impl WriteBigEndian for FloatByBits {
+        const SIZE: usize = 4;
+
+        fn write_big_endian_to<W: Write>(&self, w: &mut W) -> Result<()> {
+            self.0.write_big_endian_to(w)
+        }
+    }
+
+    impl<T: WriteBigEndian, const N: usize> WriteBigEndian for [T; N] {
+        const SIZE: usize = T::SIZE * N;
+
+        fn write_big_endian_to<W: Write>(&self, w: &mut W) -> Result<()> {
+            for value in self.iter() {
+                value.write_big_endian_to(w)?;
+            }
+            Ok(())
+        }
+    }
+
+    macro_rules! impl_write_big_endian_for_tuples {
+        () => {
+            seq!(N in 1..10 { #(impl_write_big_endian_for_tuples!(N);)* });
+        };
+        ($n:literal) => {
+            seq!(N in 0..$n {
+                paste! {
+                    impl<#([<T N>]: WriteBigEndian,)*> WriteBigEndian for (#([<T N>],)*) {
+                        const SIZE: usize = 0 #(+ [<T N>]::SIZE)*;
+
+                        fn write_big_endian_to<W: Write>(&self, w: &mut W) -> Result<()> {
+                            #(self.N.write_big_endian_to(w)?;)*
+                            Ok(())
+                        }
+                    }
+                }
+            });
+        };
+    }
+
+    impl_write_big_endian_for_tuples!();
+}
+
+struct AttributeBuilder<Value, Index> {
+    indices: HashMap<Value, Index>,
+    counter: Counter<Index>,
+    data: Vec<u8>,
+}
+
+impl<Value: Copy + Eq + Hash + WriteBigEndian, Index: PrimInt> AttributeBuilder<Value, Index> {
+    pub fn new() -> Self {
+        Self {
+            indices: HashMap::new(),
+            counter: Counter::new(),
+            data: Vec::new(),
+        }
+    }
+
+    pub fn add_vertex(&mut self, value: Value) -> Index {
+        *self.indices.entry(value).or_insert_with(|| {
+            value.write_big_endian_to(&mut self.data).unwrap();
+            self.counter.next()
+        })
+    }
+}
+
+struct PolygonBuilder<'a, Index> {
+    first_index: Option<Index>,
+    prev_index: Option<Index>,
+    display_list: &'a mut DisplayListBuilder,
+}
+
+impl<'a, Index: Copy + WriteBigEndian> PolygonBuilder<'a, Index> {
+    pub fn new(display_list: &'a mut DisplayListBuilder) -> Self {
+        Self {
+            first_index: None,
+            prev_index: None,
+            display_list,
+        }
+    }
+
+    pub fn add_index(&mut self, index: Index) -> Result<()> {
+        if self.first_index.is_none() {
+            self.first_index = Some(index);
+        }
+
+        if let (Some(first_index), Some(prev_index)) = (self.first_index, self.prev_index) {
+            let mut data = Vec::with_capacity(3 * Index::SIZE);
+            first_index.write_big_endian_to(&mut data)?;
+            prev_index.write_big_endian_to(&mut data)?;
+            index.write_big_endian_to(&mut data)?;
+            assert_eq!(data.len(), 3 * Index::SIZE);
+            self.display_list.emit_vertices(3, &data);
+        }
+        self.prev_index = Some(index);
+        Ok(())
+    }
+}
+
 fn process_geometry(
     bsp: Bsp,
     lightmap: &Lightmap,
     asset_loader: &AssetLoader,
 ) -> Result<ProcessedGeometry> {
-    let mut position_indices = HashMap::new();
-    let mut normal_indices = HashMap::new();
-    let mut lightmap_coord_indices = HashMap::new();
-    let mut texture_coord_indices = HashMap::new();
-    let mut position_counter = U16Counter::new();
-    let mut normal_counter = U16Counter::new();
-    let mut lightmap_coord_counter = U16Counter::new();
-    let mut texture_coord_counter = U16Counter::new();
-    let mut position_data = Vec::new();
-    let mut normal_data = Vec::new();
-    let mut lightmap_coord_data = Vec::new();
-    let mut texture_coord_data = Vec::new();
+    let mut positions = AttributeBuilder::new();
+    let mut normals = AttributeBuilder::new();
+    let mut lightmap_coords = AttributeBuilder::new();
+    let mut texture_coords = AttributeBuilder::new();
     let mut display_lists_by_cluster_texture_plane: Vec<
         BTreeMap<VpkPath, BTreeMap<u16, DisplayListBuilder>>,
     > = repeat_with(|| BTreeMap::new())
         .take(bsp.leaves().len())
-        .collect::<Vec<_>>();
+        .collect();
     let mut texture_paths = Vec::new();
     let mut texture_ids = HashMap::new();
     for leaf in bsp.iter_worldspawn_leaves() {
@@ -178,22 +366,14 @@ fn process_geometry(
                     texture_paths.push(base_texture.path().clone());
                     index
                 });
-            let display_lists_by_plane = display_lists_by_cluster_texture_plane
-                [leaf.cluster as usize]
-                .entry(base_texture.path().clone())
-                .or_default();
-            let batch_builder = display_lists_by_plane
-                .entry(face.plane_num)
-                .or_insert_with(|| DisplayListBuilder::new(DisplayListBuilder::TRIANGLES));
+            let mut polygon_builder = PolygonBuilder::new(
+                display_lists_by_cluster_texture_plane[leaf.cluster as usize]
+                    .entry(base_texture.path().clone())
+                    .or_default()
+                    .entry(face.plane_num)
+                    .or_insert_with(|| DisplayListBuilder::new(DisplayListBuilder::TRIANGLES)),
+            );
 
-            let mut first_position_index = None;
-            let mut first_normal_index = None;
-            let mut first_lightmap_coord_index = None;
-            let mut first_texture_coord_index = None;
-            let mut prev_position_index = None;
-            let mut prev_normal_index = None;
-            let mut prev_lightmap_coord_index = None;
-            let mut prev_texture_coord_index = None;
             for vertex_index in bsp.iter_vertex_indices_from_face(face) {
                 let mut vertex = convert_vertex(
                     bsp,
@@ -208,59 +388,19 @@ fn process_geometry(
                     vertex.texture_coord[1] / base_texture.height() as f32,
                 ];
 
-                let position_index = *position_indices
-                    .entry(hashable_float(&vertex.position))
-                    .or_try_insert_with(|| -> Result<_> {
-                        write_floats(&mut position_data, &vertex.position)?;
-                        Ok(position_counter.next())
-                    })?;
-                let normal_index = *normal_indices
-                    .entry(hashable_float(&vertex.normal))
-                    .or_try_insert_with(|| -> Result<_> {
-                        write_floats(&mut normal_data, &vertex.normal)?;
-                        Ok(normal_counter.next())
-                    })?;
-                let lightmap_coord_index = *lightmap_coord_indices
-                    .entry(hashable_float(&vertex.lightmap_coord))
-                    .or_try_insert_with(|| -> Result<_> {
-                        write_floats(&mut lightmap_coord_data, &vertex.lightmap_coord)?;
-                        Ok(lightmap_coord_counter.next())
-                    })?;
-                let texture_coord_index = *texture_coord_indices
-                    .entry(hashable_float(&vertex.texture_coord))
-                    .or_try_insert_with(|| -> Result<_> {
-                        write_floats(&mut texture_coord_data, &vertex.texture_coord)?;
-                        Ok(texture_coord_counter.next())
-                    })?;
+                let position_index: u16 = positions.add_vertex(hashable_float(&vertex.position));
+                let normal_index: u16 = normals.add_vertex(hashable_float(&vertex.normal));
+                let lightmap_coord_index: u16 =
+                    lightmap_coords.add_vertex(hashable_float(&vertex.lightmap_coord));
+                let texture_coord_index: u16 =
+                    texture_coords.add_vertex(hashable_float(&vertex.texture_coord));
 
-                if first_position_index.is_none() {
-                    first_position_index = Some(position_index);
-                    first_normal_index = Some(normal_index);
-                    first_lightmap_coord_index = Some(lightmap_coord_index);
-                    first_texture_coord_index = Some(texture_coord_index);
-                }
-
-                if prev_position_index.is_some() {
-                    let mut data = [0; 24];
-                    let mut w = &mut data[..];
-                    w.write_u16::<BigEndian>(first_position_index.unwrap())?;
-                    w.write_u16::<BigEndian>(first_normal_index.unwrap())?;
-                    w.write_u16::<BigEndian>(first_lightmap_coord_index.unwrap())?;
-                    w.write_u16::<BigEndian>(first_texture_coord_index.unwrap())?;
-                    w.write_u16::<BigEndian>(prev_position_index.unwrap())?;
-                    w.write_u16::<BigEndian>(prev_normal_index.unwrap())?;
-                    w.write_u16::<BigEndian>(prev_lightmap_coord_index.unwrap())?;
-                    w.write_u16::<BigEndian>(prev_texture_coord_index.unwrap())?;
-                    w.write_u16::<BigEndian>(position_index)?;
-                    w.write_u16::<BigEndian>(normal_index)?;
-                    w.write_u16::<BigEndian>(lightmap_coord_index)?;
-                    w.write_u16::<BigEndian>(texture_coord_index)?;
-                    batch_builder.emit_vertices(3, &data);
-                }
-                prev_position_index = Some(position_index);
-                prev_normal_index = Some(normal_index);
-                prev_lightmap_coord_index = Some(lightmap_coord_index);
-                prev_texture_coord_index = Some(texture_coord_index);
+                polygon_builder.add_index((
+                    position_index,
+                    normal_index,
+                    lightmap_coord_index,
+                    texture_coord_index,
+                ))?;
             }
         }
     }
@@ -276,7 +416,7 @@ fn process_geometry(
                         texture,
                         display_lists_by_plane
                             .into_iter()
-                            .map(|(plane, display_list)| (plane, display_list.build()))
+                            .map(|(plane, polygon_builder)| (plane, polygon_builder.build()))
                             .filter(|(_, x)| !x.is_empty())
                             .collect::<BTreeMap<_, _>>(),
                     )
@@ -287,10 +427,10 @@ fn process_geometry(
         .collect();
 
     Ok(ProcessedGeometry {
-        position_data,
-        normal_data,
-        lightmap_coord_data,
-        texture_coord_data,
+        position_data: positions.data,
+        normal_data: normals.data,
+        lightmap_coord_data: lightmap_coords.data,
+        texture_coord_data: texture_coords.data,
         display_lists_by_cluster_texture_plane,
         texture_ids,
         texture_paths,
@@ -311,13 +451,7 @@ fn build_asset_loader<'a>(hl2_base: &Path, bsp: Bsp<'a>) -> Result<AssetLoader<'
 }
 
 #[derive(Clone, Copy)]
-struct FloatByBits(f32);
-
-impl PartialEq for FloatByBits {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.to_bits() == other.0.to_bits()
-    }
-}
+pub struct FloatByBits(f32);
 
 impl Eq for FloatByBits {}
 
@@ -327,19 +461,30 @@ impl Hash for FloatByBits {
     }
 }
 
+impl PartialEq for FloatByBits {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_bits().eq(&other.0.to_bits())
+    }
+}
+
+impl Ord for FloatByBits {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.0.to_bits().cmp(&other.0.to_bits())
+    }
+}
+
+impl PartialOrd for FloatByBits {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.0.to_bits().partial_cmp(&other.0.to_bits())
+    }
+}
+
 fn hashable_float<const N: usize>(array: &[f32; N]) -> [FloatByBits; N] {
     let mut result = [FloatByBits(0.0); N];
     for index in 0..N {
         result[index] = FloatByBits(array[index]);
     }
     result
-}
-
-fn write_floats<const N: usize>(data: &mut Vec<u8>, array: &[f32; N]) -> Result<()> {
-    for value in array {
-        data.write_f32::<BigEndian>(*value)?;
-    }
-    Ok(())
 }
 
 fn write_lightmap(dst_path: &Path, lightmap: Lightmap) -> Result<()> {

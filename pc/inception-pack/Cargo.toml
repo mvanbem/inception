@@ -13,6 +13,9 @@ byteorder = "1"
 clap = "2"
 memmap = "0.7"
 nalgebra-glm = "0.15"
+num-traits = "0.2"
+paste = "1"
+seq-macro = "0.2"
 source-reader = { path = "../../shared/source-reader" }
 texture-atlas = { path = "../../shared/texture-atlas" }
 try-insert-ext = "0.1"
