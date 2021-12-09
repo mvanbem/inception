@@ -1405,6 +1405,7 @@ dependencies = [
  "recursive-iter",
  "texture-atlas",
  "try-insert-ext",
+ "try_map",
  "zip",
 ]
 
@@ -1498,6 +1499,12 @@ name = "try-insert-ext"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "213664d0ee69fc59a5fb6cdf16786db532bd0aba3792091e3e874cd581dc0ed2"
+
+[[package]]
+name = "try_map"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb1626d07cb5c1bb2cf17d94c0be4852e8a7c02b041acec9a8c5bdda99f9d580"
 
 [[package]]
 name = "ttf-parser"

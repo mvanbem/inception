@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{create_dir_all, File};
 use std::hash::{Hash, Hasher};
 use std::io::{BufWriter, Seek, Write};
@@ -11,10 +11,10 @@ use anyhow::{bail, Context, Result};
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt, WriteBytesExt};
 use clap::{clap_app, crate_authors, crate_description, crate_version};
 use memmap::Mmap;
-use nalgebra_glm::{make_vec3, reflect, vec3, vec4, Mat3, Mat3x4, Mat4};
+use nalgebra_glm::{mat3_to_mat4, vec2, vec3, vec4, Mat3, Mat3x4, Mat4, Vec3};
 use num_traits::PrimInt;
-use source_reader::asset::vmt::Shader;
-use source_reader::asset::vtf::{ImageData, ImageFormat};
+use source_reader::asset::vmt::{LightmappedGeneric, Shader};
+use source_reader::asset::vtf::ImageFormat;
 use source_reader::asset::AssetLoader;
 use source_reader::bsp::Bsp;
 use source_reader::file::zip::ZipArchiveLoader;
@@ -24,7 +24,6 @@ use source_reader::lightmap::{build_lightmaps, Lightmap};
 use source_reader::vpk::path::VpkPath;
 use source_reader::vpk::Vpk;
 use texture_atlas::RgbU8Image;
-use try_insert_ext::EntryInsertExt;
 
 use crate::counter::Counter;
 use crate::display_list::DisplayListBuilder;
@@ -34,6 +33,7 @@ use crate::write_big_endian::WriteBigEndian;
 mod counter;
 mod display_list;
 mod record_writer;
+mod write_big_endian;
 
 fn main() -> Result<()> {
     let matches = clap_app!(app =>
@@ -63,32 +63,19 @@ fn main() -> Result<()> {
     let asset_loader = build_asset_loader(hl2_base, bsp)?;
 
     let lightmap = build_lightmaps(bsp)?;
-    let ProcessedGeometry {
-        position_data,
-        normal_data,
-        lightmap_coord_data,
-        texture_coord_data,
-        display_lists_by_cluster_texture_plane,
-        texture_ids,
-        texture_paths,
-    } = process_geometry(bsp, &lightmap, &asset_loader)?;
+    let map_geometry = process_geometry(bsp, &lightmap, &asset_loader)?;
 
     let dst_path = Path::new(matches.value_of("dst").unwrap_or("."));
     create_dir_all(dst_path)?;
 
     write_lightmap(dst_path, lightmap)?;
     write_debug_env_maps(dst_path)?;
-    write_textures(dst_path, &asset_loader, &texture_paths)?;
-    write_position_data(dst_path, position_data)?;
-    write_normal_data(dst_path, normal_data)?;
-    write_lightmap_coord_data(dst_path, lightmap_coord_data)?;
-    write_texture_coord_data(dst_path, texture_coord_data)?;
-    write_display_lists(
-        bsp,
-        dst_path,
-        texture_ids,
-        display_lists_by_cluster_texture_plane,
-    )?;
+    let texture_ids = write_textures(dst_path, &asset_loader, &map_geometry)?;
+    write_position_data(dst_path, &map_geometry.position_data)?;
+    write_normal_data(dst_path, &map_geometry.normal_data)?;
+    write_lightmap_coord_data(dst_path, &map_geometry.lightmap_coord_data)?;
+    write_texture_coord_data(dst_path, &map_geometry.texture_coord_data)?;
+    write_geometry(dst_path, &asset_loader, &map_geometry, &texture_ids)?;
     write_bsp_nodes(dst_path, bsp)?;
     write_bsp_leaves(dst_path, bsp)?;
     write_vis(dst_path, bsp)?;
@@ -96,151 +83,13 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-struct ProcessedGeometry {
+struct MapGeometry {
     position_data: Vec<u8>,
     normal_data: Vec<u8>,
     lightmap_coord_data: Vec<u8>,
     texture_coord_data: Vec<u8>,
-    display_lists_by_cluster_texture_plane: Vec<BTreeMap<VpkPath, BTreeMap<u16, Vec<u8>>>>,
-    texture_ids: HashMap<VpkPath, u16>,
-    texture_paths: Vec<VpkPath>,
-}
-
-struct LightmappedDisplayListsBuilder {
-    positions: AttributeBuilder<[FloatByBits; 3], u16>,
-    normals: AttributeBuilder<[FloatByBits; 3], u16>,
-    lightmap_coords: AttributeBuilder<[FloatByBits; 2], u16>,
-    texture_coords: AttributeBuilder<[FloatByBits; 2], u16>,
-    display_lists_by_texture: BTreeMap<VpkPath, DisplayListBuilder>,
-}
-
-impl LightmappedDisplayListsBuilder {
-    fn build(self) -> LightmappedDisplayLists {
-        LightmappedDisplayLists {
-            display_lists_by_texture: self
-                .display_lists_by_texture
-                .into_iter()
-                .map(|(texture, display_list)| (texture, display_list.build()))
-                .filter(|(_, x)| !x.is_empty())
-                .collect(),
-        }
-    }
-}
-
-struct LightmappedDisplayLists {
-    display_lists_by_texture: BTreeMap<VpkPath, Vec<u8>>,
-}
-
-struct LightmappedEnvmappedDisplayListsBuilder {
-    display_lists_by_texture_plane: BTreeMap<VpkPath, BTreeMap<u16, DisplayListBuilder>>,
-}
-
-impl LightmappedEnvmappedDisplayListsBuilder {
-    fn build(self) -> LightmappedEnvmappedDisplayLists {
-        LightmappedEnvmappedDisplayLists {
-            display_lists_by_texture_plane: self
-                .display_lists_by_texture_plane
-                .into_iter()
-                .map(|(texture, display_lists_by_plane)| {
-                    (
-                        texture,
-                        display_lists_by_plane
-                            .into_iter()
-                            .map(|(plane, display_list)| (plane, display_list.build()))
-                            .filter(|(_, x)| !x.is_empty())
-                            .collect::<BTreeMap<_, _>>(),
-                    )
-                })
-                .filter(|(_, x)| !x.is_empty())
-                .collect(),
-        }
-    }
-}
-
-struct LightmappedEnvmappedDisplayLists {
-    display_lists_by_texture_plane: BTreeMap<VpkPath, BTreeMap<u16, Vec<u8>>>,
-}
-
-mod write_big_endian {
-    use std::io::Write;
-
-    use anyhow::Result;
-    use byteorder::{BigEndian, WriteBytesExt};
-    use paste::paste;
-    use seq_macro::seq;
-
-    use crate::FloatByBits;
-
-    pub trait WriteBigEndian {
-        const SIZE: usize;
-
-        fn write_big_endian_to<W: Write>(&self, w: &mut W) -> Result<()>;
-    }
-
-    impl WriteBigEndian for u8 {
-        const SIZE: usize = 1;
-
-        fn write_big_endian_to<W: Write>(&self, w: &mut W) -> Result<()> {
-            Ok(w.write_u8(*self)?)
-        }
-    }
-
-    impl WriteBigEndian for u16 {
-        const SIZE: usize = 2;
-
-        fn write_big_endian_to<W: Write>(&self, w: &mut W) -> Result<()> {
-            Ok(w.write_u16::<BigEndian>(*self)?)
-        }
-    }
-
-    impl WriteBigEndian for f32 {
-        const SIZE: usize = 4;
-
-        fn write_big_endian_to<W: Write>(&self, w: &mut W) -> Result<()> {
-            Ok(w.write_f32::<BigEndian>(*self)?)
-        }
-    }
-
-    impl WriteBigEndian for FloatByBits {
-        const SIZE: usize = 4;
-
-        fn write_big_endian_to<W: Write>(&self, w: &mut W) -> Result<()> {
-            self.0.write_big_endian_to(w)
-        }
-    }
-
-    impl<T: WriteBigEndian, const N: usize> WriteBigEndian for [T; N] {
-        const SIZE: usize = T::SIZE * N;
-
-        fn write_big_endian_to<W: Write>(&self, w: &mut W) -> Result<()> {
-            for value in self.iter() {
-                value.write_big_endian_to(w)?;
-            }
-            Ok(())
-        }
-    }
-
-    macro_rules! impl_write_big_endian_for_tuples {
-        () => {
-            seq!(N in 1..10 { #(impl_write_big_endian_for_tuples!(N);)* });
-        };
-        ($n:literal) => {
-            seq!(N in 0..$n {
-                paste! {
-                    impl<#([<T N>]: WriteBigEndian,)*> WriteBigEndian for (#([<T N>],)*) {
-                        const SIZE: usize = 0 #(+ [<T N>]::SIZE)*;
-
-                        fn write_big_endian_to<W: Write>(&self, w: &mut W) -> Result<()> {
-                            #(self.N.write_big_endian_to(w)?;)*
-                            Ok(())
-                        }
-                    }
-                }
-            });
-        };
-    }
-
-    impl_write_big_endian_for_tuples!();
+    clusters: Vec<ClusterGeometry>,
+    material_paths: Vec<VpkPath>,
 }
 
 struct AttributeBuilder<Value, Index> {
@@ -264,38 +113,94 @@ impl<Value: Copy + Eq + Hash + WriteBigEndian, Index: PrimInt> AttributeBuilder<
             self.counter.next()
         })
     }
+
+    pub fn build(self) -> Vec<u8> {
+        self.data
+    }
 }
 
-struct PolygonBuilder<'a, Index> {
-    first_index: Option<Index>,
-    prev_index: Option<Index>,
+struct PolygonBuilder<'a, Vertex> {
+    first_vertex: Option<Vertex>,
+    prev_vertex: Option<Vertex>,
     display_list: &'a mut DisplayListBuilder,
 }
 
-impl<'a, Index: Copy + WriteBigEndian> PolygonBuilder<'a, Index> {
+impl<'a, Vertex: Copy + WriteBigEndian> PolygonBuilder<'a, Vertex> {
     pub fn new(display_list: &'a mut DisplayListBuilder) -> Self {
         Self {
-            first_index: None,
-            prev_index: None,
+            first_vertex: None,
+            prev_vertex: None,
             display_list,
         }
     }
 
-    pub fn add_index(&mut self, index: Index) -> Result<()> {
-        if self.first_index.is_none() {
-            self.first_index = Some(index);
+    pub fn add_vertex(&mut self, vertex: Vertex) -> Result<()> {
+        if self.first_vertex.is_none() {
+            self.first_vertex = Some(vertex);
         }
 
-        if let (Some(first_index), Some(prev_index)) = (self.first_index, self.prev_index) {
-            let mut data = Vec::with_capacity(3 * Index::SIZE);
-            first_index.write_big_endian_to(&mut data)?;
-            prev_index.write_big_endian_to(&mut data)?;
-            index.write_big_endian_to(&mut data)?;
-            assert_eq!(data.len(), 3 * Index::SIZE);
+        if let (Some(first_vertex), Some(prev_vertex)) = (self.first_vertex, self.prev_vertex) {
+            let mut data = Vec::with_capacity(3 * Vertex::SIZE);
+            first_vertex.write_big_endian_to(&mut data)?;
+            prev_vertex.write_big_endian_to(&mut data)?;
+            vertex.write_big_endian_to(&mut data)?;
             self.display_list.emit_vertices(3, &data);
         }
-        self.prev_index = Some(index);
+        self.prev_vertex = Some(vertex);
         Ok(())
+    }
+}
+
+struct ClusterGeometry {
+    lightmapped_generic: LightmappedGenericDisplayLists,
+}
+
+#[derive(Default)]
+struct ClusterGeometryBuilder {
+    lightmapped_generic: LightmappedGenericDisplayListsBuilder,
+}
+
+impl ClusterGeometryBuilder {
+    pub fn build(self) -> ClusterGeometry {
+        ClusterGeometry {
+            lightmapped_generic: self.lightmapped_generic.build(),
+        }
+    }
+}
+
+struct LightmappedGenericDisplayLists {
+    display_lists_by_plane_material: BTreeMap<([FloatByBits; 3], VpkPath), Vec<u8>>,
+}
+
+type LightmappedGenericVertex = (u16, u16, u16, u16);
+
+#[derive(Default)]
+struct LightmappedGenericDisplayListsBuilder {
+    display_lists_by_plane_material: BTreeMap<([FloatByBits; 3], VpkPath), DisplayListBuilder>,
+}
+
+impl LightmappedGenericDisplayListsBuilder {
+    pub fn polygon_builder(
+        &mut self,
+        plane: [FloatByBits; 3],
+        material_path: VpkPath,
+    ) -> PolygonBuilder<LightmappedGenericVertex> {
+        PolygonBuilder::new(
+            self.display_lists_by_plane_material
+                .entry((plane, material_path))
+                .or_insert_with(|| DisplayListBuilder::new(DisplayListBuilder::TRIANGLES)),
+        )
+    }
+
+    pub fn build(self) -> LightmappedGenericDisplayLists {
+        LightmappedGenericDisplayLists {
+            display_lists_by_plane_material: self
+                .display_lists_by_plane_material
+                .into_iter()
+                .map(|(key, display_list)| (key, display_list.build()))
+                .filter(|(_, display_list)| !display_list.is_empty())
+                .collect(),
+        }
     }
 }
 
@@ -303,23 +208,22 @@ fn process_geometry(
     bsp: Bsp,
     lightmap: &Lightmap,
     asset_loader: &AssetLoader,
-) -> Result<ProcessedGeometry> {
+) -> Result<MapGeometry> {
     let mut positions = AttributeBuilder::new();
     let mut normals = AttributeBuilder::new();
     let mut lightmap_coords = AttributeBuilder::new();
     let mut texture_coords = AttributeBuilder::new();
-    let mut display_lists_by_cluster_texture_plane: Vec<
-        BTreeMap<VpkPath, BTreeMap<u16, DisplayListBuilder>>,
-    > = repeat_with(|| BTreeMap::new())
+    let mut clusters: Vec<ClusterGeometryBuilder> = repeat_with(Default::default)
         .take(bsp.leaves().len())
         .collect();
-    let mut texture_paths = Vec::new();
-    let mut texture_ids = HashMap::new();
+    let mut material_paths = Vec::new();
+    let mut material_path_set = HashSet::new();
     for leaf in bsp.iter_worldspawn_leaves() {
         if leaf.cluster == -1 {
             // Leaf is not potentially visible from anywhere.
             continue;
         }
+        let cluster_builder = &mut clusters[leaf.cluster as usize];
 
         for face in bsp.iter_faces_from_leaf(leaf) {
             if face.light_ofs == -1 || face.tex_info == -1 {
@@ -345,34 +249,17 @@ fn process_geometry(
             );
             let material = asset_loader.get_material(&material_path)?;
             let base_texture = match material.shader() {
-                Shader::LightmappedGeneric { base_texture, .. } => base_texture,
-                // Not an implemented shader.
+                Shader::LightmappedGeneric(LightmappedGeneric { base_texture, .. }) => base_texture,
                 _ => continue,
             };
-            if !matches!(
-                base_texture.data(),
-                Some(ImageData {
-                    format: ImageFormat::Dxt1,
-                    ..
-                })
-            ) {
-                // Not an implemented format.
-                continue;
+            if !material_path_set.contains(material.path()) {
+                material_path_set.insert(material.path().clone());
+                material_paths.push(material.path().clone());
             }
-            texture_ids
-                .entry(base_texture.path().clone())
-                .or_insert_with(|| {
-                    let index = texture_paths.len() as u16;
-                    texture_paths.push(base_texture.path().clone());
-                    index
-                });
-            let mut polygon_builder = PolygonBuilder::new(
-                display_lists_by_cluster_texture_plane[leaf.cluster as usize]
-                    .entry(base_texture.path().clone())
-                    .or_default()
-                    .entry(face.plane_num)
-                    .or_insert_with(|| DisplayListBuilder::new(DisplayListBuilder::TRIANGLES)),
-            );
+            let plane = hashable_float(&bsp.planes()[face.plane_num as usize].normal);
+            let mut polygon_builder = cluster_builder
+                .lightmapped_generic
+                .polygon_builder(plane, material.path().clone());
 
             for vertex_index in bsp.iter_vertex_indices_from_face(face) {
                 let mut vertex = convert_vertex(
@@ -395,7 +282,7 @@ fn process_geometry(
                 let texture_coord_index: u16 =
                     texture_coords.add_vertex(hashable_float(&vertex.texture_coord));
 
-                polygon_builder.add_index((
+                polygon_builder.add_vertex((
                     position_index,
                     normal_index,
                     lightmap_coord_index,
@@ -405,35 +292,16 @@ fn process_geometry(
         }
     }
 
-    // Build all of the display list builders.
-    let display_lists_by_cluster_texture_plane = display_lists_by_cluster_texture_plane
-        .into_iter()
-        .map(|display_lists_by_texture_plane| {
-            display_lists_by_texture_plane
-                .into_iter()
-                .map(|(texture, display_lists_by_plane)| {
-                    (
-                        texture,
-                        display_lists_by_plane
-                            .into_iter()
-                            .map(|(plane, polygon_builder)| (plane, polygon_builder.build()))
-                            .filter(|(_, x)| !x.is_empty())
-                            .collect::<BTreeMap<_, _>>(),
-                    )
-                })
-                .filter(|(_, x)| !x.is_empty())
-                .collect::<BTreeMap<_, _>>()
-        })
-        .collect();
-
-    Ok(ProcessedGeometry {
-        position_data: positions.data,
-        normal_data: normals.data,
-        lightmap_coord_data: lightmap_coords.data,
-        texture_coord_data: texture_coords.data,
-        display_lists_by_cluster_texture_plane,
-        texture_ids,
-        texture_paths,
+    Ok(MapGeometry {
+        position_data: positions.build(),
+        normal_data: normals.build(),
+        lightmap_coord_data: lightmap_coords.build(),
+        texture_coord_data: texture_coords.build(),
+        clusters: clusters
+            .into_iter()
+            .map(ClusterGeometryBuilder::build)
+            .collect(),
+        material_paths,
     })
 }
 
@@ -450,7 +318,7 @@ fn build_asset_loader<'a>(hl2_base: &Path, bsp: Bsp<'a>) -> Result<AssetLoader<'
     Ok(AssetLoader::new(material_loader, texture_loader))
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct FloatByBits(f32);
 
 impl Eq for FloatByBits {}
@@ -542,42 +410,135 @@ fn write_debug_env_maps(dst_path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum TextureType {
+    Image,
+    Envmap { plane: [FloatByBits; 3] },
+}
+
 fn write_textures(
     dst_path: &Path,
     asset_loader: &AssetLoader,
-    texture_paths: &[VpkPath],
-) -> Result<()> {
+    map_geometry: &MapGeometry,
+) -> Result<HashMap<(VpkPath, Option<[FloatByBits; 3]>), u16>> {
+    let mut planes_by_env_map: HashMap<VpkPath, HashSet<[FloatByBits; 3]>> = Default::default();
+    for cluster_geometry in &map_geometry.clusters {
+        for (plane, material_path) in cluster_geometry
+            .lightmapped_generic
+            .display_lists_by_plane_material
+            .keys()
+        {
+            let material = asset_loader.get_material(material_path)?;
+            if let Shader::LightmappedGeneric(LightmappedGeneric {
+                env_map: Some(env_map),
+                ..
+            }) = material.shader()
+            {
+                planes_by_env_map
+                    .entry(env_map.path().clone())
+                    .or_default()
+                    .insert(*plane);
+            }
+        }
+    }
+
+    let mut textures = Vec::new();
+    let mut texture_ids = HashMap::new();
+    for material_path in &map_geometry.material_paths {
+        match asset_loader.get_material(material_path)?.shader() {
+            Shader::LightmappedGeneric(LightmappedGeneric {
+                base_texture,
+                env_map,
+                ..
+            }) => {
+                texture_ids
+                    .entry((base_texture.path().clone(), None))
+                    .or_insert_with(|| {
+                        let value = textures.len() as u16;
+                        textures.push((TextureType::Image, Rc::clone(base_texture)));
+                        println!("texture #{} is {}", value, base_texture.path());
+                        value
+                    });
+                if let Some(env_map) = env_map.as_ref() {
+                    for plane in planes_by_env_map[env_map.path()].iter().copied() {
+                        texture_ids
+                            .entry((env_map.path().clone(), Some(plane)))
+                            .or_insert_with(|| {
+                                let value = textures.len() as u16;
+                                textures.push((TextureType::Envmap { plane }, Rc::clone(env_map)));
+                                println!(
+                                    "texture #{} is {} with plane ({}, {}, {})",
+                                    value,
+                                    env_map.path(),
+                                    plane[0].0,
+                                    plane[1].0,
+                                    plane[2].0,
+                                );
+                                value
+                            });
+                    }
+                }
+            }
+            Shader::Unsupported => panic!(),
+        };
+    }
+
     const GAMECUBE_MEMORY_BUDGET: u32 = 20 * 1024 * 1024;
-    for max_dimension in [1024, 512, 256, 128] {
+    for dimension_divisor in [1, 2, 4, 8, 16, 32] {
         let mut total_size = 0;
-        for path in texture_paths {
-            let texture = asset_loader.get_texture(path)?;
+        for (type_, texture) in &textures {
             let mut width = texture.width();
             let mut height = texture.height();
-            let image_data = texture.data().unwrap();
-            assert!(matches!(image_data.format, ImageFormat::Dxt1));
-            // Take all mips that fit within the max_dimension.
-            let mut accepted_mip = false;
-            for _ in &image_data.mips {
-                if width <= max_dimension && height <= max_dimension {
-                    total_size += width * height / 2;
-                    accepted_mip = true;
-                }
-                width = (width / 2).max(8);
-                height = (height / 2).max(8);
+            if texture.data().is_none() {
+                bail!("no texture data for {}", texture.path());
             }
-            if !accepted_mip {
-                bail!(
-                    "unable to find a mipmap within max_dimension={} for texture {}",
-                    max_dimension,
-                    path,
-                )
+            let image_data = texture.data().unwrap();
+            match type_ {
+                TextureType::Image => {
+                    // Take all mips that fit within the max_dimension.
+                    let mut accepted_mip = false;
+                    let max_width = (width / dimension_divisor).max(8);
+                    let max_height = (height / dimension_divisor).max(8);
+                    for _ in &image_data.mips {
+                        if width <= max_width && height <= max_height {
+                            match image_data.format {
+                                ImageFormat::Dxt1 => total_size += width * height / 2,
+                                ImageFormat::Rgb8 | ImageFormat::Rgba8 => {
+                                    total_size += width * height * 4
+                                }
+                            }
+                            accepted_mip = true;
+                        }
+                        width = width / 2;
+                        height = height / 2;
+                        if width < 8 || height < 8 {
+                            break;
+                        }
+                    }
+                    if !accepted_mip {
+                        bail!(
+                            "unable to find a mipmap within max_size={}x{} for texture {}",
+                            max_width,
+                            max_height,
+                            texture.path(),
+                        );
+                    }
+                }
+                TextureType::Envmap { .. } => {
+                    // Emit a sphere map at double the cube face dimension.
+                    let width = 2 * width / dimension_divisor;
+                    let height = 2 * height / dimension_divisor;
+
+                    // Use RGBA8, making this 32 bpp.
+                    // TODO: Use DXT1.
+                    total_size += width * height * 4;
+                }
             }
         }
 
         println!(
-            "Textures occupy {} bytes with max_dimension {}",
-            total_size, max_dimension
+            "Textures occupy {} bytes with dimension_divisor {}",
+            total_size, dimension_divisor,
         );
 
         if total_size > GAMECUBE_MEMORY_BUDGET {
@@ -587,60 +548,300 @@ fn write_textures(
         let mut texture_table = BufWriter::new(File::create(dst_path.join("texture_table.dat"))?);
         let mut texture_data = BufWriter::new(File::create(dst_path.join("texture_data.dat"))?);
 
-        for path in texture_paths {
-            let texture = asset_loader.get_texture(path)?;
+        total_size = 0;
+        for (type_, texture) in &textures {
             let image_data = texture.data().unwrap();
-            assert!(matches!(image_data.format, ImageFormat::Dxt1));
+            match type_ {
+                TextureType::Image => {
+                    assert_eq!(image_data.layer_count, 1);
 
-            // Take all mips that fit within the max_dimension.
-            let start_offset = texture_data.stream_position()? as u32;
-            let mut mip_width = texture.width();
-            let mut mip_height = texture.height();
-            let mut mips_written = 0;
-            for mip in &image_data.mips {
-                if mip_width <= max_dimension && mip_height <= max_dimension {
-                    assert!(mip_width >= 4);
-                    assert!(mip_height >= 4);
-                    assert_eq!(mip.len(), (mip_width * mip_height / 2) as usize);
+                    // Take all mips that fit within the max_dimension.
+                    let max_mip_width = (texture.width() / dimension_divisor).max(8);
+                    let max_mip_height = (texture.height() / dimension_divisor).max(8);
+                    let start_offset = texture_data.stream_position()? as u32;
+                    let mut mip_width = texture.width();
+                    let mut mip_height = texture.height();
+                    let mut mips_written = 0;
+                    for mip in &image_data.mips {
+                        if mip_width <= max_mip_width && mip_height <= max_mip_height {
+                            match image_data.format {
+                                ImageFormat::Dxt1 => {
+                                    // Already compressed. Just have to adapt the bit and byte order.
+                                    assert_eq!(mip[0].len(), (mip_width * mip_height / 2) as usize);
+                                    write_gamecube_dxt1(
+                                        &mut texture_data,
+                                        &mip[0],
+                                        mip_width,
+                                        mip_height,
+                                    )?;
+                                }
+                                ImageFormat::Rgba8 => {
+                                    write_gamecube_rgba8(
+                                        &mut texture_data,
+                                        &mip[0],
+                                        mip_width,
+                                        mip_height,
+                                    )?;
+                                }
+                                _ => bail!(
+                                    "unexpected image format for TextureType::Image: {:?}",
+                                    image_data.format,
+                                ),
+                            }
+                            mips_written += 1;
+                        }
+                        mip_width = mip_width / 2;
+                        mip_height = mip_height / 2;
+                        if mip_width < 8 || mip_height < 8 {
+                            break;
+                        }
+                    }
+                    // Pad to a 32 byte boundary.
+                    while (texture_data.stream_position()? & 31) != 0 {
+                        texture_data.write_u8(0)?;
+                    }
+                    let end_offset = texture_data.stream_position()? as u32;
 
-                    write_gamecube_dxt1(&mut texture_data, mip, mip_width, mip_height)?;
-                    mips_written += 1;
+                    // Write a texture table entry.
+                    texture_table
+                        .write_u16::<BigEndian>((texture.width() / dimension_divisor) as u16)?;
+                    texture_table
+                        .write_u16::<BigEndian>((texture.height() / dimension_divisor) as u16)?;
+                    texture_table.write_u8(mips_written)?;
+                    texture_table.write_u8(
+                        if (texture.flags() & 0x4) != 0 {
+                            0x01
+                        } else {
+                            0
+                        } | if (texture.flags() & 0x8) != 0 {
+                            0x02
+                        } else {
+                            0
+                        },
+                    )?;
+                    texture_table.write_u8(match image_data.format {
+                        ImageFormat::Dxt1 => 0xe,  // GX_TF_CMPR
+                        ImageFormat::Rgba8 => 0x6, // GX_TF_RGBA8
+                        _ => bail!(
+                            "unexpected image format for TextureType::Image: {:?}",
+                            image_data.format,
+                        ),
+                    })?;
+                    texture_table.write_u8(0)?;
+                    texture_table.write_u32::<BigEndian>(start_offset)?;
+                    texture_table.write_u32::<BigEndian>(end_offset)?;
+                    total_size += end_offset - start_offset;
                 }
-                mip_width = (mip_width / 2).max(4);
-                mip_height = (mip_height / 2).max(4);
-            }
-            // Pad to a 32 byte boundary.
-            while (texture_data.stream_position()? & 31) != 0 {
-                texture_data.write_u8(0)?;
-            }
-            let end_offset = texture_data.stream_position()? as u32;
+                TextureType::Envmap { plane } => {
+                    // Emit a sphere map at the cube face dimension.
+                    // Use RGBA8, making this 32 bpp.
+                    // TODO: Use DXT1.
+                    assert_eq!(texture.width(), texture.height());
+                    let cube_size = texture.width() as usize;
+                    let sphere_width = 2 * cube_size / dimension_divisor as usize;
+                    let sphere_height = 2 * cube_size / dimension_divisor as usize;
+                    let mut pixels = Vec::with_capacity(sphere_width * sphere_height);
 
-            // Write a texture table entry.
-            texture_table.write_u16::<BigEndian>(texture.width() as u16)?;
-            texture_table.write_u16::<BigEndian>(texture.height() as u16)?;
-            texture_table.write_u8(mips_written)?;
-            texture_table.write_u8(
-                if (texture.flags() & 0x4) != 0 {
-                    0x01
-                } else {
-                    0
-                } | if (texture.flags() & 0x8) != 0 {
-                    0x02
-                } else {
-                    0
-                },
-            )?;
-            texture_table.write_u16::<BigEndian>(0)?;
-            texture_table.write_u32::<BigEndian>(start_offset)?;
-            texture_table.write_u32::<BigEndian>(end_offset)?;
+                    // Decode the six cube map faces to flat RGBA8 buffers.
+                    let mut faces = Vec::new();
+                    match image_data.format {
+                        ImageFormat::Dxt1 => {
+                            let encoded_faces = &image_data.mips[0];
+                            assert!(encoded_faces.len() == 6 || encoded_faces.len() == 7);
+                            for face_index in 0..6 {
+                                let encoded_face = &encoded_faces[face_index];
+                                assert_eq!(encoded_face.len(), cube_size * cube_size / 2);
+                                let mut face = Vec::with_capacity(cube_size * cube_size * 4);
+                                read_native_dxt1(&mut face, encoded_face, cube_size, cube_size)?;
+                                faces.push(face);
+                            }
+                        }
+                        _ => bail!("unexpected cube map format: {:?}", image_data.format),
+                    }
+                    let sample = |v: Vec3| -> [u8; 4] {
+                        let (face, s, t) = if v[0].abs() >= v[1].abs() && v[0].abs() >= v[2].abs() {
+                            if v[0] > 0.0 {
+                                // X+
+                                (1, -v[2] / v[0] * 0.5 + 0.5, v[1] / v[0] * 0.5 + 0.5)
+                            } else {
+                                // X-
+                                (0, -v[2] / v[0] * 0.5 + 0.5, -v[1] / v[0] * 0.5 + 0.5)
+                            }
+                        } else if v[1].abs() >= v[2].abs() {
+                            if v[1] > 0.0 {
+                                // Y+
+                                (3, -v[0] / v[1] * 0.5 + 0.5, v[2] / v[1] * 0.5 + 0.5)
+                            } else {
+                                // Y-
+                                (2, v[0] / v[1] * 0.5 + 0.5, v[2] / v[1] * 0.5 + 0.5)
+                            }
+                        } else {
+                            if v[2] > 0.0 {
+                                // Z+
+                                (5, v[0] / v[2] * 0.5 + 0.5, v[1] / v[2] * 0.5 + 0.5)
+                            } else {
+                                // Z-
+                                (4, v[0] / v[2] * 0.5 + 0.5, -v[1] / v[2] * 0.5 + 0.5)
+                            }
+                        };
+
+                        let x = (s * cube_size as f32).clamp(0.0, cube_size as f32);
+                        let y = (t * cube_size as f32).clamp(0.0, cube_size as f32);
+                        let x0 = (x as usize).min(cube_size - 1);
+                        let y0 = (y as usize).min(cube_size - 1);
+                        let x1 = (x0 + 1).min(cube_size - 1);
+                        let y1 = (y0 + 1).min(cube_size - 1);
+                        let xf = x.fract();
+                        let yf = y.fract();
+
+                        let offset = 4 * (cube_size * y0 + x0);
+                        let sample0: [u8; 4] = faces[face][offset..offset + 4].try_into().unwrap();
+                        let offset = 4 * (cube_size * y0 + x1);
+                        let sample1: [u8; 4] = faces[face][offset..offset + 4].try_into().unwrap();
+                        let offset = 4 * (cube_size * y1 + x0);
+                        let sample2: [u8; 4] = faces[face][offset..offset + 4].try_into().unwrap();
+                        let offset = 4 * (cube_size * y1 + x1);
+                        let sample3: [u8; 4] = faces[face][offset..offset + 4].try_into().unwrap();
+
+                        let lerp = |a, b, t| (1.0 - t) * a + t * b;
+                        let quantize = |x: f32| (x + 0.5).clamp(0.0, 255.0) as u8;
+                        let filter = |s0, s1, s2, s3| {
+                            quantize(lerp(
+                                lerp(s0 as f32, s1 as f32, xf),
+                                lerp(s2 as f32, s3 as f32, xf),
+                                yf,
+                            ))
+                        };
+
+                        [
+                            filter(sample0[0], sample1[0], sample2[0], sample3[0]),
+                            filter(sample0[1], sample1[1], sample2[1], sample3[1]),
+                            filter(sample0[2], sample1[2], sample2[2], sample3[2]),
+                            filter(sample0[3], sample1[3], sample2[3], sample3[3]),
+                        ]
+                    };
+
+                    // Sample the decoded cube map to build the sphere map.
+                    let normal = vec3(plane[0].0, plane[1].0, plane[2].0);
+                    let (s, t) = build_local_space(&normal);
+                    let mut png_pixels = Vec::with_capacity(sphere_width * sphere_height * 3);
+                    for y in 0..sphere_height {
+                        for x in 0..sphere_width {
+                            let tex_s = (x as f32 + 0.5) / sphere_width as f32 * 2.0 - 1.0;
+                            let tex_t = (y as f32 + 0.5) / sphere_height as f32 * 2.0 - 1.0;
+                            let tex_zsqr = 1.0 - tex_s * tex_s - tex_t * tex_t;
+                            let (tex_s, tex_t, tex_zsqr) = if tex_zsqr >= 0.0 {
+                                (tex_s, tex_t, tex_zsqr)
+                            } else {
+                                let st = vec2(tex_s, tex_t).normalize();
+                                (st[0], st[1], 0.0)
+                            };
+
+                            let incident = vec3(0.0, 0.0, 1.0);
+                            let sphere_normal = vec3(tex_s, tex_t, tex_zsqr.sqrt());
+                            let vec =
+                                incident - sphere_normal * (2.0 * incident.dot(&sphere_normal));
+                            let world_vec = Mat3::from_columns(&[s, t, normal]) * vec;
+
+                            let rgba = sample(world_vec);
+                            pixels.extend_from_slice(&rgba);
+                            png_pixels.extend_from_slice(&rgba[..3]);
+                        }
+                    }
+
+                    let start_offset = texture_data.stream_position()? as u32;
+                    write_gamecube_rgba8(
+                        &mut texture_data,
+                        &pixels,
+                        sphere_width as u32,
+                        sphere_height as u32,
+                    )?;
+                    let end_offset = texture_data.stream_position()? as u32;
+
+                    // Write a texture table entry.
+                    texture_table.write_u16::<BigEndian>(sphere_width as u16)?;
+                    texture_table.write_u16::<BigEndian>(sphere_height as u16)?;
+                    texture_table.write_u8(1)?; // mip count
+                    texture_table.write_u8(0x3)?; // flags: CLAMP_S | CLAMP_T
+                    texture_table.write_u8(0x6)?; // GX_TF_RGBA8
+                    texture_table.write_u8(0)?;
+                    texture_table.write_u32::<BigEndian>(start_offset)?;
+                    texture_table.write_u32::<BigEndian>(end_offset)?;
+                    total_size += end_offset - start_offset;
+                }
+            }
         }
+
+        println!("wrote total size: {} bytes", total_size);
 
         texture_table.flush()?;
         texture_data.flush()?;
 
-        return Ok(());
+        return Ok(texture_ids);
     }
     bail!("Unable to fit textures within the memory budget.");
+}
+
+fn read_native_dxt1<W: Write>(dst: &mut W, src: &[u8], width: usize, height: usize) -> Result<()> {
+    let blocks_wide = (width + 3) / 4;
+    for y in 0..height {
+        let coarse_y = y / 4;
+        for x in 0..width {
+            let coarse_x = x / 4;
+            let dxt1_offset = 8 * (blocks_wide * coarse_y + coarse_x);
+            let mut block = &src[dxt1_offset..dxt1_offset + 8];
+            let color_a_encoded = block.read_u16::<LittleEndian>()?;
+            let color_b_encoded = block.read_u16::<LittleEndian>()?;
+            let color_a = decode_rgb565(color_a_encoded);
+            let color_b = decode_rgb565(color_b_encoded);
+            let colors = if color_a > color_b {
+                [
+                    color_a,
+                    color_b,
+                    [
+                        ((2 * color_a[0] as u16 + color_b[0] as u16) / 3) as u8,
+                        ((2 * color_a[1] as u16 + color_b[1] as u16) / 3) as u8,
+                        ((2 * color_a[2] as u16 + color_b[2] as u16) / 3) as u8,
+                        ((2 * color_a[3] as u16 + color_b[3] as u16) / 3) as u8,
+                    ],
+                    [
+                        ((color_a[0] as u16 + 2 * color_b[0] as u16) / 3) as u8,
+                        ((color_a[1] as u16 + 2 * color_b[1] as u16) / 3) as u8,
+                        ((color_a[2] as u16 + 2 * color_b[2] as u16) / 3) as u8,
+                        ((color_a[3] as u16 + 2 * color_b[3] as u16) / 3) as u8,
+                    ],
+                ]
+            } else {
+                [
+                    color_a,
+                    color_b,
+                    [
+                        ((color_a[0] as u16 + color_b[0] as u16) / 2) as u8,
+                        ((color_a[1] as u16 + color_b[1] as u16) / 2) as u8,
+                        ((color_a[2] as u16 + color_b[2] as u16) / 2) as u8,
+                        ((color_a[3] as u16 + color_b[3] as u16) / 2) as u8,
+                    ],
+                    [0, 0, 0, 0],
+                ]
+            };
+            let color_bit = 2 * (4 * (y % 4) + (x % 4));
+            let color_bits = block.read_u32::<LittleEndian>().unwrap();
+            let color = colors[((color_bits >> color_bit) & 3) as usize];
+            dst.write_all(&color)?;
+        }
+    }
+    Ok(())
+}
+
+fn decode_rgb565(encoded: u16) -> [u8; 4] {
+    let extend5 = |x| (x << 3) | (x >> 2);
+    let extend6 = |x| (x << 2) | (x >> 4);
+    [
+        extend5(((encoded >> 11) & 0x1f) as u8),
+        extend6(((encoded >> 5) & 0x3f) as u8),
+        extend5((encoded & 0x1f) as u8),
+        255,
+    ]
 }
 
 fn write_gamecube_dxt1<W: Write + Seek>(
@@ -686,158 +887,235 @@ fn write_gamecube_dxt1<W: Write + Seek>(
     Ok(())
 }
 
-fn write_position_data(dst_path: &Path, position_data: Vec<u8>) -> Result<()> {
+fn write_gamecube_rgba8<W: Write + Seek>(
+    dst: &mut W,
+    src: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<()> {
+    for coarse_y in 0..height / 4 {
+        for coarse_x in 0..width / 4 {
+            let mut block = [0; 64];
+            for fine_y in 0..4 {
+                for fine_x in 0..4 {
+                    let x = 4 * coarse_x + fine_x;
+                    let y = 4 * coarse_y + fine_y;
+                    let src_offset = 4 * (width * y + x) as usize;
+                    let rgba: &[u8; 4] = src[src_offset..src_offset + 4].try_into().unwrap();
+                    let dst_offset = 2 * (4 * fine_y + fine_x) as usize;
+                    block[dst_offset] = rgba[3];
+                    block[dst_offset + 1] = rgba[0];
+                    block[dst_offset + 32] = rgba[1];
+                    block[dst_offset + 33] = rgba[2];
+                }
+            }
+            dst.write_all(&block)?;
+        }
+    }
+    Ok(())
+}
+
+fn write_position_data(dst_path: &Path, position_data: &[u8]) -> Result<()> {
     let mut f = BufWriter::new(File::create(dst_path.join("position_data.dat"))?);
     f.write_all(&position_data)?;
     f.flush()?;
     Ok(())
 }
 
-fn write_normal_data(dst_path: &Path, normal_data: Vec<u8>) -> Result<()> {
+fn write_normal_data(dst_path: &Path, normal_data: &[u8]) -> Result<()> {
     let mut f = BufWriter::new(File::create(dst_path.join("normal_data.dat"))?);
     f.write_all(&normal_data)?;
     f.flush()?;
     Ok(())
 }
 
-fn write_lightmap_coord_data(dst_path: &Path, lightmap_coord_data: Vec<u8>) -> Result<()> {
+fn write_lightmap_coord_data(dst_path: &Path, lightmap_coord_data: &[u8]) -> Result<()> {
     let mut f = BufWriter::new(File::create(dst_path.join("lightmap_coord_data.dat"))?);
     f.write_all(&lightmap_coord_data)?;
     f.flush()?;
     Ok(())
 }
 
-fn write_texture_coord_data(dst_path: &Path, texture_coord_data: Vec<u8>) -> Result<()> {
+fn write_texture_coord_data(dst_path: &Path, texture_coord_data: &[u8]) -> Result<()> {
     let mut f = BufWriter::new(File::create(dst_path.join("texture_coord_data.dat"))?);
     f.write_all(&texture_coord_data)?;
     f.flush()?;
     Ok(())
 }
 
-fn write_display_lists(
-    bsp: Bsp,
-    dst_path: &Path,
-    texture_ids: HashMap<VpkPath, u16>,
-    display_lists_by_cluster_texture_plane: Vec<BTreeMap<VpkPath, BTreeMap<u16, Vec<u8>>>>,
-) -> Result<()> {
-    // struct DisplayListsByClusterTexturePlaneEntry {
-    //     by_texture_plane_start_index: u32,
-    //     by_texture_plane_end_index: u32,
-    // }
-    //
-    const DISPLAY_LISTS_BY_TEXTURE_PLANE_SIZE: u64 = 12;
-    // struct DisplayListsByTexturePlaneEntry {
-    //     texture_index: u32,
-    //     by_plane_start_index: u32,
-    //     by_plane_end_index: u32,
-    // }
-    //
-    const DISPLAY_LISTS_BY_PLANE_SIZE: u64 = 156;
-    // struct DisplayListsByPlaneEntry {
-    //     plane_index: u16,
-    //     _padding: u16,
-    //     reflect_front_paraboloid: [[f32; 4]; 3],
-    //     reflect_back_paraboloid: [[f32; 4]; 3],
-    //     reflect_paraboloid_z: [[f32; 4]; 3],
-    //     display_list_start_offset: u32,
-    //     display_list_end_offset: u32,
-    // }
+mod byte_code {
+    use std::ops::Index;
 
-    let mut file1 = BufWriter::new(File::create(
-        dst_path.join("display_lists_by_cluster_texture_plane.dat"),
-    )?);
-    let mut file2 = RecordWriter::new(
-        BufWriter::new(File::create(
-            dst_path.join("display_lists_by_texture_plane.dat"),
-        )?),
-        DISPLAY_LISTS_BY_TEXTURE_PLANE_SIZE,
-    );
-    let mut file3 = RecordWriter::new(
-        BufWriter::new(File::create(dst_path.join("display_lists_by_plane.dat"))?),
-        DISPLAY_LISTS_BY_PLANE_SIZE,
-    );
-    let mut file4 = BufWriter::new(File::create(dst_path.join("display_lists.dat"))?);
-
-    for diplay_lists_by_texture_plane in &display_lists_by_cluster_texture_plane {
-        // Emit part of a DisplayListsByClusterTexturePlaneEntry to the first index.
-        file1.write_u32::<BigEndian>(file2.index()? as u32)?;
-
-        for (path, display_lists_by_plane) in diplay_lists_by_texture_plane {
-            // Emit part of a DisplayListsByTexturePlaneEntry to the second index.
-            let texture_index = texture_ids[path] as u32;
-            file2.write_u32::<BigEndian>(texture_index)?;
-            file2.write_u32::<BigEndian>(file3.index()? as u32)?;
-
-            for (&plane_index, display_list) in display_lists_by_plane {
-                let plane = &bsp.planes()[plane_index as usize];
-                let normal = make_vec3(&plane.normal);
-                let reflect = reflect(&Mat4::identity(), &normal);
-                let scale_and_bias = Mat3::from_rows(&[
-                    vec3(0.5, 0.0, 0.5).transpose(),
-                    vec3(0.0, 0.5, 0.5).transpose(),
-                    vec3(0.0, 0.0, 1.0).transpose(),
-                ]);
-                let reflect_front_paraboloid = scale_and_bias
-                    * Mat3x4::from_rows(&[
-                        vec4(1.0, 0.0, 0.0, 0.0).transpose(),
-                        vec4(0.0, 1.0, 0.0, 0.0).transpose(),
-                        vec4(0.0, 0.0, 1.0, 1.0).transpose(),
-                    ])
-                    * reflect;
-                let reflect_back_paraboloid = scale_and_bias
-                    * Mat3x4::from_rows(&[
-                        vec4(1.0, 0.0, 0.0, 0.0).transpose(),
-                        vec4(0.0, 1.0, 0.0, 0.0).transpose(),
-                        vec4(0.0, 0.0, -1.0, 1.0).transpose(),
-                    ])
-                    * reflect;
-                let reflect_paraboloid_z = scale_and_bias
-                    * Mat3x4::from_rows(&[
-                        vec4(0.0, 0.0, 1.0, 0.0).transpose(),
-                        vec4(0.0, 0.0, 0.0, 0.0).transpose(),
-                        vec4(0.0, 0.0, 0.0, 1.0).transpose(),
-                    ])
-                    * reflect;
-
-                // Emit part of a DisplayListsByPlaneEntry to the third index.
-                file3.write_u16::<BigEndian>(plane_index)?;
-                file3.write_u16::<BigEndian>(0)?;
-                for row in 0..3 {
-                    for col in 0..4 {
-                        file3.write_f32::<BigEndian>(reflect_front_paraboloid[(row, col)])?;
-                    }
-                }
-                for row in 0..3 {
-                    for col in 0..4 {
-                        file3.write_f32::<BigEndian>(reflect_back_paraboloid[(row, col)])?;
-                    }
-                }
-                for row in 0..3 {
-                    for col in 0..4 {
-                        file3.write_f32::<BigEndian>(reflect_paraboloid_z[(row, col)])?;
-                    }
-                }
-                file3.write_u32::<BigEndian>(file4.stream_position()? as u32)?;
-
-                // Write the display list data to the fourth file.
-                file4.write_all(display_list)?;
-
-                // Finish the DisplayListsByPlaneEntry in the third index.
-                file3.write_u32::<BigEndian>(file4.stream_position()? as u32)?;
-            }
-
-            // Finish the DisplayListsByTexturePlaneEntry in the second index.
-            file2.write_u32::<BigEndian>(file3.index()? as u32)?;
-        }
-
-        // Finish the DisplayListsByClusterTexturePlaneEntry in the first index.
-        file1.write_u32::<BigEndian>(file2.index()? as u32)?;
+    pub fn draw(display_list_start_offset: u32, display_list_end_offset: u32) -> [u32; 2] {
+        assert_eq!(display_list_start_offset >> 24, 0);
+        [display_list_start_offset, display_list_end_offset]
     }
 
-    file1.flush()?;
-    file2.flush()?;
-    file3.flush()?;
-    file4.flush()?;
+    pub fn set_plane(texture_matrix: impl Index<(usize, usize), Output = f32>) -> [u32; 13] {
+        [
+            0x01000000,
+            texture_matrix[(0, 0)].to_bits(),
+            texture_matrix[(0, 1)].to_bits(),
+            texture_matrix[(0, 2)].to_bits(),
+            texture_matrix[(0, 3)].to_bits(),
+            texture_matrix[(1, 0)].to_bits(),
+            texture_matrix[(1, 1)].to_bits(),
+            texture_matrix[(1, 2)].to_bits(),
+            texture_matrix[(1, 3)].to_bits(),
+            texture_matrix[(2, 0)].to_bits(),
+            texture_matrix[(2, 1)].to_bits(),
+            texture_matrix[(2, 2)].to_bits(),
+            texture_matrix[(2, 3)].to_bits(),
+        ]
+    }
+
+    pub fn set_base_texture(base_texture_index: u16) -> [u32; 1] {
+        [0x02000000 | base_texture_index as u32]
+    }
+
+    pub fn set_env_map_texture(env_map_texture_index: u16) -> [u32; 1] {
+        [0x03000000 | env_map_texture_index as u32]
+    }
+
+    pub fn set_mode(mode: u8) -> [u32; 1] {
+        [0xff000000 | mode as u32]
+    }
+}
+
+fn build_local_space(normal: &Vec3) -> (Vec3, Vec3) {
+    // Choose a reference vector that is not nearly aligned with the normal. This is fairly
+    // arbitrary and is done only to establish a local coordinate space. Use the Y axis if the
+    // normal points mostly along the X axis. Otherwise, choose the X axis.
+    let r = if normal[0].abs() >= normal[1].abs() && normal[0].abs() >= normal[2].abs() {
+        vec3(0.0, 1.0, 0.0)
+    } else {
+        vec3(1.0, 0.0, 0.0)
+    };
+    // Construct s perpendicular to the normal and reference vectors.
+    let s = normal.cross(&r).normalize();
+    // Construct t perpendicular to the s and normal vectors. The order is chosen so that
+    // `s x t = normal`.
+    let t = normal.cross(&s).normalize();
+    (s, t)
+}
+
+fn write_geometry(
+    dst_path: &Path,
+    asset_loader: &AssetLoader,
+    map_geometry: &MapGeometry,
+    texture_ids: &HashMap<(VpkPath, Option<[FloatByBits; 3]>), u16>,
+) -> Result<()> {
+    // struct ClusterGeometry {
+    //     byte_code_start_index: u32,
+    //     byte_code_end_index: u32,
+    // }
+
+    let mut table_file = BufWriter::new(File::create(dst_path.join("cluster_geometry_table.dat"))?);
+    let mut byte_code_file = RecordWriter::new(
+        BufWriter::new(File::create(
+            dst_path.join("cluster_geometry_byte_code.dat"),
+        )?),
+        4,
+    );
+    let mut display_lists_file = BufWriter::new(File::create(dst_path.join("display_lists.dat"))?);
+
+    for cluster in &map_geometry.clusters {
+        // Emit part of a ClusterGeometry struct to the table.
+        table_file.write_u32::<BigEndian>(byte_code_file.index()? as u32)?;
+
+        let mut prev_mode = None;
+        let mut prev_material_path = None;
+        let mut prev_plane = None;
+        for ((plane, material_path), display_list) in
+            &cluster.lightmapped_generic.display_lists_by_plane_material
+        {
+            let material = asset_loader.get_material(material_path)?;
+            let mode = match material.shader() {
+                Shader::LightmappedGeneric(LightmappedGeneric { env_map: None, .. }) => 0,
+                Shader::LightmappedGeneric(LightmappedGeneric {
+                    env_map: Some(_), ..
+                }) => 1,
+                _ => panic!(),
+            };
+            let plane = if mode == 1 { Some(*plane) } else { None };
+
+            if prev_mode != Some(mode) {
+                prev_mode = Some(mode);
+                byte_code::set_mode(mode).write_big_endian_to(&mut *byte_code_file)?;
+            }
+
+            if prev_material_path != Some(material_path) {
+                prev_material_path = Some(material_path);
+                let (base_texture_index, env_map_texture_index) = match material.shader() {
+                    Shader::LightmappedGeneric(LightmappedGeneric {
+                        base_texture,
+                        env_map,
+                        ..
+                    }) => {
+                        let base_texture_index = texture_ids[&(base_texture.path().clone(), None)];
+                        let env_map_texture_index = env_map.as_ref().map(|env_map| {
+                            texture_ids[&(env_map.path().clone(), Some(plane.unwrap()))]
+                        });
+                        (base_texture_index, env_map_texture_index)
+                    }
+                    Shader::Unsupported => panic!(),
+                };
+                byte_code::set_base_texture(base_texture_index)
+                    .write_big_endian_to(&mut *byte_code_file)?;
+                if let Some(env_map_texture_index) = env_map_texture_index {
+                    byte_code::set_env_map_texture(env_map_texture_index)
+                        .write_big_endian_to(&mut *byte_code_file)?;
+                }
+            }
+
+            if prev_plane != plane {
+                prev_plane = plane;
+
+                if let Some(plane) = plane {
+                    let normal = vec3(plane[0].0, plane[1].0, plane[2].0);
+                    let (s, t) = build_local_space(&normal);
+
+                    // Map world space vectors to (s, t, normal) local space.
+                    let world_to_local = mat3_to_mat4(&Mat3::from_rows(&[
+                        s.transpose(),
+                        t.transpose(),
+                        normal.transpose(),
+                    ]));
+                    // Map local space vectors to their mirror images relative to the
+                    // `z = 0` plane.
+                    let local_reflect = Mat4::from_diagonal(&vec4(1.0, 1.0, -1.0, 1.0));
+                    // Map normalized vectors in local space to texture coordinates.
+                    let local_to_texture = Mat3x4::from_rows(&[
+                        vec4(0.5, 0.0, 0.0, 0.5).transpose(),
+                        vec4(0.0, 0.5, 0.0, 0.5).transpose(),
+                        vec4(0.0, 0.0, 0.0, 1.0).transpose(),
+                    ]);
+
+                    // Their product maps world space vectors to reflection texture coordinates.
+                    let texture_matrix: Mat3x4 = local_to_texture * local_reflect * world_to_local;
+
+                    byte_code::set_plane(texture_matrix)
+                        .write_big_endian_to(&mut *byte_code_file)?;
+                }
+            }
+
+            let display_list_start_offset = display_lists_file.stream_position()? as u32;
+            assert_eq!(display_list_start_offset & 31, 0);
+            display_lists_file.write_all(display_list)?;
+            let display_list_end_offset = display_lists_file.stream_position()? as u32;
+            assert_eq!(display_list_end_offset & 31, 0);
+
+            byte_code::draw(display_list_start_offset, display_list_end_offset)
+                .write_big_endian_to(&mut *byte_code_file)?;
+        }
+
+        // Finish the ClusterGeometry struct in the table.
+        table_file.write_u32::<BigEndian>(byte_code_file.index()? as u32)?;
+    }
+
+    table_file.flush()?;
+    byte_code_file.flush()?;
+    display_lists_file.flush()?;
     Ok(())
 }
 

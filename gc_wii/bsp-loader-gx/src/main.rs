@@ -15,9 +15,9 @@ use alloc::vec::Vec;
 use fully_occupied::{extract_slice, FullyOccupied};
 use ogc_sys::*;
 
-use crate::display_list_data::iter_display_lists_for_cluster;
-use crate::gx::TevReg;
+use crate::display_list_data::{get_cluster_geometry, ByteCodeEntry};
 use crate::shaders::flat_vertex_color::FLAT_VERTEX_COLOR_SHADER;
+use crate::shaders::lightmapped::LIGHTMAPPED_SHADER;
 use crate::shaders::lightmapped_env_shader::LIGHTMAPPED_ENV_SHADER;
 use crate::visibility::{ClusterIndex, Visibility};
 
@@ -42,8 +42,6 @@ static BSP_LEAF_DATA: &[u8] = include_bytes_align!(2, "../../../build/bsp_leaves
 static VISIBILITY_DATA: &[u8] = include_bytes_align_as!(u32, "../../../build/vis.dat");
 static TEXTURE_TABLE_DATA: &[u8] = include_bytes_align_as!(u32, "../../../build/texture_table.dat");
 static TEXTURE_DATA: &[u8] = include_bytes_align!(32, "../../../build/texture_data.dat");
-static ENV_MAP_FRONT_DATA: &[u8] = include_bytes_align!(32, "../../../build/envmap_front.tpl");
-static ENV_MAP_BACK_DATA: &[u8] = include_bytes_align!(32, "../../../build/envmap_back.tpl");
 
 static XFB: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 static DO_COPY: AtomicBool = AtomicBool::new(false);
@@ -54,7 +52,9 @@ struct TextureTableEntry {
     height: u16,
     mip_count: u8,
     flags: u8,
-    _padding2: u16,
+    /// One of the GX_TF_* enumerated values.
+    format: u8,
+    _padding: u8,
     start_offset: usize,
     end_offset: usize,
 }
@@ -154,14 +154,6 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
         let mut lightmap_texobj = load_texture_tpl(LIGHTMAP_DATA);
         GX_LoadTexObj(&mut lightmap_texobj, GX_TEXMAP0 as u8);
 
-        // Configure texture objects for the envmap.
-        let mut envmap_front_texobj = load_texture_tpl(ENV_MAP_FRONT_DATA);
-        GX_InitTexObjWrapMode(&mut envmap_front_texobj, GX_CLAMP as u8, GX_CLAMP as u8);
-        GX_LoadTexObj(&mut envmap_front_texobj, GX_TEXMAP5 as u8);
-        let mut envmap_back_texobj = load_texture_tpl(ENV_MAP_BACK_DATA);
-        GX_InitTexObjWrapMode(&mut envmap_back_texobj, GX_CLAMP as u8, GX_CLAMP as u8);
-        GX_LoadTexObj(&mut envmap_back_texobj, GX_TEXMAP6 as u8);
-
         // // Set up full screen render to texture.
         // let screen_texture_color_data = Memalign::new(
         //     32,
@@ -246,7 +238,7 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
                     TEXTURE_DATA[entry.start_offset..entry.end_offset].as_ptr() as *mut c_void,
                     entry.width,
                     entry.height,
-                    GX_TF_CMPR as u8,
+                    entry.format,
                     if (entry.flags & TEXTURE_FLAG_CLAMP_S) != 0 {
                         GX_CLAMP
                     } else {
@@ -257,7 +249,7 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
                     } else {
                         GX_REPEAT
                     } as u8,
-                    if entry.mip_count > 0 {
+                    if entry.mip_count > 1 {
                         GX_TRUE
                     } else {
                         GX_FALSE
@@ -265,7 +257,7 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
                 );
                 GX_InitTexObjLOD(
                     &mut texobj,
-                    if entry.mip_count > 0 {
+                    if entry.mip_count > 1 {
                         GX_LIN_MIP_LIN
                     } else {
                         GX_LINEAR
@@ -502,6 +494,9 @@ fn prepare_main_draw(
             -game_state.pos.z,
         );
         GX_LoadTexMtxImm(eye_offset.as_mut_ptr(), GX_TEXMTX0, GX_MTX3x4 as u8);
+
+        let mut scale_and_bias = [[0.5, 0.0, 0.0, 0.5], [0.0, 0.5, 0.0, 0.5]];
+        GX_LoadTexMtxImm(scale_and_bias.as_mut_ptr(), GX_TEXMTX1, GX_MTX2x4 as u8);
     }
 }
 
@@ -513,80 +508,73 @@ fn do_main_draw(pos: &guVector, visibility: Visibility, base_map_texobjs: &[GXTe
         let view_leaf = traverse_bsp(pos);
         let view_cluster = (*view_leaf).cluster;
 
-        const DEBUG: bool = false;
-        const PANES: u8 = if DEBUG { 2 } else { 1 };
-        for y in 0..PANES {
-            for x in 0..PANES {
-                let debug_stage = 2 * y + x;
+        // // TODO: Only set these states for flagged alpha-tested geometry.
+        // GX_SetZCompLoc(GX_FALSE as u8);
+        // GX_SetAlphaCompare(GX_GEQUAL as u8, 0x80, GX_AOP_OR as u8, GX_NEVER as u8, 0);
 
-                if DEBUG {
-                    GX_SetViewport(320.0 * x as f32, 240.0 * y as f32, 320.0, 240.0, 0.0, 1.0);
-                }
-                let shader = &LIGHTMAPPED_ENV_SHADER;
-                shader.apply();
-                if DEBUG {
-                    GX_SetNumTevStages(shader.num_tev_stages().min(debug_stage + 1));
-                    if let Some(tev_stage) = shader.stages[debug_stage as usize] {
-                        tev_stage.with_color_dst(TevReg::Prev).apply(debug_stage);
-                    }
-                }
-
-                let mut last_texture = None;
-                let mut last_plane_index = None;
-                let mut draw_cluster = move |cluster| {
-                    for entry in iter_display_lists_for_cluster(cluster) {
-                        if Some(entry.texture_index) != last_texture {
-                            GX_LoadTexObj(
-                                &base_map_texobjs[entry.texture_index] as *const GXTexObj
-                                    as *mut GXTexObj,
-                                GX_TEXMAP1 as u8,
-                            );
-                            last_texture = Some(entry.texture_index);
-                        }
-                        if Some(entry.plane_index) != last_plane_index {
-                            GX_LoadTexMtxImm(
-                                entry.reflect_front_paraboloid.as_ptr() as *mut [f32; 4],
-                                GX_DTTMTX0,
-                                GX_MTX3x4 as u8,
-                            );
-                            GX_LoadTexMtxImm(
-                                entry.reflect_back_paraboloid.as_ptr() as *mut [f32; 4],
-                                GX_DTTMTX1,
-                                GX_MTX3x4 as u8,
-                            );
-                            GX_LoadTexMtxImm(
-                                entry.reflect_paraboloid_z.as_ptr() as *mut [f32; 4],
-                                GX_DTTMTX2,
-                                GX_MTX3x4 as u8,
-                            );
-                            last_plane_index = Some(entry.plane_index);
-                        }
+        let draw_cluster = move |cluster| {
+            let cluster_geometry = get_cluster_geometry(cluster);
+            for entry in cluster_geometry.iter_display_lists() {
+                match entry {
+                    ByteCodeEntry::Draw { display_list } => {
                         GX_CallDispList(
-                            entry.display_list.as_ptr() as *mut c_void,
-                            entry.display_list.len() as u32,
+                            display_list.as_ptr() as *mut c_void,
+                            display_list.len() as u32,
                         );
                         GX_Flush();
                     }
-                };
-
-                if view_cluster != -1 {
-                    for cluster in visibility
-                        .get_cluster(ClusterIndex(view_cluster as usize))
-                        .iter_visible_clusters()
-                        .map(|cluster| cluster.0 as u16)
-                    {
-                        draw_cluster(cluster);
+                    ByteCodeEntry::SetPlane { texture_matrix } => {
+                        GX_LoadTexMtxImm(
+                            texture_matrix.as_ptr() as *mut [f32; 4],
+                            GX_DTTMTX0,
+                            GX_MTX3x4 as u8,
+                        );
                     }
-                } else {
-                    for cluster in 0..visibility.num_clusters() as u16 {
-                        draw_cluster(cluster);
+                    ByteCodeEntry::SetBaseTexture { base_texture_index } => {
+                        GX_LoadTexObj(
+                            &base_map_texobjs[base_texture_index as usize] as *const GXTexObj
+                                as *mut GXTexObj,
+                            GX_TEXMAP1 as u8,
+                        );
                     }
+                    ByteCodeEntry::SetEnvMapTexture {
+                        env_map_texture_index,
+                    } => {
+                        GX_LoadTexObj(
+                            &base_map_texobjs[env_map_texture_index as usize] as *const GXTexObj
+                                as *mut GXTexObj,
+                            GX_TEXMAP2 as u8,
+                        );
+                    }
+                    ByteCodeEntry::SetMode { mode } => match mode {
+                        0 => {
+                            LIGHTMAPPED_SHADER.apply();
+                        }
+                        1 => {
+                            LIGHTMAPPED_ENV_SHADER.apply();
+                        }
+                        _ => panic!("unexpected render mode: 0x{:02x}", mode),
+                    },
                 }
             }
+        };
+
+        if view_cluster != -1 {
+            for cluster in visibility
+                .get_cluster(ClusterIndex(view_cluster as usize))
+                .iter_visible_clusters()
+                .map(|cluster| cluster.0 as u16)
+            {
+                draw_cluster(cluster);
+            }
+        } else {
+            for cluster in 0..visibility.num_clusters() as u16 {
+                draw_cluster(cluster);
+            }
         }
-        if DEBUG {
-            GX_SetViewport(0.0, 0.0, 640.0, 480.0, 0.0, 1.0);
-        }
+
+        // GX_SetZCompLoc(GX_TRUE as u8);
+        // GX_SetAlphaCompare(GX_ALWAYS as u8, 0, GX_AOP_OR as u8, GX_ALWAYS as u8, 0);
         GX_DrawDone();
 
         view_cluster

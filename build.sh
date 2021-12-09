@@ -25,12 +25,6 @@ gxtexconv -i lightmap.png colfmt=6
 mv lightmap{,_rgba}.tpl
 rm lightmap.h
 
-gxtexconv -i envmap_front.png colfmt=14
-rm envmap_front.h
-
-gxtexconv -i envmap_back.png colfmt=14
-rm envmap_back.h
-
 popd
 
 

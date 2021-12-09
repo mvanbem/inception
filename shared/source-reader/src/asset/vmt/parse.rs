@@ -1,3 +1,4 @@
+use nalgebra_glm::{vec3, Vec3};
 use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::character::complete::*;
@@ -94,6 +95,38 @@ fn object(input: &str) -> IResult<&str, Object> {
     IResult::Ok((input, Object { name, entries }))
 }
 
+pub fn material_vector(input: &str) -> Result<Vec3, nom::Err<nom::error::Error<&str>>> {
+    let (input, value) = alt((
+        delimited(
+            operator('['),
+            tuple((number, number, number)),
+            operator(']'),
+        )
+        .map(|(x, y, z)| vec3(x.parse().unwrap(), y.parse().unwrap(), z.parse().unwrap())),
+        delimited(
+            operator('{'),
+            tuple((number, number, number)),
+            operator('}'),
+        )
+        .map(|(x, y, z)| vec3(x.parse().unwrap(), y.parse().unwrap(), z.parse().unwrap()) / 255.0),
+    ))(input)?;
+    let (input, _) = whitespace0(input)?;
+    assert_eq!(input, "");
+
+    Ok(value)
+}
+
+fn digit0(input: &str) -> IResult<&str, &str> {
+    recognize(many0(satisfy(|c| c.is_ascii_digit())))(input)
+}
+
+fn number(input: &str) -> IResult<&str, &str> {
+    preceded(
+        whitespace0,
+        recognize(tuple((digit0, opt(tuple((char('.'), digit0)))))),
+    )(input)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -109,5 +142,13 @@ mod tests {
         assert_eq!(super::string("\"abc\"def"), Ok(("def", "abc")));
         assert_eq!(super::string("abc def"), Ok((" def", "abc")));
         assert_eq!(super::string("abc\ndef"), Ok(("\ndef", "abc")));
+    }
+
+    #[test]
+    fn number() {
+        assert_eq!(super::number("1"), Ok(("", "1")));
+        assert_eq!(super::number("1."), Ok(("", "1.")));
+        assert_eq!(super::number("1.2"), Ok(("", "1.2")));
+        assert_eq!(super::number(".3"), Ok(("", ".3")));
     }
 }

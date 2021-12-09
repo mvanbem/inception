@@ -26,6 +26,21 @@ unsafe impl FullyOccupied for i32 {}
 unsafe impl FullyOccupied for i64 {}
 unsafe impl FullyOccupied for i128 {}
 
+// SAFETY: Floating-point types are fully occupied.
+unsafe impl FullyOccupied for f32 {}
+unsafe impl FullyOccupied for f64 {}
+
+// SAFETY: Arrays of fully-occupied types are fully occupied.
+unsafe impl<T: FullyOccupied, const N: usize> FullyOccupied for [T; N] {}
+
+pub fn as_bytes<T: FullyOccupied>(value: &T) -> &[u8] {
+    unsafe { from_raw_parts(value as *const T as *const u8, size_of::<T>()) }
+}
+
+pub fn slice_as_bytes<T: FullyOccupied>(values: &[T]) -> &[u8] {
+    unsafe { from_raw_parts(values.as_ptr() as *const u8, values.len() * size_of::<T>()) }
+}
+
 /// Reinteprets a prefix of a byte slice as a value of T.
 ///
 /// # Panics

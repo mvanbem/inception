@@ -1,101 +1,86 @@
-use fully_occupied::{extract_slice, FullyOccupied};
+use fully_occupied::{extract, extract_slice, slice_as_bytes, FullyOccupied};
 
-pub struct TexturePlaneDisplayList<'a> {
-    pub texture_index: usize,
-    pub plane_index: u16,
-    pub reflect_front_paraboloid: &'a [[f32; 4]; 3],
-    pub reflect_back_paraboloid: &'a [[f32; 4]; 3],
-    pub reflect_paraboloid_z: &'a [[f32; 4]; 3],
-    pub display_list: &'static [u8],
+pub fn get_cluster_geometry(cluster: u16) -> &'static ClusterGeometry {
+    &cluster_geometry_table()[cluster as usize]
 }
 
-pub fn iter_display_lists_for_cluster(
-    cluster: u16,
-) -> impl Iterator<Item = TexturePlaneDisplayList<'static>> {
-    display_lists_by_cluster_texture_plane()[cluster as usize].iter_display_lists()
+static CLUSTER_GEOMETRY_TABLE_DATA: &[u8] =
+    include_bytes_align!(4, "../../../build/cluster_geometry_table.dat");
+fn cluster_geometry_table() -> &'static [ClusterGeometry] {
+    extract_slice(CLUSTER_GEOMETRY_TABLE_DATA)
 }
 
-static DISPLAY_LISTS_BY_CLUSTER_TEXTURE_PLANE_DATA: &[u8] = include_bytes_align!(
-    4,
-    "../../../build/display_lists_by_cluster_texture_plane.dat"
-);
-fn display_lists_by_cluster_texture_plane() -> &'static [DisplayListsByClusterTexturePlaneEntry] {
-    extract_slice(DISPLAY_LISTS_BY_CLUSTER_TEXTURE_PLANE_DATA)
-}
-
-static DISPLAY_LISTS_BY_TEXTURE_PLANE_DATA: &[u8] =
-    include_bytes_align!(4, "../../../build/display_lists_by_texture_plane.dat");
-fn display_lists_by_texture_plane() -> &'static [DisplayListsByTexturePlaneEntry] {
-    extract_slice(DISPLAY_LISTS_BY_TEXTURE_PLANE_DATA)
-}
-
-static DISPLAY_LISTS_BY_PLANE_DATA: &[u8] =
-    include_bytes_align!(4, "../../../build/display_lists_by_plane.dat");
-fn display_lists_by_plane() -> &'static [DisplayListsByPlaneEntry] {
-    extract_slice(DISPLAY_LISTS_BY_PLANE_DATA)
+static CLUSTER_GEOMETRY_BYTE_CODE_DATA: &[u8] =
+    include_bytes_align!(4, "../../../build/cluster_geometry_byte_code.dat");
+fn cluster_geometry_byte_code() -> &'static [u32] {
+    extract_slice(CLUSTER_GEOMETRY_BYTE_CODE_DATA)
 }
 
 static DISPLAY_LISTS_DATA: &[u8] = include_bytes_align!(32, "../../../build/display_lists.dat");
 
 #[repr(C)]
-struct DisplayListsByClusterTexturePlaneEntry {
-    by_texture_plane_start_index: usize,
-    by_texture_plane_end_index: usize,
+pub struct ClusterGeometry {
+    byte_code_start_index: usize,
+    byte_code_end_index: usize,
 }
 
-unsafe impl FullyOccupied for DisplayListsByClusterTexturePlaneEntry {}
+unsafe impl FullyOccupied for ClusterGeometry {}
 
-impl DisplayListsByClusterTexturePlaneEntry {
-    fn iter_display_lists(&self) -> impl Iterator<Item = TexturePlaneDisplayList> {
-        display_lists_by_texture_plane()
-            [self.by_texture_plane_start_index..self.by_texture_plane_end_index]
-            .iter()
-            .map(|entry| entry.iter_display_lists())
-            .flatten()
+impl ClusterGeometry {
+    pub fn iter_display_lists(&self) -> impl Iterator<Item = ByteCodeEntry> {
+        ByteCodeReader(
+            &cluster_geometry_byte_code()[self.byte_code_start_index..self.byte_code_end_index],
+        )
     }
 }
 
-#[repr(C)]
-struct DisplayListsByTexturePlaneEntry {
-    texture_index: usize,
-    by_plane_start_index: usize,
-    by_plane_end_index: usize,
+pub enum ByteCodeEntry<'a> {
+    Draw { display_list: &'static [u8] },
+    SetPlane { texture_matrix: &'a [[f32; 4]; 3] },
+    SetBaseTexture { base_texture_index: u16 },
+    SetEnvMapTexture { env_map_texture_index: u16 },
+    SetMode { mode: u8 },
 }
 
-unsafe impl FullyOccupied for DisplayListsByTexturePlaneEntry {}
+struct ByteCodeReader<'a>(&'a [u32]);
 
-impl DisplayListsByTexturePlaneEntry {
-    fn iter_display_lists(&self) -> impl Iterator<Item = TexturePlaneDisplayList> {
-        let texture_index = self.texture_index;
-        display_lists_by_plane()[self.by_plane_start_index..self.by_plane_end_index]
-            .iter()
-            .map(move |entry| entry.get_display_list(texture_index))
-    }
-}
+impl<'a> Iterator for ByteCodeReader<'a> {
+    type Item = ByteCodeEntry<'a>;
 
-#[repr(C)]
-struct DisplayListsByPlaneEntry {
-    plane_index: u16,
-    _padding: u16,
-    reflect_front_paraboloid: [[f32; 4]; 3],
-    reflect_back_paraboloid: [[f32; 4]; 3],
-    reflect_paraboloid_z: [[f32; 4]; 3],
-    display_list_start_offset: usize,
-    display_list_end_offset: usize,
-}
-
-unsafe impl FullyOccupied for DisplayListsByPlaneEntry {}
-
-impl DisplayListsByPlaneEntry {
-    fn get_display_list(&self, texture_index: usize) -> TexturePlaneDisplayList {
-        TexturePlaneDisplayList {
-            texture_index,
-            plane_index: self.plane_index,
-            reflect_front_paraboloid: &self.reflect_front_paraboloid,
-            reflect_back_paraboloid: &self.reflect_back_paraboloid,
-            reflect_paraboloid_z: &self.reflect_paraboloid_z,
-            display_list: &DISPLAY_LISTS_DATA
-                [self.display_list_start_offset..self.display_list_end_offset],
+    fn next(&mut self) -> Option<ByteCodeEntry<'a>> {
+        let op = self.0.get(0).copied()? >> 24;
+        match op {
+            0x00 => {
+                let start_offset = (self.0[0] & 0x00ffffff) as usize;
+                let end_offset = self.0[1] as usize;
+                self.0 = &self.0[2..];
+                Some(ByteCodeEntry::Draw {
+                    display_list: &DISPLAY_LISTS_DATA[start_offset..end_offset],
+                })
+            }
+            0x01 => {
+                let texture_matrix = extract(slice_as_bytes(&self.0[1..13]));
+                self.0 = &self.0[13..];
+                Some(ByteCodeEntry::SetPlane { texture_matrix })
+            }
+            0x02 => {
+                let base_texture_index = self.0[0] as u16;
+                self.0 = &self.0[1..];
+                Some(ByteCodeEntry::SetBaseTexture { base_texture_index })
+            }
+            0x03 => {
+                let env_map_texture_index = self.0[0] as u16;
+                self.0 = &self.0[1..];
+                Some(ByteCodeEntry::SetEnvMapTexture {
+                    env_map_texture_index,
+                })
+            }
+            0xff => {
+                let mode = self.0[0] as u8;
+                self.0 = &self.0[1..];
+                Some(ByteCodeEntry::SetMode { mode })
+            }
+            _ => panic!("unexpected geometry op: 0x{:02x}", op),
         }
     }
 }
