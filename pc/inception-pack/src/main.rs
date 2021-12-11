@@ -23,7 +23,6 @@ use source_reader::geometry::convert_vertex;
 use source_reader::lightmap::{build_lightmaps, Lightmap};
 use source_reader::vpk::path::VpkPath;
 use source_reader::vpk::Vpk;
-use texture_atlas::RgbU8Image;
 
 use crate::counter::Counter;
 use crate::display_list::DisplayListBuilder;
@@ -69,7 +68,6 @@ fn main() -> Result<()> {
     create_dir_all(dst_path)?;
 
     write_lightmap(dst_path, lightmap)?;
-    write_debug_env_maps(dst_path)?;
     let texture_ids = write_textures(dst_path, &asset_loader, &map_geometry)?;
     write_position_data(dst_path, &map_geometry.position_data)?;
     write_normal_data(dst_path, &map_geometry.normal_data)?;
@@ -362,54 +360,6 @@ fn write_lightmap(dst_path: &Path, lightmap: Lightmap) -> Result<()> {
     Ok(())
 }
 
-fn write_debug_env_maps(dst_path: &Path) -> Result<()> {
-    let mut data = Vec::new();
-    for y in 0..256 {
-        for x in 0..256 {
-            let s = (x as f32 - 127.5) / 128.0;
-            let t = (y as f32 - 127.5) / 128.0;
-            let s2t2 = s * s + t * t;
-            let rz = (1.0 - s2t2) / (s2t2 + 1.0);
-            if rz >= -0.1 {
-                let rx = 2.0 * s / (s2t2 + 1.0);
-                let ry = 2.0 * t / (s2t2 + 1.0);
-
-                data.push(((rx * 0.5 + 0.5) * 255.0).clamp(0.0, 255.0) as u8);
-                data.push(((ry * 0.5 + 0.5) * 255.0).clamp(0.0, 255.0) as u8);
-                data.push(((rz * 0.5 + 0.5) * 255.0).clamp(0.0, 255.0) as u8);
-            } else {
-                data.extend_from_slice(&[0, 0, 0]);
-            }
-        }
-    }
-    RgbU8Image::new(256, 256, data)
-        .write_to_png(dst_path.join("envmap_front.png").to_str().unwrap())?;
-
-    let mut data = Vec::new();
-    for y in 0..256 {
-        for x in 0..256 {
-            let s = (x as f32 - 127.5) / 128.0;
-            let t = (y as f32 - 127.5) / 128.0;
-            let s2t2 = s * s + t * t;
-            let rz = (s2t2 - 1.0) / (s2t2 + 1.0);
-            if rz <= 0.1 {
-                let rx = 2.0 * s / (s2t2 + 1.0);
-                let ry = 2.0 * t / (s2t2 + 1.0);
-
-                data.push(((rx * 0.5 + 0.5) * 255.0).clamp(0.0, 255.0) as u8);
-                data.push(((ry * 0.5 + 0.5) * 255.0).clamp(0.0, 255.0) as u8);
-                data.push(((rz * 0.5 + 0.5) * 255.0).clamp(0.0, 255.0) as u8);
-            } else {
-                data.extend_from_slice(&[0, 0, 0]);
-            }
-        }
-    }
-    RgbU8Image::new(256, 256, data)
-        .write_to_png(dst_path.join("envmap_back.png").to_str().unwrap())?;
-
-    Ok(())
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum TextureType {
     Image,
@@ -456,7 +406,6 @@ fn write_textures(
                     .or_insert_with(|| {
                         let value = textures.len() as u16;
                         textures.push((TextureType::Image, Rc::clone(base_texture)));
-                        println!("texture #{} is {}", value, base_texture.path());
                         value
                     });
                 if let Some(env_map) = env_map.as_ref() {
@@ -466,14 +415,6 @@ fn write_textures(
                             .or_insert_with(|| {
                                 let value = textures.len() as u16;
                                 textures.push((TextureType::Envmap { plane }, Rc::clone(env_map)));
-                                println!(
-                                    "texture #{} is {} with plane ({}, {}, {})",
-                                    value,
-                                    env_map.path(),
-                                    plane[0].0,
-                                    plane[1].0,
-                                    plane[2].0,
-                                );
                                 value
                             });
                     }
