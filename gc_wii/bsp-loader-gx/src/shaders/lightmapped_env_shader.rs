@@ -6,10 +6,10 @@ pub static LIGHTMAPPED_ENV_SHADER: Shader = Shader {
         // Sample the env map.
         .add_stage(
             TevStage::color_only(
-                TevStageColor::just(TevColorIn::TexColor)
-                    // TODO: Scale according to the material.
-                    .with_scale(TevScale::K1_2)
-                    .with_dst(TevReg::Reg0),
+                TevStageColor::mul(TevColorIn::TexColor, TevColorIn::Konst)
+                    .with_dst(TevReg::Reg0)
+                    // Env map tint is expected in K0.
+                    .with_konst_sel(Some(TevColorKonst::K0Rgb)),
             )
             .with_tex_coord(TevTexCoord::TexCoord2)
             .with_tex_map(TevTexMap::TEXMAP2),

@@ -247,6 +247,9 @@ impl TevStage {
                 self.color.clamp as u8,
                 self.color.dst as u8,
             );
+            if let Some(konst_sel) = self.color.konst_sel {
+                GX_SetTevKColorSel(stage, konst_sel as u8);
+            }
             GX_SetTevAlphaIn(
                 stage,
                 self.alpha.inputs[0] as u8,
@@ -262,6 +265,9 @@ impl TevStage {
                 self.alpha.clamp as u8,
                 self.alpha.dst as u8,
             );
+            if let Some(konst_sel) = self.alpha.konst_sel {
+                GX_SetTevKAlphaSel(stage, konst_sel as u8);
+            }
             GX_SetTevOrder(
                 stage,
                 self.tex_coord as u8,
@@ -273,111 +279,119 @@ impl TevStage {
     }
 }
 
-pub trait Component: Copy {
+pub trait ComponentIn: Copy {
     const ZERO: Self;
     const PREV: Self;
 }
 
-impl Component for TevColorIn {
+impl ComponentIn for TevColorIn {
     const ZERO: Self = Self::Constant0;
     const PREV: Self = Self::PrevColor;
 }
 
-impl Component for TevAlphaIn {
+impl ComponentIn for TevAlphaIn {
     const ZERO: Self = Self::Constant0;
     const PREV: Self = Self::PrevAlpha;
 }
 
-pub type TevStageColor = TevStageComponent<TevColorIn>;
-pub type TevStageAlpha = TevStageComponent<TevAlphaIn>;
+pub trait ComponentKonst: Copy {}
+
+impl ComponentKonst for TevColorKonst {}
+
+impl ComponentKonst for TevAlphaKonst {}
+
+pub type TevStageColor = TevStageComponent<TevColorIn, TevColorKonst>;
+pub type TevStageAlpha = TevStageComponent<TevAlphaIn, TevAlphaKonst>;
 
 #[derive(Clone, Copy, Debug)]
-pub struct TevStageComponent<I> {
-    pub inputs: [I; 4],
+pub struct TevStageComponent<Input: ComponentIn, Konst: ComponentKonst> {
+    pub inputs: [Input; 4],
     pub op: TevOp,
     pub bias: TevBias,
     pub scale: TevScale,
     pub clamp: bool,
     pub dst: TevReg,
+    pub konst_sel: Option<Konst>,
 }
 
-impl<I: Component> TevStageComponent<I> {
+impl<Input: ComponentIn, Konst: ComponentKonst> TevStageComponent<Input, Konst> {
     pub const fn zero() -> Self {
         Self {
-            inputs: [I::ZERO; 4],
+            inputs: [Input::ZERO; 4],
             op: TevOp::Add,
             bias: TevBias::Zero,
             scale: TevScale::K1,
             clamp: true,
             dst: TevReg::Prev,
+            konst_sel: None,
         }
     }
 
     pub const fn pass() -> Self {
-        Self::just(I::PREV)
+        Self::just(Input::PREV)
     }
 
-    pub const fn just(input_10bit: I) -> Self {
+    pub const fn just(input_10bit: Input) -> Self {
         Self {
-            inputs: [I::ZERO, I::ZERO, I::ZERO, input_10bit],
+            inputs: [Input::ZERO, Input::ZERO, Input::ZERO, input_10bit],
             ..Self::zero()
         }
     }
 
-    pub const fn add(a_10bit: I, b: I) -> Self {
+    pub const fn add(a_10bit: Input, b: Input) -> Self {
         Self {
-            inputs: [b, I::ZERO, I::ZERO, a_10bit],
+            inputs: [b, Input::ZERO, Input::ZERO, a_10bit],
             ..Self::zero()
         }
     }
 
-    pub const fn sub(a_10bit: I, b: I) -> Self {
+    pub const fn sub(a_10bit: Input, b: Input) -> Self {
         Self {
-            inputs: [b, I::ZERO, I::ZERO, a_10bit],
+            inputs: [b, Input::ZERO, Input::ZERO, a_10bit],
             op: TevOp::Sub,
             ..Self::zero()
         }
     }
 
-    pub const fn mul(a: I, b: I) -> Self {
+    pub const fn mul(a: Input, b: Input) -> Self {
         Self {
-            inputs: [I::ZERO, a, b, I::ZERO],
+            inputs: [Input::ZERO, a, b, Input::ZERO],
             ..Self::zero()
         }
     }
 
     /// Computes a + b * c.
-    pub const fn add_mul(a_10bit: I, b: I, c: I) -> Self {
+    pub const fn add_mul(a_10bit: Input, b: Input, c: Input) -> Self {
         Self {
-            inputs: [I::ZERO, b, c, a_10bit],
+            inputs: [Input::ZERO, b, c, a_10bit],
             ..Self::zero()
         }
     }
 
     /// Computes a - b * c.
-    pub const fn sub_mul(a_10bit: I, b: I, c: I) -> Self {
+    pub const fn sub_mul(a_10bit: Input, b: Input, c: Input) -> Self {
         Self {
-            inputs: [I::ZERO, b, c, a_10bit],
+            inputs: [Input::ZERO, b, c, a_10bit],
             op: TevOp::Sub,
             ..Self::zero()
         }
     }
 
     /// Computes (1 - c) * a + c * b.
-    pub const fn mix(a: I, b: I, c: I) -> Self {
+    pub const fn mix(a: Input, b: Input, c: Input) -> Self {
         Self {
-            inputs: [a, b, c, I::ZERO],
+            inputs: [a, b, c, Input::ZERO],
             ..Self::zero()
         }
     }
 
     /// Computes (a.r > b.r ? c : 0).
-    pub const fn comp_r8_gt(a: I, b: I, c: I) -> Self {
-        Self::comp_r8_gt_add(a, b, c, I::ZERO)
+    pub const fn comp_r8_gt(a: Input, b: Input, c: Input) -> Self {
+        Self::comp_r8_gt_add(a, b, c, Input::ZERO)
     }
 
     /// Computes (a.r > b.r ? c : 0) + d.
-    pub const fn comp_r8_gt_add(a: I, b: I, c: I, d_10bit: I) -> Self {
+    pub const fn comp_r8_gt_add(a: Input, b: Input, c: Input, d_10bit: Input) -> Self {
         Self {
             inputs: [a, b, c, d_10bit],
             op: TevOp::CompR8Gt,
@@ -399,6 +413,10 @@ impl<I: Component> TevStageComponent<I> {
 
     pub const fn with_dst(self, dst: TevReg) -> Self {
         Self { dst, ..self }
+    }
+
+    pub const fn with_konst_sel(self, konst_sel: Option<Konst>) -> Self {
+        Self { konst_sel, ..self }
     }
 }
 

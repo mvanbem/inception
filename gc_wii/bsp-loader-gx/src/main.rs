@@ -546,6 +546,9 @@ fn do_main_draw(pos: &guVector, visibility: Visibility, base_map_texobjs: &[GXTe
                             GX_TEXMAP2 as u8,
                         );
                     }
+                    ByteCodeEntry::SetEnvMapTint { r, g, b } => {
+                        GX_SetTevKColor(GX_TEVSTAGE0 as u8, GXColor { r, g, b, a: 0 });
+                    }
                     ByteCodeEntry::SetMode { mode } => match mode {
                         0 => {
                             LIGHTMAPPED_SHADER.apply();

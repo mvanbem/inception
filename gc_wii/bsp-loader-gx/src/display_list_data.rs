@@ -39,6 +39,7 @@ pub enum ByteCodeEntry<'a> {
     SetPlane { texture_matrix: &'a [[f32; 4]; 3] },
     SetBaseTexture { base_texture_index: u16 },
     SetEnvMapTexture { env_map_texture_index: u16 },
+    SetEnvMapTint { r: u8, g:u8,b:u8 },
     SetMode { mode: u8 },
 }
 
@@ -73,6 +74,15 @@ impl<'a> Iterator for ByteCodeReader<'a> {
                 self.0 = &self.0[1..];
                 Some(ByteCodeEntry::SetEnvMapTexture {
                     env_map_texture_index,
+                })
+            }
+            0x04 => {
+                let r = (self.0[0] >> 16) as u8;
+                let g = (self.0[0] >> 8) as u8;
+                let b = self.0[0] as u8;
+                self.0 = &self.0[1..];
+                Some(ByteCodeEntry::SetEnvMapTint {
+                    r, g, b,
                 })
             }
             0xff => {

@@ -977,6 +977,13 @@ mod byte_code {
         [0x03000000 | env_map_texture_index as u32]
     }
 
+    pub fn set_env_map_tint(env_map_tint: [u8; 3]) -> [u32; 1] {
+        [0x04000000
+            | ((env_map_tint[0] as u32) << 16)
+            | ((env_map_tint[1] as u32) << 8)
+            | env_map_tint[2] as u32]
+    }
+
     pub fn set_mode(mode: u8) -> [u32; 1] {
         [0xff000000 | mode as u32]
     }
@@ -1026,18 +1033,36 @@ fn write_geometry(
         let mut prev_mode = None;
         let mut prev_material_path = None;
         let mut prev_plane = None;
+        let mut prev_env_map_tint = None;
         for ((plane, material_path), display_list) in
             &cluster.lightmapped_generic.display_lists_by_plane_material
         {
             let material = asset_loader.get_material(material_path)?;
-            let mode = match material.shader() {
-                Shader::LightmappedGeneric(LightmappedGeneric { env_map: None, .. }) => 0,
+            let (mode, plane, env_map_tint) = match material.shader() {
+                Shader::LightmappedGeneric(LightmappedGeneric { env_map: None, .. }) => {
+                    (0, None, None)
+                }
                 Shader::LightmappedGeneric(LightmappedGeneric {
-                    env_map: Some(_), ..
-                }) => 1,
+                    env_map: Some(_),
+                    env_map_tint,
+                    ..
+                }) => (
+                    1,
+                    Some(*plane),
+                    Some(
+                        env_map_tint
+                            .map(|v| {
+                                [
+                                    (v[0] * 255.0 + 0.5).clamp(0.0, 255.0) as u8,
+                                    (v[1] * 255.0 + 0.5).clamp(0.0, 255.0) as u8,
+                                    (v[2] * 255.0 + 0.5).clamp(0.0, 255.0) as u8,
+                                ]
+                            })
+                            .unwrap_or([255, 255, 255]),
+                    ),
+                ),
                 _ => panic!(),
             };
-            let plane = if mode == 1 { Some(*plane) } else { None };
 
             if prev_mode != Some(mode) {
                 prev_mode = Some(mode);
@@ -1095,6 +1120,15 @@ fn write_geometry(
                     let texture_matrix: Mat3x4 = local_to_texture * local_reflect * world_to_local;
 
                     byte_code::set_plane(texture_matrix)
+                        .write_big_endian_to(&mut *byte_code_file)?;
+                }
+            }
+
+            if prev_env_map_tint != env_map_tint {
+                prev_env_map_tint = env_map_tint;
+
+                if let Some(env_map_tint) = env_map_tint {
+                    byte_code::set_env_map_tint(env_map_tint)
                         .write_big_endian_to(&mut *byte_code_file)?;
                 }
             }
