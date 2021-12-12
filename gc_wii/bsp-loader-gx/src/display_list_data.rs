@@ -35,12 +35,33 @@ impl ClusterGeometry {
 }
 
 pub enum ByteCodeEntry<'a> {
-    Draw { display_list: &'static [u8] },
-    SetPlane { texture_matrix: &'a [[f32; 4]; 3] },
-    SetBaseTexture { base_texture_index: u16 },
-    SetEnvMapTexture { env_map_texture_index: u16 },
-    SetEnvMapTint { r: u8, g:u8,b:u8 },
-    SetMode { mode: u8 },
+    Draw {
+        display_list: &'static [u8],
+    },
+    SetPlane {
+        texture_matrix: &'a [[f32; 4]; 3],
+    },
+    SetBaseTexture {
+        base_texture_index: u16,
+    },
+    SetEnvMapTexture {
+        env_map_texture_index: u16,
+    },
+    SetEnvMapTint {
+        r: u8,
+        g: u8,
+        b: u8,
+    },
+    SetAlpha {
+        test_threshold: Option<u8>,
+        blend: bool,
+    },
+    SetLightmapTexture {
+        lightmap_texture_index: u16,
+    },
+    SetMode {
+        mode: u8,
+    },
 }
 
 struct ByteCodeReader<'a>(&'a [u32]);
@@ -81,8 +102,23 @@ impl<'a> Iterator for ByteCodeReader<'a> {
                 let g = (self.0[0] >> 8) as u8;
                 let b = self.0[0] as u8;
                 self.0 = &self.0[1..];
-                Some(ByteCodeEntry::SetEnvMapTint {
-                    r, g, b,
+                Some(ByteCodeEntry::SetEnvMapTint { r, g, b })
+            }
+            0x05 => {
+                let test = (self.0[0] >> 16) as u8 != 0;
+                let threshold = (self.0[0] >> 8) as u8;
+                let blend = self.0[0] as u8 != 0;
+                self.0 = &self.0[1..];
+                Some(ByteCodeEntry::SetAlpha {
+                    test_threshold: if test { Some(threshold) } else { None },
+                    blend,
+                })
+            }
+            0x06 => {
+                let lightmap_texture_index = self.0[0] as u16;
+                self.0 = &self.0[1..];
+                Some(ByteCodeEntry::SetLightmapTexture {
+                    lightmap_texture_index,
                 })
             }
             0xff => {

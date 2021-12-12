@@ -14,20 +14,6 @@ cargo run -p inception-pack --release -- \
 popd
 
 
-echo === Converting PNG textures ===
-pushd build
-
-gxtexconv -i lightmap.png colfmt=14
-mv lightmap{,_cmpr}.tpl
-rm lightmap.h
-
-gxtexconv -i lightmap.png colfmt=6
-mv lightmap{,_rgba}.tpl
-rm lightmap.h
-
-popd
-
-
 echo === bsp-loader-gx ===
 pushd gc_wii
 

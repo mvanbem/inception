@@ -2,6 +2,7 @@ use std::rc::Rc;
 
 use anyhow::Result;
 use byteorder::{LittleEndian, ReadBytesExt};
+use texture_atlas::RgbU8Image;
 
 use crate::asset::{Asset, AssetLoader};
 use crate::vpk::path::VpkPath;
@@ -15,6 +16,20 @@ pub struct Vtf {
 }
 
 impl Vtf {
+    pub fn new(path: VpkPath, image: &RgbU8Image) -> Self {
+        Self {
+            path,
+            width: image.width() as u32,
+            height: image.height() as u32,
+            flags: 0,
+            data: Some(ImageData {
+                format: ImageFormat::Rgb8,
+                layer_count: 1,
+                mips: vec![vec![image.data().to_vec()]],
+            }),
+        }
+    }
+
     fn bits_per_pixel_for_format(format: u32) -> Option<usize> {
         match format {
             13 => Some(4), // DXT1
@@ -298,7 +313,7 @@ fn decode_rgb565(encoded: u16) -> [u8; 3] {
 pub struct ImageData {
     pub format: ImageFormat,
     pub layer_count: usize,
-    /// mips[mip_level][layer_index][byte]
+    /// `mips[mip_level][layer_index][byte]`
     pub mips: Vec<Vec<Vec<u8>>>,
 }
 

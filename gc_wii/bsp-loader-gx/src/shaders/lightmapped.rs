@@ -15,10 +15,10 @@ pub static LIGHTMAPPED_SHADER: Shader = Shader {
         )
         // Sample the base map and multiply it by the lightmap.
         .add_stage(
-            TevStage::color_only(TevStageColor::mul(
-                TevColorIn::PrevColor,
-                TevColorIn::TexColor,
-            ))
+            TevStage::new(
+                TevStageColor::mul(TevColorIn::PrevColor, TevColorIn::TexColor),
+                TevStageAlpha::just(TevAlphaIn::TexAlpha),
+            )
             .with_tex_coord(TevTexCoord::TexCoord1)
             .with_tex_map(TevTexMap::TEXMAP1),
         )

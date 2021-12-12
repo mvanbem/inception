@@ -3,7 +3,6 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{create_dir_all, File};
 use std::hash::{Hash, Hasher};
 use std::io::{BufWriter, Seek, Write};
-use std::iter::repeat_with;
 use std::path::Path;
 use std::rc::Rc;
 
@@ -13,14 +12,14 @@ use clap::{clap_app, crate_authors, crate_description, crate_version};
 use memmap::Mmap;
 use nalgebra_glm::{mat3_to_mat4, vec2, vec3, vec4, Mat3, Mat3x4, Mat4, Vec3};
 use num_traits::PrimInt;
-use source_reader::asset::vmt::{LightmappedGeneric, Shader};
-use source_reader::asset::vtf::ImageFormat;
+use source_reader::asset::vmt::{LightmappedGeneric, Shader, Vmt};
+use source_reader::asset::vtf::{ImageFormat, Vtf};
 use source_reader::asset::AssetLoader;
 use source_reader::bsp::Bsp;
 use source_reader::file::zip::ZipArchiveLoader;
 use source_reader::file::{FallbackFileLoader, FileLoader};
 use source_reader::geometry::convert_vertex;
-use source_reader::lightmap::{build_lightmaps, Lightmap};
+use source_reader::lightmap::{build_lightmaps, ClusterLightmap};
 use source_reader::vpk::path::VpkPath;
 use source_reader::vpk::Vpk;
 
@@ -61,19 +60,19 @@ fn main() -> Result<()> {
     let bsp = Bsp::new(&bsp_data);
     let asset_loader = build_asset_loader(hl2_base, bsp)?;
 
-    let lightmap = build_lightmaps(bsp)?;
-    let map_geometry = process_geometry(bsp, &lightmap, &asset_loader)?;
+    let cluster_lightmaps = build_lightmaps(bsp)?;
+    let map_geometry = process_geometry(bsp, &cluster_lightmaps, &asset_loader)?;
 
     let dst_path = Path::new(matches.value_of("dst").unwrap_or("."));
     create_dir_all(dst_path)?;
 
-    write_lightmap(dst_path, lightmap)?;
-    let texture_ids = write_textures(dst_path, &asset_loader, &map_geometry)?;
+    let texture_ids = write_textures(dst_path, &asset_loader, &cluster_lightmaps, &map_geometry)?;
     write_position_data(dst_path, &map_geometry.position_data)?;
     write_normal_data(dst_path, &map_geometry.normal_data)?;
     write_lightmap_coord_data(dst_path, &map_geometry.lightmap_coord_data)?;
     write_texture_coord_data(dst_path, &map_geometry.texture_coord_data)?;
-    write_geometry(dst_path, &asset_loader, &map_geometry, &texture_ids)?;
+
+    write_geometry(dst_path, &map_geometry, &texture_ids)?;
     write_bsp_nodes(dst_path, bsp)?;
     write_bsp_leaves(dst_path, bsp)?;
     write_vis(dst_path, bsp)?;
@@ -150,50 +149,25 @@ impl<'a, Vertex: Copy + WriteBigEndian> PolygonBuilder<'a, Vertex> {
 }
 
 struct ClusterGeometry {
-    lightmapped_generic: LightmappedGenericDisplayLists,
+    display_lists_by_pass_batch: BTreeMap<(Pass, Batch), Vec<u8>>,
 }
 
 #[derive(Default)]
 struct ClusterGeometryBuilder {
-    lightmapped_generic: LightmappedGenericDisplayListsBuilder,
+    display_lists_by_pass_batch: BTreeMap<(Pass, Batch), DisplayListBuilder>,
 }
 
 impl ClusterGeometryBuilder {
+    pub fn display_list_builder(&mut self, pass: Pass, batch: Batch) -> &mut DisplayListBuilder {
+        self.display_lists_by_pass_batch
+            .entry((pass, batch))
+            .or_insert_with(|| DisplayListBuilder::new(DisplayListBuilder::TRIANGLES))
+    }
+
     pub fn build(self) -> ClusterGeometry {
         ClusterGeometry {
-            lightmapped_generic: self.lightmapped_generic.build(),
-        }
-    }
-}
-
-struct LightmappedGenericDisplayLists {
-    display_lists_by_plane_material: BTreeMap<([FloatByBits; 3], VpkPath), Vec<u8>>,
-}
-
-type LightmappedGenericVertex = (u16, u16, u16, u16);
-
-#[derive(Default)]
-struct LightmappedGenericDisplayListsBuilder {
-    display_lists_by_plane_material: BTreeMap<([FloatByBits; 3], VpkPath), DisplayListBuilder>,
-}
-
-impl LightmappedGenericDisplayListsBuilder {
-    pub fn polygon_builder(
-        &mut self,
-        plane: [FloatByBits; 3],
-        material_path: VpkPath,
-    ) -> PolygonBuilder<LightmappedGenericVertex> {
-        PolygonBuilder::new(
-            self.display_lists_by_plane_material
-                .entry((plane, material_path))
-                .or_insert_with(|| DisplayListBuilder::new(DisplayListBuilder::TRIANGLES)),
-        )
-    }
-
-    pub fn build(self) -> LightmappedGenericDisplayLists {
-        LightmappedGenericDisplayLists {
-            display_lists_by_plane_material: self
-                .display_lists_by_plane_material
+            display_lists_by_pass_batch: self
+                .display_lists_by_pass_batch
                 .into_iter()
                 .map(|(key, display_list)| (key, display_list.build()))
                 .filter(|(_, display_list)| !display_list.is_empty())
@@ -202,18 +176,132 @@ impl LightmappedGenericDisplayListsBuilder {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum Pass {
+    LightmappedGeneric { alpha: PassAlpha, env_map: bool },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum PassAlpha {
+    Opaque,
+    AlphaTest,
+    AlphaBlend,
+}
+
+impl Pass {
+    fn from_material(material: &Vmt) -> Self {
+        match material.shader() {
+            Shader::LightmappedGeneric(LightmappedGeneric {
+                alpha_test,
+                env_map,
+                translucent,
+                ..
+            }) => Self::LightmappedGeneric {
+                alpha: match (*alpha_test, *translucent) {
+                    (false, false) => PassAlpha::Opaque,
+                    (false, true) => PassAlpha::AlphaBlend,
+                    (true, false) => PassAlpha::AlphaTest,
+                    (true, true) => panic!("material is both alpha-tested and alpha-blended"),
+                },
+                env_map: env_map.is_some(),
+            },
+            Shader::Unsupported => panic!(),
+        }
+    }
+
+    fn as_mode(self) -> u8 {
+        match self {
+            Pass::LightmappedGeneric {
+                alpha: PassAlpha::Opaque | PassAlpha::AlphaTest,
+                env_map: false,
+            } => 0,
+            Pass::LightmappedGeneric {
+                alpha: PassAlpha::Opaque | PassAlpha::AlphaTest,
+                env_map: true,
+            } => 1,
+            Pass::LightmappedGeneric {
+                alpha: PassAlpha::AlphaBlend,
+                env_map: false,
+            } => 0,
+            Pass::LightmappedGeneric {
+                alpha: PassAlpha::AlphaBlend,
+                env_map: true,
+            } => 1,
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct Batch {
+    base_texture_path: VpkPath,
+    alpha: BatchAlpha,
+    env_map: Option<BatchEnvMap>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum BatchAlpha {
+    Opaque,
+    AlphaTest { threshold: u8 },
+    AlphaBlend,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct BatchEnvMap {
+    plane: [FloatByBits; 3],
+    env_map_path: VpkPath,
+    env_map_tint: [u8; 3],
+}
+
+impl Batch {
+    fn from_material_plane(material: &Vmt, plane: [FloatByBits; 3]) -> Self {
+        match material.shader() {
+            Shader::LightmappedGeneric(LightmappedGeneric {
+                alpha_test,
+                alpha_test_reference,
+                base_texture,
+                env_map,
+                env_map_tint,
+                translucent,
+                ..
+            }) => {
+                let env_map_tint = env_map_tint.unwrap_or(vec3(1.0, 1.0, 1.0));
+                Self {
+                    base_texture_path: base_texture.path().clone(),
+                    alpha: match (*alpha_test, *translucent) {
+                        (false, false) => BatchAlpha::Opaque,
+                        (false, true) => BatchAlpha::AlphaBlend,
+                        (true, false) => BatchAlpha::AlphaTest {
+                            threshold: ((alpha_test_reference * 255.0).clamp(0.0, 255.0) + 0.5)
+                                as u8,
+                        },
+                        (true, true) => panic!("material is both alpha-tested and alpha-blended"),
+                    },
+                    env_map: env_map.as_ref().map(|env_map| BatchEnvMap {
+                        plane,
+                        env_map_path: env_map.path().clone(),
+                        env_map_tint: [
+                            ((env_map_tint[0] * 255.0).clamp(0.0, 255.0) + 0.5) as u8,
+                            ((env_map_tint[1] * 255.0).clamp(0.0, 255.0) + 0.5) as u8,
+                            ((env_map_tint[2] * 255.0).clamp(0.0, 255.0) + 0.5) as u8,
+                        ],
+                    }),
+                }
+            }
+            Shader::Unsupported => panic!(),
+        }
+    }
+}
+
 fn process_geometry(
     bsp: Bsp,
-    lightmap: &Lightmap,
+    cluster_lightmaps: &HashMap<i16, ClusterLightmap>,
     asset_loader: &AssetLoader,
 ) -> Result<MapGeometry> {
     let mut positions = AttributeBuilder::new();
     let mut normals = AttributeBuilder::new();
     let mut lightmap_coords = AttributeBuilder::new();
     let mut texture_coords = AttributeBuilder::new();
-    let mut clusters: Vec<ClusterGeometryBuilder> = repeat_with(Default::default)
-        .take(bsp.leaves().len())
-        .collect();
+    let mut clusters: Vec<ClusterGeometryBuilder> = Vec::new();
     let mut material_paths = Vec::new();
     let mut material_path_set = HashSet::new();
     for leaf in bsp.iter_worldspawn_leaves() {
@@ -221,7 +309,11 @@ fn process_geometry(
             // Leaf is not potentially visible from anywhere.
             continue;
         }
+        if clusters.len() < (leaf.cluster as usize + 1) {
+            clusters.resize_with(leaf.cluster as usize + 1, Default::default);
+        }
         let cluster_builder = &mut clusters[leaf.cluster as usize];
+        let cluster_lightmap = &cluster_lightmaps[&leaf.cluster];
 
         for face in bsp.iter_faces_from_leaf(leaf) {
             if face.light_ofs == -1 || face.tex_info == -1 {
@@ -229,7 +321,7 @@ fn process_geometry(
                 continue;
             }
 
-            let lightmap_metadata = &lightmap.metadata_by_data_offset[&face.light_ofs];
+            let lightmap_metadata = &cluster_lightmap.metadata_by_data_offset[&face.light_ofs];
             let tex_info = &bsp.tex_infos()[face.tex_info as usize];
             if tex_info.tex_data == -1 {
                 // Not textured.
@@ -246,8 +338,10 @@ fn process_geometry(
                 "vmt",
             );
             let material = asset_loader.get_material(&material_path)?;
-            let base_texture = match material.shader() {
-                Shader::LightmappedGeneric(LightmappedGeneric { base_texture, .. }) => base_texture,
+            let base_texture_size = match material.shader() {
+                Shader::LightmappedGeneric(LightmappedGeneric { base_texture, .. }) => {
+                    [base_texture.width() as f32, base_texture.height() as f32]
+                }
                 _ => continue,
             };
             if !material_path_set.contains(material.path()) {
@@ -255,30 +349,31 @@ fn process_geometry(
                 material_paths.push(material.path().clone());
             }
             let plane = hashable_float(&bsp.planes()[face.plane_num as usize].normal);
-            let mut polygon_builder = cluster_builder
-                .lightmapped_generic
-                .polygon_builder(plane, material.path().clone());
+            let mut polygon_builder = PolygonBuilder::new(cluster_builder.display_list_builder(
+                Pass::from_material(&*material),
+                Batch::from_material_plane(&*material, plane),
+            ));
 
             for vertex_index in bsp.iter_vertex_indices_from_face(face) {
                 let mut vertex = convert_vertex(
                     bsp,
-                    &lightmap.image,
+                    &cluster_lightmap.image,
                     lightmap_metadata,
                     face,
                     tex_info,
                     vertex_index,
                 );
                 vertex.texture_coord = [
-                    vertex.texture_coord[0] / base_texture.width() as f32,
-                    vertex.texture_coord[1] / base_texture.height() as f32,
+                    vertex.texture_coord[0] / base_texture_size[0],
+                    vertex.texture_coord[1] / base_texture_size[1],
                 ];
 
                 let position_index: u16 = positions.add_vertex(hashable_float(&vertex.position));
-                let normal_index: u16 = normals.add_vertex(hashable_float(&vertex.normal));
+                let normal_index: u16 = normals.add_vertex(quantize_normal(vertex.normal));
                 let lightmap_coord_index: u16 =
-                    lightmap_coords.add_vertex(hashable_float(&vertex.lightmap_coord));
+                    lightmap_coords.add_vertex(quantize_lightmap_coord(vertex.lightmap_coord));
                 let texture_coord_index: u16 =
-                    texture_coords.add_vertex(hashable_float(&vertex.texture_coord));
+                    texture_coords.add_vertex(quantize_texture_coord(vertex.texture_coord));
 
                 polygon_builder.add_vertex((
                     position_index,
@@ -301,6 +396,30 @@ fn process_geometry(
             .collect(),
         material_paths,
     })
+}
+
+fn quantize_normal(normal: [f32; 3]) -> [u8; 3] {
+    let mut result = [0; 3];
+    for index in 0..3 {
+        result[index] = ((normal[index] * 64.0).clamp(-64.0, 64.0) + 0.5) as i8 as u8;
+    }
+    result
+}
+
+fn quantize_lightmap_coord(coord: [f32; 2]) -> [u16; 2] {
+    let mut result = [0; 2];
+    for index in 0..2 {
+        result[index] = (coord[index] * 32768.0).clamp(0.0, 65535.0) as u16;
+    }
+    result
+}
+
+fn quantize_texture_coord(coord: [f32; 2]) -> [i16; 2] {
+    let mut result = [0; 2];
+    for index in 0..2 {
+        result[index] = (coord[index] * 256.0).round().clamp(-32768.0, 32767.0) as i16;
+    }
+    result
 }
 
 fn build_asset_loader<'a>(hl2_base: &Path, bsp: Bsp<'a>) -> Result<AssetLoader<'a>> {
@@ -353,41 +472,27 @@ fn hashable_float<const N: usize>(array: &[f32; N]) -> [FloatByBits; N] {
     result
 }
 
-fn write_lightmap(dst_path: &Path, lightmap: Lightmap) -> Result<()> {
-    lightmap
-        .image
-        .write_to_png(dst_path.join("lightmap.png").to_str().unwrap())?;
-    Ok(())
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum TextureType {
     Image,
     Envmap { plane: [FloatByBits; 3] },
+    Lightmap { cluster: i16 },
 }
 
 fn write_textures(
     dst_path: &Path,
     asset_loader: &AssetLoader,
+    cluster_lightmaps: &HashMap<i16, ClusterLightmap>,
     map_geometry: &MapGeometry,
 ) -> Result<HashMap<(VpkPath, Option<[FloatByBits; 3]>), u16>> {
     let mut planes_by_env_map: HashMap<VpkPath, HashSet<[FloatByBits; 3]>> = Default::default();
     for cluster_geometry in &map_geometry.clusters {
-        for (plane, material_path) in cluster_geometry
-            .lightmapped_generic
-            .display_lists_by_plane_material
-            .keys()
-        {
-            let material = asset_loader.get_material(material_path)?;
-            if let Shader::LightmappedGeneric(LightmappedGeneric {
-                env_map: Some(env_map),
-                ..
-            }) = material.shader()
-            {
+        for (_, batch) in cluster_geometry.display_lists_by_pass_batch.keys() {
+            if let Some(env_map) = batch.env_map.as_ref() {
                 planes_by_env_map
-                    .entry(env_map.path().clone())
+                    .entry(env_map.env_map_path.clone())
                     .or_default()
-                    .insert(*plane);
+                    .insert(env_map.plane);
             }
         }
     }
@@ -423,8 +528,18 @@ fn write_textures(
             Shader::Unsupported => panic!(),
         };
     }
+    for (cluster, cluster_lightmaps) in cluster_lightmaps {
+        let path =
+            VpkPath::new_with_prefix_and_extension(&format!("{}", *cluster), "lightmap", "vtf");
+        let texture_id = textures.len() as u16;
+        textures.push((
+            TextureType::Lightmap { cluster: *cluster },
+            Rc::new(Vtf::new(path.clone(), &cluster_lightmaps.image)),
+        ));
+        texture_ids.insert((path, None), texture_id);
+    }
 
-    const GAMECUBE_MEMORY_BUDGET: u32 = 20 * 1024 * 1024;
+    const GAMECUBE_MEMORY_BUDGET: u32 = 16 * 1024 * 1024;
     for dimension_divisor in [1, 2, 4, 8, 16, 32] {
         let mut total_size = 0;
         for (type_, texture) in &textures {
@@ -470,6 +585,11 @@ fn write_textures(
                     let width = 2 * width / dimension_divisor;
                     let height = 2 * height / dimension_divisor;
 
+                    // Use RGBA8, making this 32 bpp.
+                    // TODO: Use DXT1.
+                    total_size += width * height * 4;
+                }
+                TextureType::Lightmap { .. } => {
                     // Use RGBA8, making this 32 bpp.
                     // TODO: Use DXT1.
                     total_size += width * height * 4;
@@ -710,6 +830,39 @@ fn write_textures(
                     texture_table.write_u32::<BigEndian>(end_offset)?;
                     total_size += end_offset - start_offset;
                 }
+                TextureType::Lightmap { .. } => {
+                    assert_eq!(image_data.format, ImageFormat::Rgb8);
+
+                    let mut rgb_data = image_data.mips[0][0].as_slice();
+                    let mut rgba_data = Vec::with_capacity(
+                        4 * texture.width() as usize * texture.height() as usize,
+                    );
+                    for _ in 0..texture.width() as usize * texture.height() as usize {
+                        rgba_data.extend_from_slice(&rgb_data[..3]);
+                        rgb_data = &rgb_data[3..];
+                        rgba_data.push(255);
+                    }
+
+                    let start_offset = texture_data.stream_position()? as u32;
+                    write_gamecube_rgba8(
+                        &mut texture_data,
+                        &rgba_data,
+                        texture.width(),
+                        texture.height(),
+                    )?;
+                    let end_offset = texture_data.stream_position()? as u32;
+
+                    // Write a texture table entry.
+                    texture_table.write_u16::<BigEndian>(texture.width() as u16)?;
+                    texture_table.write_u16::<BigEndian>(texture.height() as u16)?;
+                    texture_table.write_u8(1)?; // mip count
+                    texture_table.write_u8(0x3)?; // flags: CLAMP_S | CLAMP_T
+                    texture_table.write_u8(0x6)?; // GX_TF_RGBA8
+                    texture_table.write_u8(0)?;
+                    texture_table.write_u32::<BigEndian>(start_offset)?;
+                    texture_table.write_u32::<BigEndian>(end_offset)?;
+                    total_size += end_offset - start_offset;
+                }
             }
         }
 
@@ -887,6 +1040,8 @@ fn write_texture_coord_data(dst_path: &Path, texture_coord_data: &[u8]) -> Resul
 mod byte_code {
     use std::ops::Index;
 
+    use crate::BatchAlpha;
+
     pub fn draw(display_list_start_offset: u32, display_list_end_offset: u32) -> [u32; 2] {
         assert_eq!(display_list_start_offset >> 24, 0);
         [display_list_start_offset, display_list_end_offset]
@@ -925,6 +1080,26 @@ mod byte_code {
             | env_map_tint[2] as u32]
     }
 
+    pub fn set_alpha(alpha: BatchAlpha) -> [u32; 1] {
+        let test: u32 = match alpha {
+            BatchAlpha::AlphaTest { .. } => 1,
+            _ => 0,
+        };
+        let threshold: u32 = match alpha {
+            BatchAlpha::AlphaTest { threshold } => threshold as u32,
+            _ => 0,
+        };
+        let blend: u32 = match alpha {
+            BatchAlpha::AlphaBlend => 1,
+            _ => 0,
+        };
+        [0x05000000 | (test << 16) | (threshold << 8) | blend]
+    }
+
+    pub fn set_lightmap_texture(lightmap_texture_index: u16) -> [u32; 1] {
+        [0x06000000 | lightmap_texture_index as u32]
+    }
+
     pub fn set_mode(mode: u8) -> [u32; 1] {
         [0xff000000 | mode as u32]
     }
@@ -949,7 +1124,6 @@ fn build_local_space(normal: &Vec3) -> (Vec3, Vec3) {
 
 fn write_geometry(
     dst_path: &Path,
-    asset_loader: &AssetLoader,
     map_geometry: &MapGeometry,
     texture_ids: &HashMap<(VpkPath, Option<[FloatByBits; 3]>), u16>,
 ) -> Result<()> {
@@ -967,71 +1141,44 @@ fn write_geometry(
     );
     let mut display_lists_file = BufWriter::new(File::create(dst_path.join("display_lists.dat"))?);
 
-    for cluster in &map_geometry.clusters {
+    for (cluster_index, cluster) in map_geometry.clusters.iter().enumerate() {
         // Emit part of a ClusterGeometry struct to the table.
         table_file.write_u32::<BigEndian>(byte_code_file.index()? as u32)?;
 
+        // Each cluster's data starts with the lightmap that is used for that entire cluster.
+        let lightmap_path = VpkPath::new_with_prefix_and_extension(
+            &format!("{}", cluster_index),
+            "lightmap",
+            "vtf",
+        );
+        let lightmap_texture_index = texture_ids[&(lightmap_path, None)];
+        byte_code::set_lightmap_texture(lightmap_texture_index)
+            .write_big_endian_to(&mut *byte_code_file)?;
+
         let mut prev_mode = None;
-        let mut prev_material_path = None;
+        let mut prev_base_texture_path = None;
         let mut prev_plane = None;
+        let mut prev_env_map_path = None;
         let mut prev_env_map_tint = None;
-        for ((plane, material_path), display_list) in
-            &cluster.lightmapped_generic.display_lists_by_plane_material
-        {
-            let material = asset_loader.get_material(material_path)?;
-            let (mode, plane, env_map_tint) = match material.shader() {
-                Shader::LightmappedGeneric(LightmappedGeneric { env_map: None, .. }) => {
-                    (0, None, None)
-                }
-                Shader::LightmappedGeneric(LightmappedGeneric {
-                    env_map: Some(_),
-                    env_map_tint,
-                    ..
-                }) => (
-                    1,
-                    Some(*plane),
-                    Some(
-                        env_map_tint
-                            .map(|v| {
-                                [
-                                    (v[0] * 255.0 + 0.5).clamp(0.0, 255.0) as u8,
-                                    (v[1] * 255.0 + 0.5).clamp(0.0, 255.0) as u8,
-                                    (v[2] * 255.0 + 0.5).clamp(0.0, 255.0) as u8,
-                                ]
-                            })
-                            .unwrap_or([255, 255, 255]),
-                    ),
-                ),
-                _ => panic!(),
-            };
+        let mut prev_alpha = None;
+        for ((pass, batch), display_list) in &cluster.display_lists_by_pass_batch {
+            let mode = pass.as_mode();
+            let plane = batch.env_map.as_ref().map(|env_map| env_map.plane);
+            let env_map_path = batch.env_map.as_ref().map(|env_map| &env_map.env_map_path);
+            let env_map_tint = batch.env_map.as_ref().map(|env_map| env_map.env_map_tint);
 
             if prev_mode != Some(mode) {
                 prev_mode = Some(mode);
+
                 byte_code::set_mode(mode).write_big_endian_to(&mut *byte_code_file)?;
             }
 
-            if prev_material_path != Some(material_path) {
-                prev_material_path = Some(material_path);
-                let (base_texture_index, env_map_texture_index) = match material.shader() {
-                    Shader::LightmappedGeneric(LightmappedGeneric {
-                        base_texture,
-                        env_map,
-                        ..
-                    }) => {
-                        let base_texture_index = texture_ids[&(base_texture.path().clone(), None)];
-                        let env_map_texture_index = env_map.as_ref().map(|env_map| {
-                            texture_ids[&(env_map.path().clone(), Some(plane.unwrap()))]
-                        });
-                        (base_texture_index, env_map_texture_index)
-                    }
-                    Shader::Unsupported => panic!(),
-                };
+            if prev_base_texture_path != Some(&batch.base_texture_path) {
+                prev_base_texture_path = Some(&batch.base_texture_path);
+
+                let base_texture_index = texture_ids[&(batch.base_texture_path.clone(), None)];
                 byte_code::set_base_texture(base_texture_index)
                     .write_big_endian_to(&mut *byte_code_file)?;
-                if let Some(env_map_texture_index) = env_map_texture_index {
-                    byte_code::set_env_map_texture(env_map_texture_index)
-                        .write_big_endian_to(&mut *byte_code_file)?;
-                }
             }
 
             if prev_plane != plane {
@@ -1065,6 +1212,17 @@ fn write_geometry(
                 }
             }
 
+            if prev_env_map_path != Some(env_map_path) {
+                prev_env_map_path = Some(env_map_path);
+
+                if let Some(env_map_path) = env_map_path {
+                    let env_map_texture_index =
+                        texture_ids[&(env_map_path.clone(), Some(plane.unwrap()))];
+                    byte_code::set_env_map_texture(env_map_texture_index)
+                        .write_big_endian_to(&mut *byte_code_file)?;
+                }
+            }
+
             if prev_env_map_tint != env_map_tint {
                 prev_env_map_tint = env_map_tint;
 
@@ -1072,6 +1230,12 @@ fn write_geometry(
                     byte_code::set_env_map_tint(env_map_tint)
                         .write_big_endian_to(&mut *byte_code_file)?;
                 }
+            }
+
+            if prev_alpha != Some(batch.alpha) {
+                prev_alpha = Some(batch.alpha);
+
+                byte_code::set_alpha(batch.alpha).write_big_endian_to(&mut *byte_code_file)?;
             }
 
             let display_list_start_offset = display_lists_file.stream_position()? as u32;

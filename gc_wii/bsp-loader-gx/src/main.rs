@@ -30,7 +30,6 @@ mod shader;
 mod shaders;
 mod visibility;
 
-static LIGHTMAP_DATA: &[u8] = include_bytes_align!(32, "../../../build/lightmap_cmpr.tpl");
 static POSITION_DATA: &[u8] = include_bytes_align!(32, "../../../build/position_data.dat");
 static NORMAL_DATA: &[u8] = include_bytes_align!(32, "../../../build/normal_data.dat");
 static LIGHTMAP_COORD_DATA: &[u8] =
@@ -149,10 +148,6 @@ impl Drop for Memalign {
 fn main(_argc: isize, _argv: *const *const u8) -> isize {
     unsafe {
         let (width, height) = init_hardware();
-
-        // Configure a texture object for the lightmap.
-        let mut lightmap_texobj = load_texture_tpl(LIGHTMAP_DATA);
-        GX_LoadTexObj(&mut lightmap_texobj, GX_TEXMAP0 as u8);
 
         // // Set up full screen render to texture.
         // let screen_texture_color_data = Memalign::new(
@@ -432,13 +427,13 @@ fn prepare_main_draw(
         GX_SetVtxDesc(GX_VA_TEX0 as u8, GX_INDEX16 as u8);
         GX_SetVtxDesc(GX_VA_TEX1 as u8, GX_INDEX16 as u8);
         GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
-        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_NRM, GX_NRM_XYZ, GX_F32, 0);
-        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
-        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX1, GX_TEX_ST, GX_F32, 0);
+        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_NRM, GX_NRM_XYZ, GX_S8, 0);
+        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX0, GX_TEX_ST, GX_U16, 15);
+        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX1, GX_TEX_ST, GX_S16, 8);
         GX_SetArray(GX_VA_POS, POSITION_DATA.as_ptr() as *mut _, 12);
-        GX_SetArray(GX_VA_NRM, NORMAL_DATA.as_ptr() as *mut _, 12);
-        GX_SetArray(GX_VA_TEX0, LIGHTMAP_COORD_DATA.as_ptr() as *mut _, 8);
-        GX_SetArray(GX_VA_TEX1, TEXTURE_COORD_DATA.as_ptr() as *mut _, 8);
+        GX_SetArray(GX_VA_NRM, NORMAL_DATA.as_ptr() as *mut _, 3);
+        GX_SetArray(GX_VA_TEX0, LIGHTMAP_COORD_DATA.as_ptr() as *mut _, 4);
+        GX_SetArray(GX_VA_TEX1, TEXTURE_COORD_DATA.as_ptr() as *mut _, 4);
         GX_InvVtxCache();
 
         guPerspective(
@@ -497,6 +492,9 @@ fn prepare_main_draw(
 
         let mut scale_and_bias = [[0.5, 0.0, 0.0, 0.5], [0.0, 0.5, 0.0, 0.5]];
         GX_LoadTexMtxImm(scale_and_bias.as_mut_ptr(), GX_TEXMTX1, GX_MTX2x4 as u8);
+
+        let mut identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        GX_LoadNrmMtxImm3x3(identity.as_mut_ptr(), GX_PNMTX0);
     }
 }
 
@@ -548,6 +546,49 @@ fn do_main_draw(pos: &guVector, visibility: Visibility, base_map_texobjs: &[GXTe
                     }
                     ByteCodeEntry::SetEnvMapTint { r, g, b } => {
                         GX_SetTevKColor(GX_TEVSTAGE0 as u8, GXColor { r, g, b, a: 0 });
+                    }
+                    ByteCodeEntry::SetAlpha {
+                        test_threshold,
+                        blend,
+                    } => {
+                        if let Some(threshold) = test_threshold {
+                            GX_SetAlphaCompare(
+                                GX_GEQUAL as u8,
+                                threshold,
+                                GX_AOP_AND as u8,
+                                GX_ALWAYS as u8,
+                                0,
+                            );
+                            GX_SetZCompLoc(GX_FALSE as u8);
+                        } else {
+                            GX_SetAlphaCompare(
+                                GX_ALWAYS as u8,
+                                0,
+                                GX_AOP_AND as u8,
+                                GX_ALWAYS as u8,
+                                0,
+                            );
+                            GX_SetZCompLoc(GX_TRUE as u8);
+                        }
+                        if blend {
+                            GX_SetBlendMode(
+                                GX_BM_BLEND as u8,
+                                GX_BL_SRCALPHA as u8,
+                                GX_BL_INVSRCALPHA as u8,
+                                0,
+                            );
+                            GX_SetZMode(GX_TRUE as u8, GX_LEQUAL as u8, GX_FALSE as u8);
+                        } else {
+                            GX_SetBlendMode(GX_BM_NONE as u8, 0, 0, 0);
+                            GX_SetZMode(GX_TRUE as u8, GX_LEQUAL as u8, GX_TRUE as u8);
+                        }
+                    }
+                    ByteCodeEntry::SetLightmapTexture{lightmap_texture_index} => {
+                        GX_LoadTexObj(
+                            &base_map_texobjs[lightmap_texture_index as usize] as *const GXTexObj
+                                as *mut GXTexObj,
+                            GX_TEXMAP0 as u8,
+                        );
                     }
                     ByteCodeEntry::SetMode { mode } => match mode {
                         0 => {

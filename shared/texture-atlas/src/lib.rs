@@ -32,6 +32,10 @@ impl RgbU8Image {
         &self.data
     }
 
+    pub fn data_mut(&mut self) -> &mut [u8] {
+        &mut self.data
+    }
+
     pub fn write_to_png(&self, path: &str) -> Result<()> {
         let w = BufWriter::new(File::create(path)?);
         let mut encoder = png::Encoder::new(w, self.width as u32, self.height as u32);
@@ -43,16 +47,17 @@ impl RgbU8Image {
     }
 }
 
-pub struct RgbU8TextureAtlas {
-    patches: Vec<RgbU8Image>,
+#[derive(Default)]
+pub struct TextureAtlas {
+    patches: Vec<(usize, usize)>,
 }
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]
 pub struct PatchId(isize);
 
 impl PatchId {
-    fn new(index: usize, image: &RgbU8Image) -> Self {
-        if image.height > image.width {
+    fn new(index: usize, width: usize, height: usize) -> Self {
+        if height > width {
             Self(-(index as isize) - 1)
         } else {
             Self(index as isize)
@@ -64,40 +69,42 @@ impl PatchId {
     }
 }
 
-impl RgbU8TextureAtlas {
+impl TextureAtlas {
     pub fn new() -> Self {
-        Self {
-            patches: Vec::new(),
-        }
+        Self::default()
     }
 
-    pub fn insert(&mut self, image: RgbU8Image) -> PatchId {
-        let id = PatchId::new(self.patches.len(), &image);
-        self.patches.push(image);
+    pub fn is_empty(&self) -> bool {
+        self.patches.is_empty()
+    }
+
+    pub fn insert(&mut self, width: usize, height: usize) -> PatchId {
+        let id = PatchId::new(self.patches.len(), width, height);
+        self.patches.push((width, height));
         id
     }
 
-    pub fn bake(
-        self,
-        width: usize,
-        height: usize,
-    ) -> Result<(RgbU8Image, HashMap<PatchId, [usize; 2]>), Self> {
-        let mut data = vec![0; 3 * width * height];
+    pub fn bake(self, width: usize, height: usize) -> Result<HashMap<PatchId, [usize; 2]>, Self> {
         let mut open = vec![(0, 0, width, height)];
 
         let mut offsets_by_patch_id = HashMap::new();
-        let mut patches: Vec<(PatchId, &RgbU8Image)> = self
+        let mut patches: Vec<(PatchId, (usize, usize))> = self
             .patches
             .iter()
             .enumerate()
-            .map(|(index, patch)| (PatchId::new(index, patch), patch))
+            .map(|(index, &(patch_width, patch_height))| {
+                (
+                    PatchId::new(index, patch_width, patch_height),
+                    (patch_width, patch_height),
+                )
+            })
             .collect();
-        patches.sort_by_key(|&(_, patch)| patch.width * patch.height);
-        'for_each_patch: while let Some((patch_id, patch)) = patches.pop() {
+        patches.sort_by_key(|&(_, (patch_width, patch_height))| patch_width * patch_height);
+        'for_each_patch: while let Some((patch_id, (patch_width, patch_height))) = patches.pop() {
             let (oriented_patch_width, oriented_patch_height) = if patch_id.is_flipped() {
-                (patch.height, patch.width)
+                (patch_height, patch_width)
             } else {
-                (patch.width, patch.height)
+                (patch_width, patch_height)
             };
             if oriented_patch_width > width || oriented_patch_height > height {
                 return Err(self);
@@ -116,23 +123,9 @@ impl RgbU8TextureAtlas {
 
                 // Found a sufficiently sized open space. Place this patch there.
                 offsets_by_patch_id.insert(patch_id, [open_x0, open_y0]);
-                for y in 0..oriented_patch_height {
-                    for x in 0..oriented_patch_width {
-                        let src_offset = if patch_id.is_flipped() {
-                            3 * (patch.width * x + y)
-                        } else {
-                            3 * (patch.width * y + x)
-                        };
-                        let dst_offset = 3 * (width * (y + open_y0) + x + open_x0);
-                        data[dst_offset..dst_offset + 3]
-                            .copy_from_slice(&patch.data[src_offset..src_offset + 3]);
-                    }
-                }
 
                 // Remove the open space that was just used and add any leftover areas.
                 open.remove(open_index);
-                // let used_width = oriented_patch_width;
-                // let used_height = oriented_patch_height;
                 // Reserve entire S3TC/DXT1/BC1 blocks to keep lightmaps from popping horribly.
                 let used_width = (oriented_patch_width + 3) & !3;
                 let used_height = (oriented_patch_height + 3) & !3;
@@ -163,22 +156,15 @@ impl RgbU8TextureAtlas {
             return Err(self);
         }
 
-        Ok((
-            RgbU8Image {
-                width,
-                height,
-                data,
-            },
-            offsets_by_patch_id,
-        ))
+        Ok(offsets_by_patch_id)
     }
 
-    pub fn bake_smallest(mut self) -> (RgbU8Image, HashMap<PatchId, [usize; 2]>) {
+    pub fn bake_smallest(mut self) -> (usize, usize, HashMap<PatchId, [usize; 2]>) {
         let mut width = 1;
         let mut height = 1;
         loop {
             match self.bake(width, height) {
-                Ok(result) => return result,
+                Ok(result) => return (width, height, result),
                 Err(recovered) => self = recovered,
             }
 

@@ -37,6 +37,30 @@ impl WriteBigEndian for u32 {
     }
 }
 
+impl WriteBigEndian for i8 {
+    const SIZE: usize = 1;
+
+    fn write_big_endian_to<W: Write>(&self, w: &mut W) -> Result<()> {
+        Ok(w.write_i8(*self)?)
+    }
+}
+
+impl WriteBigEndian for i16 {
+    const SIZE: usize = 2;
+
+    fn write_big_endian_to<W: Write>(&self, w: &mut W) -> Result<()> {
+        Ok(w.write_i16::<BigEndian>(*self)?)
+    }
+}
+
+impl WriteBigEndian for i32 {
+    const SIZE: usize = 4;
+
+    fn write_big_endian_to<W: Write>(&self, w: &mut W) -> Result<()> {
+        Ok(w.write_i32::<BigEndian>(*self)?)
+    }
+}
+
 impl WriteBigEndian for f32 {
     const SIZE: usize = 4;
 
