@@ -37,7 +37,18 @@ fn parse_f32(s: &str) -> Result<f32> {
 }
 
 fn parse_material_vector(s: &str) -> Result<Vec3> {
-    Ok(parse::material_vector(s).unwrap())
+    match parse::material_vector(s) {
+        Ok(v) => Ok(v),
+        Err(e) => bail!("{}", e),
+    }
+}
+
+fn parse_vector_or_f32(s: &str) -> Result<f32> {
+    // TODO: Expose the full vector. This is a quick hack.
+    match parse_material_vector(s) {
+        Ok(v) => Ok((v[0] + v[1] + v[2]) / 3.0),
+        Err(_) => parse_f32(s),
+    }
 }
 
 fn parse_vtf_path(s: &str) -> Result<Option<VpkPath>> {
@@ -175,27 +186,51 @@ impl<'a> ShaderBuilder<'a> for LightmappedGenericBuilder {
     fn parse(&mut self, entry: Entry) -> Result<()> {
         match entry {
             Entry::KeyValue(KeyValue { key, value }) => match key.to_ascii_lowercase().as_str() {
-                "$alphatest" => self.alpha_test = parse_bool(value)?,
-                "$alphatestreference" => self.alpha_test_reference = parse_f32(value)?,
-                "$basealphaenvmapmask" => self.base_alpha_env_map_mask = parse_bool(value)?,
-                "$basetexture" => self.base_texture = parse_vtf_path(value)?,
-                "$bumpmap" => self.bump_map = parse_vtf_path(value)?,
-                "$decal" => self.decal = parse_vtf_path(value)?,
-                "$detail" => self.detail = parse_vtf_path(value)?,
-                "$detailblendfactor" => self.detail_blend_factor = parse_f32(value)?,
-                "$detailblendmode" => self.detail_blend_mode = parse_i32(value)?,
-                "$detailscale" => self.detail_scale = parse_f32(value)?,
-                "$envmap" => self.env_map = parse_vtf_path(value)?,
-                "$envmapcontrast" => self.env_map_contrast = Some(parse_f32(value)?),
-                "$envmapmask" => self.env_map_mask = parse_vtf_path(value)?,
-                "$envmapsaturation" => self.env_map_saturation = Some(parse_f32(value)?),
-                "$envmaptint" => self.env_map_tint = Some(parse_material_vector(value)?),
-                "$nodiffusebumplighting" => self.no_diffuse_bump_lighting = parse_bool(value)?,
-                "$normalmapalphaenvmapmask" => {
-                    self.normal_map_alpha_env_map_mask = parse_bool(value)?
+                "$alphatest" => self.alpha_test = parse_bool(value).context("$alphatest")?,
+                "$alphatestreference" => {
+                    self.alpha_test_reference = parse_f32(value).context("$alphatestreference")?
                 }
-                "$selfillum" => self.self_illum = parse_bool(value)?,
-                "$translucent" => self.translucent = parse_bool(value)?,
+                "$basealphaenvmapmask" => {
+                    self.base_alpha_env_map_mask =
+                        parse_bool(value).context("$basealphaenvmapmask")?
+                }
+                "$basetexture" => {
+                    self.base_texture = parse_vtf_path(value).context("$basetexture")?
+                }
+                "$bumpmap" => self.bump_map = parse_vtf_path(value).context("$bumpmap")?,
+                "$decal" => self.decal = parse_vtf_path(value).context("$decal")?,
+                "$detail" => self.detail = parse_vtf_path(value).context("$detail")?,
+                "$detailblendfactor" => {
+                    self.detail_blend_factor = parse_f32(value).context("$detailblendfactor")?
+                }
+                "$detailblendmode" => {
+                    self.detail_blend_mode = parse_i32(value).context("$detailblendmode")?
+                }
+                "$detailscale" => self.detail_scale = parse_f32(value).context("$detailscale")?,
+                "$envmap" => self.env_map = parse_vtf_path(value).context("$envmap")?,
+                "$envmapcontrast" => {
+                    self.env_map_contrast = Some(parse_f32(value).context("$envmapcontrast")?)
+                }
+                "$envmapmask" => {
+                    self.env_map_mask = parse_vtf_path(value).context("$envmapmask")?
+                }
+                "$envmapsaturation" => {
+                    self.env_map_saturation =
+                        Some(parse_vector_or_f32(value).context("$envmapsaturation")?)
+                }
+                "$envmaptint" => {
+                    self.env_map_tint = Some(parse_material_vector(value).context("$envmaptint")?)
+                }
+                "$nodiffusebumplighting" => {
+                    self.no_diffuse_bump_lighting =
+                        parse_bool(value).context("$nodiffusebumplighting")?
+                }
+                "$normalmapalphaenvmapmask" => {
+                    self.normal_map_alpha_env_map_mask =
+                        parse_bool(value).context("$normalmapalphaenvmapmask")?
+                }
+                "$selfillum" => self.self_illum = parse_bool(value).context("$selfillum")?,
+                "$translucent" => self.translucent = parse_bool(value).context("$translucent")?,
                 "$parallaxmap" | "$parallaxmapscale" | "$reflectivity" | "$surfaceprop" => (),
                 x if x.starts_with("%") => (),
                 _ => println!("unexpected LightmappedGeneric key: {}", key),

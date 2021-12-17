@@ -1,5 +1,3 @@
-use texture_atlas::RgbU8Image;
-
 use crate::bsp::{Bsp, Face, TexInfo};
 use crate::lightmap::LightmapMetadata;
 
@@ -13,7 +11,7 @@ pub struct Vertex {
 
 pub fn convert_vertex(
     bsp: Bsp,
-    lightmap_image: &RgbU8Image,
+    (lightmap_width, lightmap_height): (usize, usize),
     lightmap_metadata: &LightmapMetadata,
     face: &Face,
     tex_info: &TexInfo,
@@ -40,9 +38,9 @@ pub fn convert_vertex(
         (patch_s, patch_t)
     };
     let lightmap_s =
-        (patch_s + lightmap_metadata.luxel_offset[0] as f32 + 0.5) / lightmap_image.width() as f32;
+        (patch_s + lightmap_metadata.luxel_offset[0] as f32 + 0.5) / lightmap_width as f32;
     let lightmap_t =
-        (patch_t + lightmap_metadata.luxel_offset[1] as f32 + 0.5) / lightmap_image.height() as f32;
+        (patch_t + lightmap_metadata.luxel_offset[1] as f32 + 0.5) / lightmap_height as f32;
 
     let texture_s = tex_info.texture_vecs[0][0] * vertex.x
         + tex_info.texture_vecs[0][1] * vertex.y

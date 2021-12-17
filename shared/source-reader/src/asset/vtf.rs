@@ -2,7 +2,6 @@ use std::rc::Rc;
 
 use anyhow::Result;
 use byteorder::{LittleEndian, ReadBytesExt};
-use texture_atlas::RgbU8Image;
 
 use crate::asset::{Asset, AssetLoader};
 use crate::vpk::path::VpkPath;
@@ -15,21 +14,17 @@ pub struct Vtf {
     data: Option<ImageData>,
 }
 
-impl Vtf {
-    pub fn new(path: VpkPath, image: &RgbU8Image) -> Self {
-        Self {
-            path,
-            width: image.width() as u32,
-            height: image.height() as u32,
-            flags: 0,
-            data: Some(ImageData {
-                format: ImageFormat::Rgb8,
-                layer_count: 1,
-                mips: vec![vec![image.data().to_vec()]],
-            }),
-        }
-    }
+pub struct VtfFaceMip<'a> {
+    pub face: u8,
+    pub mip_level: u8,
+    pub logical_width: u32,
+    pub logical_height: u32,
+    pub physical_width: u32,
+    pub physical_height: u32,
+    pub data: &'a [u8],
+}
 
+impl Vtf {
     fn bits_per_pixel_for_format(format: u32) -> Option<usize> {
         match format {
             13 => Some(4), // DXT1
@@ -59,6 +54,14 @@ impl Vtf {
 
     pub fn data(&self) -> Option<&ImageData> {
         self.data.as_ref()
+    }
+
+    pub fn iter_face_mips(&self) -> impl Iterator<Item = VtfFaceMip> {
+        FaceMipIter {
+            vtf: self,
+            face: 0,
+            mip_level: 0,
+        }
     }
 }
 
@@ -308,6 +311,54 @@ fn decode_rgb565(encoded: u16) -> [u8; 3] {
         extend6(((encoded >> 5) & 0x3f) as u8),
         extend5((encoded & 0x1f) as u8),
     ]
+}
+
+struct FaceMipIter<'a> {
+    vtf: &'a Vtf,
+    // Valid until the iterator has ended, then forever out of range.
+    face: u8,
+    // Always valid.
+    mip_level: u8,
+}
+
+impl<'a> Iterator for FaceMipIter<'a> {
+    type Item = VtfFaceMip<'a>;
+
+    fn next(&mut self) -> Option<VtfFaceMip<'a>> {
+        if let Some(data) = self.vtf.data.as_ref() {
+            if (self.face as usize) < data.layer_count {
+                // Prepare the result.
+                let min_physical_size = match data.format {
+                    ImageFormat::Dxt1 => 4,
+                    ImageFormat::Rgb8 | ImageFormat::Rgba8 => 1,
+                };
+                let logical_width = (self.vtf.width >> self.mip_level).max(1);
+                let logical_height = (self.vtf.height >> self.mip_level).max(1);
+                let physical_width = logical_width.max(min_physical_size);
+                let physical_height = logical_height.max(min_physical_size);
+                let result = VtfFaceMip {
+                    face: self.face,
+                    mip_level: self.mip_level,
+                    logical_width,
+                    logical_height,
+                    physical_width,
+                    physical_height,
+                    data: &data.mips[self.mip_level as usize][self.face as usize],
+                };
+
+                // Advance the counters.
+                if ((self.mip_level + 1) as usize) < data.mips.len() {
+                    self.mip_level += 1;
+                } else {
+                    self.mip_level = 0;
+                    self.face += 1;
+                }
+
+                return Some(result);
+            }
+        }
+        None
+    }
 }
 
 pub struct ImageData {

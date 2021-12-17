@@ -16,6 +16,8 @@ use fully_occupied::{extract_slice, FullyOccupied};
 use ogc_sys::*;
 
 use crate::display_list_data::{get_cluster_geometry, ByteCodeEntry};
+use crate::memalign::Memalign;
+use crate::shaders::flat_textured::FLAT_TEXTURED_SHADER;
 use crate::shaders::flat_vertex_color::FLAT_VERTEX_COLOR_SHADER;
 use crate::shaders::lightmapped::LIGHTMAPPED_SHADER;
 use crate::shaders::lightmapped_env_shader::LIGHTMAPPED_ENV_SHADER;
@@ -41,6 +43,11 @@ static BSP_LEAF_DATA: &[u8] = include_bytes_align!(2, "../../../build/bsp_leaves
 static VISIBILITY_DATA: &[u8] = include_bytes_align_as!(u32, "../../../build/vis.dat");
 static TEXTURE_TABLE_DATA: &[u8] = include_bytes_align_as!(u32, "../../../build/texture_table.dat");
 static TEXTURE_DATA: &[u8] = include_bytes_align!(32, "../../../build/texture_data.dat");
+static LIGHTMAP_CLUSTER_TABLE_DATA: &[u8] =
+    include_bytes_align!(4, "../../../build/lightmap_cluster_table.dat");
+static LIGHTMAP_PATCH_TABLE_DATA: &[u8] =
+    include_bytes_align!(4, "../../../build/lightmap_patch_table.dat");
+static LIGHTMAP_DATA: &[u8] = include_bytes_align!(4, "../../../build/lightmap_data.dat");
 
 static XFB: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 static DO_COPY: AtomicBool = AtomicBool::new(false);
@@ -107,7 +114,7 @@ fn get_widescreen_setting() -> bool {
     false
 }
 
-fn load_texture_tpl(data: &[u8]) -> GXTexObj {
+fn _load_texture_tpl(data: &[u8]) -> GXTexObj {
     unsafe {
         let mut tpl_file = MaybeUninit::<TPLFile>::uninit();
         assert_eq!(
@@ -125,22 +132,174 @@ fn load_texture_tpl(data: &[u8]) -> GXTexObj {
     }
 }
 
-struct Memalign {
-    ptr: *mut c_void,
-    _size: usize,
+#[repr(C)]
+struct LightmapClusterTableEntry {
+    width: u16,
+    height: u16,
+    patch_table_start_index: usize,
+    patch_table_end_index: usize,
 }
 
-impl Memalign {
-    unsafe fn _new(align: usize, size: usize) -> Self {
-        let ptr = unsafe { libc::memalign(align, size) };
-        assert!(!ptr.is_null());
-        Self { ptr, _size: size }
+unsafe impl FullyOccupied for LightmapClusterTableEntry {}
+
+fn lightmap_cluster_table() -> &'static [LightmapClusterTableEntry] {
+    extract_slice(LIGHTMAP_CLUSTER_TABLE_DATA)
+}
+
+#[repr(C)]
+struct LightmapPatchTableEntry {
+    block_x: u8,
+    block_y: u8,
+    block_width: u8,
+    block_height: u8,
+    style_count: u8,
+    bump_light: u8,
+    _padding: u16,
+    data_start_offset: usize,
+    data_end_offset: usize,
+}
+
+unsafe impl FullyOccupied for LightmapPatchTableEntry {}
+
+fn lightmap_patch_table() -> &'static [LightmapPatchTableEntry] {
+    extract_slice(LIGHTMAP_PATCH_TABLE_DATA)
+}
+
+mod memalign {
+    #![allow(dead_code)]
+
+    use core::slice::{from_raw_parts, from_raw_parts_mut};
+
+    use libc::c_void;
+    use ogc_sys::DCInvalidateRange;
+
+    pub struct Memalign<const ALIGN: usize> {
+        ptr: *mut c_void,
+        size: usize,
+    }
+
+    impl<const ALIGN: usize> Memalign<ALIGN> {
+        pub fn new(size: usize) -> Self {
+            let ptr = unsafe { libc::memalign(ALIGN, size) };
+            assert!(!ptr.is_null());
+            Self { ptr, size }
+        }
+
+        pub fn as_void_ptr(&self) -> *const c_void {
+            self.ptr as *const c_void
+        }
+
+        pub fn as_void_ptr_mut(&self) -> *mut c_void {
+            self.ptr
+        }
+
+        pub fn size(&self) -> usize {
+            self.size
+        }
+
+        pub fn as_ref(&self) -> &[u8] {
+            unsafe { from_raw_parts(self.ptr as *const u8, self.size) }
+        }
+
+        pub fn as_mut(&mut self) -> &mut [u8] {
+            unsafe { from_raw_parts_mut(self.ptr as *mut u8, self.size) }
+        }
+
+        pub unsafe fn dc_invalidate(&self) {
+            unsafe { DCInvalidateRange(self.ptr, self.size as u32) };
+        }
+    }
+
+    impl<const ALIGN: usize> Clone for Memalign<ALIGN> {
+        fn clone(&self) -> Self {
+            let result = Self::new(self.size);
+            unsafe { libc::memcpy(result.ptr, self.ptr, self.size) };
+            result
+        }
+    }
+
+    impl<const ALIGN: usize> Drop for Memalign<ALIGN> {
+        fn drop(&mut self) {
+            unsafe { libc::free(self.ptr) }
+        }
     }
 }
 
-impl Drop for Memalign {
-    fn drop(&mut self) {
-        unsafe { libc::free(self.ptr) }
+struct Lightmap {
+    image_data: Memalign<32>,
+    texobj: GXTexObj,
+}
+
+impl Lightmap {
+    fn new(cluster_index: usize) -> Self {
+        let cluster = &lightmap_cluster_table()[cluster_index];
+        let coarse_width = ((cluster.width + 3) / 4).max(1);
+        let coarse_height = ((cluster.height + 3) / 4).max(1);
+        let physical_width = 4 * coarse_width;
+        let physical_height = 4 * coarse_height;
+
+        let image_data =
+            Memalign::<32>::new(4 * physical_width as usize * physical_height as usize);
+        unsafe { libc::memset(image_data.as_void_ptr_mut(), 0, image_data.size()) };
+        unsafe { image_data.dc_invalidate() };
+
+        let mut texobj = unsafe { zeroed::<GXTexObj>() };
+        unsafe {
+            GX_InitTexObj(
+                &mut texobj,
+                image_data.as_void_ptr_mut(),
+                physical_width as u16,
+                physical_height as u16,
+                GX_TF_RGBA8 as u8,
+                GX_CLAMP as u8,
+                GX_CLAMP as u8,
+                GX_FALSE as u8,
+            );
+            GX_InitTexObjFilterMode(&mut texobj, GX_LINEAR as u8, GX_LINEAR as u8);
+        }
+
+        Self {
+            image_data: image_data,
+            texobj,
+        }
+    }
+
+    fn update(&mut self, cluster_index: usize, style: usize, axis: usize) {
+        assert!(style < 4);
+        assert!(axis < 4);
+
+        let cluster = &lightmap_cluster_table()[cluster_index];
+        let coarse_width = ((cluster.width + 3) / 4).max(1);
+
+        let patches =
+            &lightmap_patch_table()[cluster.patch_table_start_index..cluster.patch_table_end_index];
+        for patch in patches {
+            let style = style.min(patch.style_count as usize - 1);
+            let (axis, axis_count) = if patch.bump_light != 0 {
+                (axis, 4)
+            } else {
+                (0, 1)
+            };
+
+            let patch_data = &LIGHTMAP_DATA[patch.data_start_offset..patch.data_end_offset];
+            let page_size = 64 * patch.block_width as usize * patch.block_height as usize;
+            let page_index = axis_count * style + axis;
+            let page_offset = page_size * page_index;
+            let page_data = &patch_data[page_offset..page_offset + page_size];
+
+            let row_size = 64 * patch.block_width as usize;
+            for block_dy in 0..patch.block_height {
+                let src_offset = 64 * patch.block_width as usize * block_dy as usize;
+                let src = &page_data[src_offset..src_offset + row_size];
+                let dst_offset = 64
+                    * (coarse_width as usize * (patch.block_y as usize + block_dy as usize)
+                        + patch.block_x as usize);
+                let dst = &mut self.image_data.as_mut()[dst_offset..dst_offset + row_size];
+
+                dst.copy_from_slice(src);
+            }
+        }
+        unsafe { self.image_data.dc_invalidate() }
     }
 }
 
@@ -173,6 +332,15 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
         //     );
         //     GX_LoadTexObj(&mut screen_texture_color_texobj, GX_TEXMAP6 as u8);
         // }
+
+        // Set up texture objects for cluster lightmaps.
+        let mut cluster_lightmaps = Vec::new();
+        for cluster_index in 0..lightmap_cluster_table().len() {
+            let mut lightmap = Lightmap::new(cluster_index);
+            lightmap.update(cluster_index, 0, 0);
+            cluster_lightmaps.push(lightmap);
+        }
+        GX_InvalidateTexAll();
 
         // Configure a texture object for the identity map.
         {
@@ -281,6 +449,8 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
             pitch: 0.0,
             inverted_pitch_control: false,
             widescreen: get_widescreen_setting(),
+            lightmap_style: 0,
+            lightmap_axis: 0,
         };
 
         let mut last_frame_timers = zeroed::<FrameTimers>();
@@ -288,11 +458,16 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
         let mut view = zeroed::<Mtx>();
         loop {
             let game_logic_elapsed = Timer::time(|| {
-                do_game_logic(&mut game_state);
+                do_game_logic(&mut game_state, &mut cluster_lightmaps);
             });
             let (main_draw_elapsed, view_cluster) = Timer::time_with_result(|| {
                 prepare_main_draw(width, height, &game_state, &mut proj, &mut view);
-                do_main_draw(&game_state.pos, visibility, &base_map_texobjs)
+                do_main_draw(
+                    &game_state.pos,
+                    visibility,
+                    &base_map_texobjs,
+                    &cluster_lightmaps,
+                )
             });
             let copy_to_texture_elapsed = Timer::time(|| {
                 // do_copy_to_texture(&screen_texture_color_data);
@@ -300,8 +475,10 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
             let debug_draw_elapsed = Timer::time(|| {
                 do_debug_draw(
                     height,
+                    &game_state,
                     &last_frame_timers,
                     view_cluster,
+                    &cluster_lightmaps,
                     &mut proj,
                     &mut view,
                 );
@@ -332,6 +509,8 @@ struct GameState {
     pitch: f32,
     inverted_pitch_control: bool,
     widescreen: bool,
+    lightmap_style: usize,
+    lightmap_axis: usize,
 }
 
 impl GameState {
@@ -372,7 +551,7 @@ impl Timer {
     }
 }
 
-fn do_game_logic(game_state: &mut GameState) {
+fn do_game_logic(game_state: &mut GameState, cluster_lightmaps: &mut [Lightmap]) {
     unsafe {
         PAD_ScanPads();
 
@@ -398,10 +577,10 @@ fn do_game_logic(game_state: &mut GameState) {
         game_state.pos.x += speed * (right[0] * dx + forward[0] * dy);
         game_state.pos.y += speed * (right[1] * dx + forward[1] * dy);
         game_state.pos.z += speed * (right[2] * dx + forward[2] * dy);
-        if (PAD_ButtonsHeld(0) & PAD_BUTTON_UP as u16) != 0 {
+        if (PAD_ButtonsHeld(0) & PAD_BUTTON_Y as u16) != 0 {
             game_state.pos.z += speed;
         }
-        if (PAD_ButtonsHeld(0) & PAD_BUTTON_DOWN as u16) != 0 {
+        if (PAD_ButtonsHeld(0) & PAD_BUTTON_X as u16) != 0 {
             game_state.pos.z -= speed;
         }
 
@@ -410,6 +589,38 @@ fn do_game_logic(game_state: &mut GameState) {
             -89.0 / 180.0 * core::f32::consts::PI,
             89.0 / 180.0 * core::f32::consts::PI,
         );
+
+        let mut new_lightmap_style = game_state.lightmap_style;
+        if (PAD_ButtonsDown(0) & PAD_BUTTON_UP as u16) != 0 {
+            new_lightmap_style = new_lightmap_style.wrapping_add(1);
+        }
+        if (PAD_ButtonsDown(0) & PAD_BUTTON_DOWN as u16) != 0 {
+            new_lightmap_style = new_lightmap_style.wrapping_sub(1);
+        }
+        new_lightmap_style %= 4;
+
+        let mut new_lightmap_axis = game_state.lightmap_axis;
+        if (PAD_ButtonsDown(0) & PAD_BUTTON_RIGHT as u16) != 0 {
+            new_lightmap_axis = new_lightmap_axis.wrapping_add(1);
+        }
+        if (PAD_ButtonsDown(0) & PAD_BUTTON_LEFT as u16) != 0 {
+            new_lightmap_axis = new_lightmap_axis.wrapping_sub(1);
+        }
+        new_lightmap_axis %= 4;
+
+        if game_state.lightmap_style != new_lightmap_style
+            || game_state.lightmap_axis != new_lightmap_axis
+        {
+            game_state.lightmap_style = new_lightmap_style;
+            game_state.lightmap_axis = new_lightmap_axis;
+            for (cluster_index, lightmap) in cluster_lightmaps.iter_mut().enumerate() {
+                lightmap.update(
+                    cluster_index,
+                    game_state.lightmap_style,
+                    game_state.lightmap_axis,
+                );
+            }
+        }
     }
 }
 
@@ -498,7 +709,12 @@ fn prepare_main_draw(
     }
 }
 
-fn do_main_draw(pos: &guVector, visibility: Visibility, base_map_texobjs: &[GXTexObj]) -> i16 {
+fn do_main_draw(
+    pos: &guVector,
+    visibility: Visibility,
+    base_map_texobjs: &[GXTexObj],
+    cluster_lightmaps: &[Lightmap],
+) -> i16 {
     unsafe {
         GX_SetZMode(GX_TRUE as u8, GX_LEQUAL as u8, GX_TRUE as u8);
         GX_SetColorUpdate(GX_TRUE as u8);
@@ -511,6 +727,15 @@ fn do_main_draw(pos: &guVector, visibility: Visibility, base_map_texobjs: &[GXTe
         // GX_SetAlphaCompare(GX_GEQUAL as u8, 0x80, GX_AOP_OR as u8, GX_NEVER as u8, 0);
 
         let draw_cluster = move |cluster| {
+            if let Some(lightmap) = cluster_lightmaps.get(cluster as usize) {
+                GX_LoadTexObj(
+                    &lightmap.texobj as *const GXTexObj as *mut GXTexObj,
+                    GX_TEXMAP0 as u8,
+                );
+            } else {
+                return;
+            }
+
             let cluster_geometry = get_cluster_geometry(cluster);
             for entry in cluster_geometry.iter_display_lists() {
                 match entry {
@@ -583,7 +808,9 @@ fn do_main_draw(pos: &guVector, visibility: Visibility, base_map_texobjs: &[GXTe
                             GX_SetZMode(GX_TRUE as u8, GX_LEQUAL as u8, GX_TRUE as u8);
                         }
                     }
-                    ByteCodeEntry::SetLightmapTexture{lightmap_texture_index} => {
+                    ByteCodeEntry::SetLightmapTexture {
+                        lightmap_texture_index,
+                    } => {
                         GX_LoadTexObj(
                             &base_map_texobjs[lightmap_texture_index as usize] as *const GXTexObj
                                 as *mut GXTexObj,
@@ -625,17 +852,17 @@ fn do_main_draw(pos: &guVector, visibility: Visibility, base_map_texobjs: &[GXTe
     }
 }
 
-fn _do_copy_to_texture(screen_texture_color_data: &Memalign) {
+fn _do_copy_to_texture(screen_texture_color_data: &Memalign<32>) {
     unsafe {
         // Copy the color buffer to a texture in main memory.
         GX_SetTexCopySrc(0, 0, 640, 480); // TODO: Use the current mode.
 
         DCInvalidateRange(
-            screen_texture_color_data.ptr,
-            screen_texture_color_data._size as u32,
+            screen_texture_color_data.as_void_ptr_mut(),
+            screen_texture_color_data.size() as u32,
         );
         GX_SetTexCopyDst(640, 480, GX_TF_RGBA8, GX_FALSE as u8);
-        GX_CopyTex(screen_texture_color_data.ptr, GX_FALSE as u8);
+        GX_CopyTex(screen_texture_color_data.as_void_ptr_mut(), GX_FALSE as u8);
 
         GX_PixModeSync();
         GX_Flush();
@@ -690,8 +917,10 @@ fn _do_copy_to_texture(screen_texture_color_data: &Memalign) {
 
 fn do_debug_draw(
     height: u16,
+    game_state: &GameState,
     last_frame_timers: &FrameTimers,
     view_cluster: i16,
+    cluster_lightmaps: &[Lightmap],
     proj: &mut Mtx44,
     view: &mut Mtx,
 ) {
@@ -794,6 +1023,52 @@ fn do_debug_draw(
             (*wgPipe).U8 = b;
         };
         draw_bit(16, 16, view_cluster != -1);
+        draw_bit(16, 0, (game_state.lightmap_style & 2) != 0);
+        draw_bit(32, 0, (game_state.lightmap_style & 1) != 0);
+        draw_bit(48, 0, (game_state.lightmap_axis & 2) != 0);
+        draw_bit(64, 0, (game_state.lightmap_axis & 1) != 0);
+
+        // Draw the lightmap for the current cluster.
+        if let Some(lightmap) = cluster_lightmaps.get(view_cluster as usize) {
+            let w = GX_GetTexObjWidth(&lightmap.texobj as *const GXTexObj as *mut GXTexObj);
+            let h = GX_GetTexObjHeight(&lightmap.texobj as *const GXTexObj as *mut GXTexObj);
+
+            GX_ClearVtxDesc();
+            GX_SetVtxDesc(GX_VA_POS as u8, GX_DIRECT as u8);
+            GX_SetVtxDesc(GX_VA_TEX0 as u8, GX_DIRECT as u8);
+            GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_POS, GX_POS_XY, GX_U16, 0);
+            GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX0, GX_TEX_ST, GX_U8, 0);
+            GX_InvVtxCache();
+
+            FLAT_TEXTURED_SHADER.apply();
+
+            GX_LoadTexObj(
+                &lightmap.texobj as *const GXTexObj as *mut GXTexObj,
+                GX_TEXMAP0 as u8,
+            );
+
+            GX_Begin(GX_QUADS as u8, GX_VTXFMT0 as u8, 4);
+
+            (*wgPipe).U16 = 16;
+            (*wgPipe).U16 = 16;
+            (*wgPipe).U8 = 0;
+            (*wgPipe).U8 = 0;
+
+            (*wgPipe).U16 = 16 + w;
+            (*wgPipe).U16 = 16;
+            (*wgPipe).U8 = 1;
+            (*wgPipe).U8 = 0;
+
+            (*wgPipe).U16 = 16 + w;
+            (*wgPipe).U16 = 16 + h;
+            (*wgPipe).U8 = 1;
+            (*wgPipe).U8 = 1;
+
+            (*wgPipe).U16 = 16;
+            (*wgPipe).U16 = 16 + h;
+            (*wgPipe).U8 = 0;
+            (*wgPipe).U8 = 1;
+        }
     }
 }
 

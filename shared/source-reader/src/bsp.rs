@@ -438,8 +438,8 @@ pub struct Lighting<'a> {
 }
 
 impl<'a> Lighting<'a> {
-    pub fn at_offset(&self, offset: i32, count: usize) -> &'a [ColorRgbExp32] {
-        extract_slice(&(&self.data[offset as usize..])[..count * size_of::<ColorRgbExp32>()])
+    pub fn at_offset(&self, offset: usize, count: usize) -> &'a [ColorRgbExp32] {
+        extract_slice(&(&self.data[offset..])[..count * size_of::<ColorRgbExp32>()])
     }
 }
 
