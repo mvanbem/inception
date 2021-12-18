@@ -71,7 +71,8 @@ pub const fn tev_builder() -> TevBuilder0 {
 
 #[derive(Clone, Debug)]
 pub struct Shader {
-    pub stages: [Option<TevStage>; 16],
+    pub tev_stages: [Option<TevStage>; 16],
+    pub ind_tex_stages: [Option<IndTexStage>; 4],
     pub num_chans: u8,
     pub tex_gens: [Option<TexGen>; 8],
     pub swap_table: [[u8; 4]; 4],
@@ -80,7 +81,8 @@ pub struct Shader {
 impl Shader {
     pub const fn default() -> Self {
         Self {
-            stages: [None; 16],
+            tev_stages: [None; 16],
+            ind_tex_stages: [None; 4],
             num_chans: 0,
             tex_gens: [None; 8],
             swap_table: [[0, 1, 2, 3]; 4],
@@ -91,8 +93,21 @@ impl Shader {
         unsafe {
             let num_tev_stages = self.num_tev_stages();
             GX_SetNumTevStages(num_tev_stages);
-            for (index, stage) in self.stages.iter().enumerate() {
+            for (index, stage) in self.tev_stages.iter().enumerate() {
                 assert_eq!(stage.is_some(), (index as u8) < num_tev_stages);
+                if let Some(stage) = stage.as_ref() {
+                    stage.apply(index as u8);
+                }
+            }
+
+            let num_ind_stages = self
+                .ind_tex_stages
+                .iter()
+                .map(|stage| stage.is_some() as u8)
+                .sum();
+            GX_SetNumIndStages(num_ind_stages);
+            for (index, stage) in self.ind_tex_stages.iter().enumerate() {
+                assert_eq!(stage.is_some(), (index as u8) < num_ind_stages);
                 if let Some(stage) = stage.as_ref() {
                     stage.apply(index as u8);
                 }
@@ -103,7 +118,7 @@ impl Shader {
             let num_tex_gens = self
                 .tex_gens
                 .iter()
-                .map(|tex_gen| if tex_gen.is_some() { 1 } else { 0 })
+                .map(|tex_gen| tex_gen.is_some() as u32)
                 .sum();
             GX_SetNumTexGens(num_tex_gens);
             for (index, tex_gen) in self.tex_gens.iter().enumerate() {
@@ -120,30 +135,30 @@ impl Shader {
     }
 
     pub fn num_tev_stages(&self) -> u8 {
-        self.stages
+        self.tev_stages
             .iter()
-            .map(|stage| if stage.is_some() { 1 } else { 0 })
+            .map(|stage| stage.is_some() as u8)
             .sum()
     }
 
     #[allow(dead_code)]
     pub const fn make_slow(mut self) -> Self {
-        self.stages[0] = Self::make_stage_slow(self.stages[0]);
-        self.stages[1] = Self::make_stage_slow(self.stages[1]);
-        self.stages[2] = Self::make_stage_slow(self.stages[2]);
-        self.stages[3] = Self::make_stage_slow(self.stages[3]);
-        self.stages[4] = Self::make_stage_slow(self.stages[4]);
-        self.stages[5] = Self::make_stage_slow(self.stages[5]);
-        self.stages[6] = Self::make_stage_slow(self.stages[6]);
-        self.stages[7] = Self::make_stage_slow(self.stages[7]);
-        self.stages[8] = Self::make_stage_slow(self.stages[8]);
-        self.stages[9] = Self::make_stage_slow(self.stages[9]);
-        self.stages[10] = Self::make_stage_slow(self.stages[10]);
-        self.stages[11] = Self::make_stage_slow(self.stages[11]);
-        self.stages[12] = Self::make_stage_slow(self.stages[12]);
-        self.stages[13] = Self::make_stage_slow(self.stages[13]);
-        self.stages[14] = Self::make_stage_slow(self.stages[14]);
-        self.stages[15] = Self::make_stage_slow(self.stages[15]);
+        self.tev_stages[0] = Self::make_stage_slow(self.tev_stages[0]);
+        self.tev_stages[1] = Self::make_stage_slow(self.tev_stages[1]);
+        self.tev_stages[2] = Self::make_stage_slow(self.tev_stages[2]);
+        self.tev_stages[3] = Self::make_stage_slow(self.tev_stages[3]);
+        self.tev_stages[4] = Self::make_stage_slow(self.tev_stages[4]);
+        self.tev_stages[5] = Self::make_stage_slow(self.tev_stages[5]);
+        self.tev_stages[6] = Self::make_stage_slow(self.tev_stages[6]);
+        self.tev_stages[7] = Self::make_stage_slow(self.tev_stages[7]);
+        self.tev_stages[8] = Self::make_stage_slow(self.tev_stages[8]);
+        self.tev_stages[9] = Self::make_stage_slow(self.tev_stages[9]);
+        self.tev_stages[10] = Self::make_stage_slow(self.tev_stages[10]);
+        self.tev_stages[11] = Self::make_stage_slow(self.tev_stages[11]);
+        self.tev_stages[12] = Self::make_stage_slow(self.tev_stages[12]);
+        self.tev_stages[13] = Self::make_stage_slow(self.tev_stages[13]);
+        self.tev_stages[14] = Self::make_stage_slow(self.tev_stages[14]);
+        self.tev_stages[15] = Self::make_stage_slow(self.tev_stages[15]);
         self
     }
 
@@ -417,6 +432,24 @@ impl<Input: ComponentIn, Konst: ComponentKonst> TevStageComponent<Input, Konst> 
 
     pub const fn with_konst_sel(self, konst_sel: Option<Konst>) -> Self {
         Self { konst_sel, ..self }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct IndTexStage {
+    tex_coord: TevTexCoord,
+    tex_map: TevTexMap,
+}
+
+impl IndTexStage {
+    pub const fn new(tex_coord: TevTexCoord, tex_map: TevTexMap) -> Self {
+        Self { tex_coord, tex_map }
+    }
+
+    pub fn apply(&self, ind_stage: u8) {
+        unsafe {
+            GX_SetIndTexOrder(ind_stage, self.tex_coord as u8, self.tex_map.as_u32() as u8);
+        }
     }
 }
 

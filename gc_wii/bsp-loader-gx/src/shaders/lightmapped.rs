@@ -2,7 +2,7 @@ use crate::gx::*;
 use crate::shader::*;
 
 pub static LIGHTMAPPED_SHADER: Shader = Shader {
-    stages: tev_builder()
+    tev_stages: tev_builder()
         // Sample the lightmap.
         .add_stage(
             TevStage::color_only(
@@ -23,6 +23,7 @@ pub static LIGHTMAPPED_SHADER: Shader = Shader {
             .with_tex_map(TevTexMap::TEXMAP1),
         )
         .build(),
+    ind_tex_stages: [None; 4],
     num_chans: 0,
     tex_gens: [
         // Lightmap coord.

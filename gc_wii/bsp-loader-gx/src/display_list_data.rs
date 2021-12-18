@@ -56,8 +56,8 @@ pub enum ByteCodeEntry<'a> {
         test_threshold: Option<u8>,
         blend: bool,
     },
-    SetLightmapTexture {
-        lightmap_texture_index: u16,
+    SetBumpMapTexture {
+        bump_map_texture_index: u16,
     },
     SetMode {
         mode: u8,
@@ -115,10 +115,10 @@ impl<'a> Iterator for ByteCodeReader<'a> {
                 })
             }
             0x06 => {
-                let lightmap_texture_index = self.0[0] as u16;
+                let bump_map_texture_index = self.0[0] as u16;
                 self.0 = &self.0[1..];
-                Some(ByteCodeEntry::SetLightmapTexture {
-                    lightmap_texture_index,
+                Some(ByteCodeEntry::SetBumpMapTexture {
+                    bump_map_texture_index,
                 })
             }
             0xff => {

@@ -2,13 +2,13 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{create_dir_all, File};
 use std::hash::{Hash, Hasher};
-use std::io::{BufWriter, Seek, Write};
+use std::io::{stdout, BufWriter, Seek, Write};
 use std::path::Path;
 use std::rc::Rc;
 
 use anyhow::{bail, Context, Result};
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt, WriteBytesExt};
-use clap::{clap_app, crate_authors, crate_description, crate_version};
+use clap::{clap_app, crate_authors, crate_description, crate_version, ArgMatches};
 use memmap::Mmap;
 use nalgebra_glm::{mat3_to_mat4, vec2, vec3, vec4, Mat3, Mat3x4, Mat4, Vec3};
 use num_traits::PrimInt;
@@ -40,12 +40,45 @@ fn main() -> Result<()> {
         (author: crate_authors!())
         (about: crate_description!())
         (@arg hl2_base: --("hl2-base") <PATH> "Path to a Half-Life 2 installation")
-        (@arg map: --map [NAME] "Map name (default: d1_trainstation_01")
-        (@arg dst: --dst [PATH] "Path to write packed outputs (default: .)")
+        (@subcommand pack_map =>
+            (about: "packs a single map for use on GC/Wii")
+            (@arg MAP: "Map name (default: d1_trainstation_01)")
+            (@arg dst: --dst [PATH] "Path to write packed outputs (default: .)")
+        )
+        (@subcommand cat_material =>
+            (about: "prints a material definition to stdout")
+            (@arg NAME: ... "Material name (example: tile/tilefloor013a)")
+        )
     )
     .get_matches();
 
-    let hl2_base: &Path = Path::new(matches.value_of("hl2_base").unwrap());
+    let hl2_base = Path::new(matches.value_of("hl2_base").unwrap());
+    match matches.subcommand() {
+        ("pack_map", Some(matches)) => pack_map(hl2_base, matches)?,
+        ("cat_material", Some(matches)) => cat_material(hl2_base, matches)?,
+        (name, _) => bail!("unknown subcommand: {:?}", name),
+    }
+    Ok(())
+}
+
+fn cat_material(hl2_base: &Path, matches: &ArgMatches) -> Result<()> {
+    let file_loader = Vpk::new(hl2_base.join("hl2_misc"))?;
+    for name in matches.values_of("NAME").unwrap() {
+        let path = VpkPath::new_with_prefix_and_extension(name, "materials", "vmt");
+        let file = match file_loader.load_file(&path)? {
+            Some(data) => data,
+            None => bail!("asset not found: {}", path),
+        };
+        let stdout = stdout();
+        let mut stdout = stdout.lock();
+        stdout.write_all(&file)?;
+        stdout.flush()?;
+    }
+
+    Ok(())
+}
+
+fn pack_map(hl2_base: &Path, matches: &ArgMatches) -> Result<()> {
     let map_path = {
         let mut path = hl2_base.join("maps");
         path.push(format!(
@@ -58,7 +91,17 @@ fn main() -> Result<()> {
         File::open(&map_path).with_context(|| format!("Opening map file {:?}", map_path))?;
     let bsp_data = unsafe { Mmap::map(&bsp_file) }?;
     let bsp = Bsp::new(&bsp_data);
-    let asset_loader = build_asset_loader(hl2_base, bsp)?;
+
+    let pak_loader = Rc::new(ZipArchiveLoader::new(bsp.pak_file()));
+    let material_loader = Rc::new(FallbackFileLoader::new(vec![
+        Rc::clone(&pak_loader) as _,
+        Rc::new(Vpk::new(hl2_base.join("hl2_misc"))?),
+    ]));
+    let texture_loader = Rc::new(FallbackFileLoader::new(vec![
+        pak_loader,
+        Rc::new(Vpk::new(hl2_base.join("hl2_textures"))?),
+    ]));
+    let asset_loader = AssetLoader::new(material_loader, texture_loader);
 
     let cluster_lightmaps = build_lightmaps(bsp)?;
     let map_geometry = process_geometry(bsp, &cluster_lightmaps, &asset_loader)?;
@@ -179,7 +222,11 @@ impl ClusterGeometryBuilder {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum Pass {
-    LightmappedGeneric { alpha: PassAlpha, env_map: bool },
+    LightmappedGeneric {
+        alpha: PassAlpha,
+        bump_map: bool,
+        env_map: Option<PassEnvMap>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -189,12 +236,29 @@ enum PassAlpha {
     AlphaBlend,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct PassEnvMap {
+    mask: PassEnvMapMask,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum PassEnvMapMask {
+    None,
+    Texture,
+    BaseAlpha,
+    BumpMapAlpha,
+}
+
 impl Pass {
     fn from_material(material: &Vmt) -> Self {
         match material.shader() {
             Shader::LightmappedGeneric(LightmappedGeneric {
                 alpha_test,
+                base_alpha_env_map_mask,
+                bump_map,
                 env_map,
+                env_map_mask,
+                normal_map_alpha_env_map_mask,
                 translucent,
                 ..
             }) => Self::LightmappedGeneric {
@@ -204,7 +268,24 @@ impl Pass {
                     (true, false) => PassAlpha::AlphaTest,
                     (true, true) => panic!("material is both alpha-tested and alpha-blended"),
                 },
-                env_map: env_map.is_some(),
+                bump_map: bump_map.is_some(),
+                env_map: env_map.as_ref().map(|_| PassEnvMap {
+                    mask: match (
+                        env_map_mask.is_some(),
+                        base_alpha_env_map_mask,
+                        normal_map_alpha_env_map_mask,
+                    ) {
+                        (false, false, false) => PassEnvMapMask::None,
+                        (true, false, false) => PassEnvMapMask::Texture,
+                        (false, true, false) => PassEnvMapMask::BaseAlpha,
+                        (false, false, true) => PassEnvMapMask::BumpMapAlpha,
+                        _ => panic!("bad env map mask combination: base_alpha_env_map_mask={}, normal_map_alpha_env_map_mask={}, env_map_mask={:?}",
+                            base_alpha_env_map_mask,
+                            normal_map_alpha_env_map_mask,
+                            env_map_mask.as_ref().map(|vtf| vtf.path().as_canonical_path()),
+                        ),
+                    },
+                }),
             },
             Shader::Unsupported => panic!(),
         }
@@ -213,21 +294,27 @@ impl Pass {
     fn as_mode(self) -> u8 {
         match self {
             Pass::LightmappedGeneric {
-                alpha: PassAlpha::Opaque | PassAlpha::AlphaTest,
-                env_map: false,
+                alpha: _,
+                bump_map: false,
+                env_map: None,
             } => 0,
             Pass::LightmappedGeneric {
-                alpha: PassAlpha::Opaque | PassAlpha::AlphaTest,
-                env_map: true,
+                alpha: _,
+                bump_map: false,
+                // TODO: Support the various kinds of envmap masks.
+                env_map: Some(_),
             } => 1,
             Pass::LightmappedGeneric {
-                alpha: PassAlpha::AlphaBlend,
-                env_map: false,
-            } => 0,
+                alpha: _,
+                bump_map: true,
+                env_map: None,
+            } => 2,
             Pass::LightmappedGeneric {
-                alpha: PassAlpha::AlphaBlend,
-                env_map: true,
-            } => 1,
+                alpha: _,
+                bump_map: true,
+                // TODO: Support the various kinds of envmap masks.
+                env_map: Some(_),
+            } => 3,
         }
     }
 }
@@ -236,6 +323,7 @@ impl Pass {
 struct Batch {
     base_texture_path: VpkPath,
     alpha: BatchAlpha,
+    bump_map: Option<BatchBumpMap>,
     env_map: Option<BatchEnvMap>,
 }
 
@@ -247,10 +335,24 @@ pub enum BatchAlpha {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct BatchBumpMap {
+    texture_path: VpkPath,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 struct BatchEnvMap {
     plane: [FloatByBits; 3],
-    env_map_path: VpkPath,
-    env_map_tint: [u8; 3],
+    texture_path: VpkPath,
+    tint: [u8; 3],
+    mask: BatchEnvMapMask,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum BatchEnvMapMask {
+    None,
+    Texture { path: VpkPath },
+    BaseAlpha,
+    BumpMapAlpha,
 }
 
 impl Batch {
@@ -259,9 +361,13 @@ impl Batch {
             Shader::LightmappedGeneric(LightmappedGeneric {
                 alpha_test,
                 alpha_test_reference,
+                base_alpha_env_map_mask,
                 base_texture,
+                bump_map,
                 env_map,
+                env_map_mask,
                 env_map_tint,
+                normal_map_alpha_env_map_mask,
                 translucent,
                 ..
             }) => {
@@ -277,14 +383,34 @@ impl Batch {
                         },
                         (true, true) => panic!("material is both alpha-tested and alpha-blended"),
                     },
+                    bump_map: bump_map.as_ref().map(|bump_map| BatchBumpMap {
+                        texture_path: bump_map.path().clone(),
+                    }),
                     env_map: env_map.as_ref().map(|env_map| BatchEnvMap {
                         plane,
-                        env_map_path: env_map.path().clone(),
-                        env_map_tint: [
+                        texture_path: env_map.path().clone(),
+                        tint: [
                             ((env_map_tint[0] * 255.0).clamp(0.0, 255.0) + 0.5) as u8,
                             ((env_map_tint[1] * 255.0).clamp(0.0, 255.0) + 0.5) as u8,
                             ((env_map_tint[2] * 255.0).clamp(0.0, 255.0) + 0.5) as u8,
                         ],
+                        mask: match (
+                            base_alpha_env_map_mask,
+                            normal_map_alpha_env_map_mask,
+                            env_map_mask,
+                        ) {
+                            (false, false, None) => BatchEnvMapMask::None,
+                            (false, false, Some(env_map_mask)) => BatchEnvMapMask::Texture {
+                                path: env_map_mask.path().clone(),
+                            },
+                            (true, false, None) => BatchEnvMapMask::BaseAlpha,
+                            (false, true, None) => BatchEnvMapMask::BumpMapAlpha,
+                            _ => panic!("bad env map mask combination: base_alpha_env_map_mask={}, normal_map_alpha_env_map_mask={}, env_map_mask={:?}",
+                                base_alpha_env_map_mask,
+                                normal_map_alpha_env_map_mask,
+                                env_map_mask.as_ref().map(|vtf| vtf.path().as_canonical_path()),
+                            ),
+                        },
                     }),
                 }
             }
@@ -423,19 +549,6 @@ fn quantize_texture_coord(coord: [f32; 2]) -> [i16; 2] {
     result
 }
 
-fn build_asset_loader<'a>(hl2_base: &Path, bsp: Bsp<'a>) -> Result<AssetLoader<'a>> {
-    let pak_loader = Rc::new(ZipArchiveLoader::new(bsp.pak_file()));
-    let material_loader = Rc::new(FallbackFileLoader::new(vec![
-        Rc::clone(&pak_loader) as Rc<dyn FileLoader>,
-        Rc::new(Vpk::new(hl2_base.join("hl2_misc"))?),
-    ]));
-    let texture_loader = Rc::new(FallbackFileLoader::new(vec![
-        Rc::clone(&pak_loader) as Rc<dyn FileLoader>,
-        Rc::new(Vpk::new(hl2_base.join("hl2_textures"))?),
-    ]));
-    Ok(AssetLoader::new(material_loader, texture_loader))
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct FloatByBits(f32);
 
@@ -476,6 +589,7 @@ fn hashable_float<const N: usize>(array: &[f32; N]) -> [FloatByBits; N] {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum TextureType {
     Image,
+    BumpMap,
     Envmap { plane: [FloatByBits; 3] },
 }
 
@@ -489,7 +603,7 @@ fn write_textures(
         for (_, batch) in cluster_geometry.display_lists_by_pass_batch.keys() {
             if let Some(env_map) = batch.env_map.as_ref() {
                 planes_by_env_map
-                    .entry(env_map.env_map_path.clone())
+                    .entry(env_map.texture_path.clone())
                     .or_default()
                     .insert(env_map.plane);
             }
@@ -502,6 +616,7 @@ fn write_textures(
         match asset_loader.get_material(material_path)?.shader() {
             Shader::LightmappedGeneric(LightmappedGeneric {
                 base_texture,
+                bump_map,
                 env_map,
                 ..
             }) => {
@@ -512,6 +627,15 @@ fn write_textures(
                         textures.push((TextureType::Image, Rc::clone(base_texture)));
                         value
                     });
+                if let Some(bump_map) = bump_map.as_ref() {
+                    texture_ids
+                        .entry((bump_map.path().clone(), None))
+                        .or_insert_with(|| {
+                            let value = textures.len() as u16;
+                            textures.push((TextureType::BumpMap, Rc::clone(bump_map)));
+                            value
+                        });
+                }
                 if let Some(env_map) = env_map.as_ref() {
                     for plane in planes_by_env_map[env_map.path()].iter().copied() {
                         texture_ids
@@ -528,7 +652,7 @@ fn write_textures(
         };
     }
 
-    const GAMECUBE_MEMORY_BUDGET: u32 = 9 * 1024 * 1024;
+    const GAMECUBE_MEMORY_BUDGET: u32 = 20 * 1024 * 1024;
     for dimension_divisor in [1, 2, 4, 8, 16, 32] {
         let mut total_size = 0;
         for (type_, texture) in &textures {
@@ -537,7 +661,7 @@ fn write_textures(
             }
             let image_data = texture.data().unwrap();
             match type_ {
-                TextureType::Image => {
+                TextureType::Image | TextureType::BumpMap => {
                     let max_width = texture.width() / dimension_divisor;
                     let max_height = texture.height() / dimension_divisor;
 
@@ -548,14 +672,20 @@ fn write_textures(
                         if face_mip.logical_width <= max_width
                             && face_mip.logical_height <= max_height
                         {
-                            match image_data.format {
-                                ImageFormat::Dxt1 => {
+                            match (type_, image_data.format) {
+                                (TextureType::BumpMap, _) => {
+                                    // GameCube's RGBA8 format is organized in 4x4 blocks.
+                                    total_size += face_mip.physical_width.max(4)
+                                        * face_mip.physical_height.max(4)
+                                        * 4;
+                                }
+                                (_, ImageFormat::Dxt1) => {
                                     // GameCube's DXT1 format is organized in 8x8 blocks.
                                     total_size += face_mip.physical_width.max(8)
                                         * face_mip.physical_height.max(8)
                                         / 2;
                                 }
-                                ImageFormat::Rgb8 | ImageFormat::Rgba8 => {
+                                (_, ImageFormat::Rgb8 | ImageFormat::Rgba8) => {
                                     // GameCube's RGBA8 format is organized in 4x4 blocks.
                                     total_size += face_mip.physical_width.max(4)
                                         * face_mip.physical_height.max(4)
@@ -605,7 +735,7 @@ fn write_textures(
         for (type_, texture) in &textures {
             let image_data = texture.data().unwrap();
             match type_ {
-                TextureType::Image => {
+                TextureType::Image | TextureType::BumpMap => {
                     assert_eq!(image_data.layer_count, 1);
 
                     // Take all mips that fit within the max_dimension.
@@ -621,31 +751,107 @@ fn write_textures(
                         {
                             match image_data.format {
                                 ImageFormat::Dxt1 => {
-                                    // Already compressed. Just have to adapt the bit and byte order.
-                                    assert_eq!(
-                                        face_mip.data.len(),
-                                        (face_mip.physical_width * face_mip.physical_height / 2)
-                                            as usize
-                                    );
-                                    write_gamecube_dxt1(
+                                    if matches!(type_, TextureType::BumpMap) {
+                                        let texel_count = face_mip.physical_width as usize
+                                            * face_mip.physical_height as usize;
+                                        let mut rgba_data = Vec::with_capacity(4 * texel_count);
+                                        read_native_dxt1(
+                                            &mut rgba_data,
+                                            face_mip.data,
+                                            face_mip.physical_width as usize,
+                                            face_mip.physical_height as usize,
+                                        )?;
+
+                                        let mut cursor = rgba_data.as_mut_slice();
+                                        for _ in 0..texel_count {
+                                            let r = cursor[0];
+                                            let g = cursor[1];
+                                            let b = cursor[2];
+                                            let a = cursor[3];
+                                            // Rearrange channels for use as a GX indirect texture.
+                                            cursor[0] = a;
+                                            cursor[1] = b;
+                                            cursor[2] = g;
+                                            cursor[3] = r;
+                                            cursor = &mut cursor[4..];
+                                        }
+                                        assert_eq!(cursor.len(), 0);
+                                        write_gamecube_rgba8(
+                                            &mut texture_data,
+                                            &rgba_data,
+                                            face_mip.physical_width,
+                                            face_mip.physical_height,
+                                        )?;
+                                    } else {
+                                        // Already compressed. Just have to adapt the bit and byte order.
+                                        assert_eq!(
+                                            face_mip.data.len(),
+                                            (face_mip.physical_width * face_mip.physical_height / 2)
+                                                as usize
+                                        );
+                                        write_gamecube_dxt1(
+                                            &mut texture_data,
+                                            face_mip.data,
+                                            face_mip.physical_width,
+                                            face_mip.physical_height,
+                                        )?;
+                                    }
+                                }
+                                ImageFormat::Rgb8 => {
+                                    let texel_count = face_mip.physical_width as usize
+                                        * face_mip.physical_height as usize;
+                                    let mut rgba_data = Vec::with_capacity(4 * texel_count);
+                                    let mut src = face_mip.data;
+                                    for _ in 0..texel_count {
+                                        if matches!(type_, TextureType::BumpMap) {
+                                            // Rearrange channels for use as a GX indirect texture.
+                                            rgba_data.push(0);
+                                            rgba_data.push(src[2]);
+                                            rgba_data.push(src[1]);
+                                            rgba_data.push(src[0]);
+                                        } else {
+                                            rgba_data.extend_from_slice(&src[..3]);
+                                            rgba_data.push(255);
+                                        }
+                                        src = &src[3..];
+                                    }
+                                    assert_eq!(src.len(), 0);
+                                    write_gamecube_rgba8(
                                         &mut texture_data,
-                                        face_mip.data,
+                                        &rgba_data,
                                         face_mip.physical_width,
                                         face_mip.physical_height,
                                     )?;
                                 }
                                 ImageFormat::Rgba8 => {
-                                    write_gamecube_rgba8(
-                                        &mut texture_data,
-                                        face_mip.data,
-                                        face_mip.physical_width,
-                                        face_mip.physical_height,
-                                    )?;
+                                    if matches!(type_, TextureType::BumpMap) {
+                                        let texel_count = face_mip.physical_width as usize
+                                            * face_mip.physical_height as usize;
+                                        let mut rgba_data = Vec::with_capacity(4 * texel_count);
+                                        let mut src = face_mip.data;
+                                        for _ in 0..texel_count {
+                                            // Rearrange channels for use as a GX indirect texture.
+                                            rgba_data.push(src[3]);
+                                            rgba_data.push(src[2]);
+                                            rgba_data.push(src[1]);
+                                            rgba_data.push(src[0]);
+                                            src = &src[4..];
+                                        }
+                                        write_gamecube_rgba8(
+                                            &mut texture_data,
+                                            &rgba_data,
+                                            face_mip.physical_width,
+                                            face_mip.physical_height,
+                                        )?;
+                                    } else {
+                                        write_gamecube_rgba8(
+                                            &mut texture_data,
+                                            face_mip.data,
+                                            face_mip.physical_width,
+                                            face_mip.physical_height,
+                                        )?;
+                                    }
                                 }
-                                _ => bail!(
-                                    "unexpected image format for TextureType::Image: {:?}",
-                                    image_data.format,
-                                ),
                             }
                             mips_written += 1;
                         }
@@ -683,13 +889,10 @@ fn write_textures(
                             0
                         },
                     )?;
-                    texture_table.write_u8(match image_data.format {
-                        ImageFormat::Dxt1 => 0xe,  // GX_TF_CMPR
-                        ImageFormat::Rgba8 => 0x6, // GX_TF_RGBA8
-                        _ => bail!(
-                            "unexpected image format for TextureType::Image: {:?}",
-                            image_data.format,
-                        ),
+                    texture_table.write_u8(match (type_, image_data.format) {
+                        (TextureType::BumpMap, _) => 0x6,                   // GX_TF_RGBA8
+                        (_, ImageFormat::Dxt1) => 0xe,                      // GX_TF_CMPR
+                        (_, ImageFormat::Rgb8 | ImageFormat::Rgba8) => 0x6, // GX_TF_RGBA8
                     })?;
                     texture_table.write_u8(0)?;
                     texture_table.write_u32::<BigEndian>(start_offset)?;
@@ -1071,6 +1274,10 @@ mod byte_code {
         [0x05000000 | (test << 16) | (threshold << 8) | blend]
     }
 
+    pub fn set_bump_map_texture(bump_map_texture_index: u16) -> [u32; 1] {
+        [0x06000000 | bump_map_texture_index as u32]
+    }
+
     pub fn set_mode(mode: u8) -> [u32; 1] {
         [0xff000000 | mode as u32]
     }
@@ -1118,15 +1325,20 @@ fn write_geometry(
 
         let mut prev_mode = None;
         let mut prev_base_texture_path = None;
+        let mut prev_bump_map = None;
         let mut prev_plane = None;
         let mut prev_env_map_path = None;
         let mut prev_env_map_tint = None;
         let mut prev_alpha = None;
         for ((pass, batch), display_list) in &cluster.display_lists_by_pass_batch {
             let mode = pass.as_mode();
+            let bump_map = batch
+                .bump_map
+                .as_ref()
+                .map(|bump_map| &bump_map.texture_path);
             let plane = batch.env_map.as_ref().map(|env_map| env_map.plane);
-            let env_map_path = batch.env_map.as_ref().map(|env_map| &env_map.env_map_path);
-            let env_map_tint = batch.env_map.as_ref().map(|env_map| env_map.env_map_tint);
+            let env_map_path = batch.env_map.as_ref().map(|env_map| &env_map.texture_path);
+            let env_map_tint = batch.env_map.as_ref().map(|env_map| env_map.tint);
 
             if prev_mode != Some(mode) {
                 prev_mode = Some(mode);
@@ -1173,8 +1385,18 @@ fn write_geometry(
                 }
             }
 
-            if prev_env_map_path != Some(env_map_path) {
-                prev_env_map_path = Some(env_map_path);
+            if prev_bump_map != bump_map {
+                prev_bump_map = bump_map;
+
+                if let Some(bump_map) = bump_map {
+                    let bump_map_texture_index = texture_ids[&(bump_map.clone(), None)];
+                    byte_code::set_bump_map_texture(bump_map_texture_index)
+                        .write_big_endian_to(&mut *byte_code_file)?;
+                }
+            }
+
+            if prev_env_map_path != env_map_path {
+                prev_env_map_path = env_map_path;
 
                 if let Some(env_map_path) = env_map_path {
                     let env_map_texture_index =

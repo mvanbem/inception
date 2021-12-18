@@ -1,15 +1,17 @@
 #![no_std]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![feature(const_fn_trait_bound)]
+#![feature(core_intrinsics)]
 #![feature(default_alloc_error_handler)]
 #![feature(start)]
 
 extern crate alloc;
 
 use core::ffi::c_void;
+use core::intrinsics::sqrtf32;
 use core::mem::{zeroed, MaybeUninit};
 use core::ptr::null_mut;
-use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
 
 use alloc::vec::Vec;
 use fully_occupied::{extract_slice, FullyOccupied};
@@ -20,7 +22,8 @@ use crate::memalign::Memalign;
 use crate::shaders::flat_textured::FLAT_TEXTURED_SHADER;
 use crate::shaders::flat_vertex_color::FLAT_VERTEX_COLOR_SHADER;
 use crate::shaders::lightmapped::LIGHTMAPPED_SHADER;
-use crate::shaders::lightmapped_env_shader::LIGHTMAPPED_ENV_SHADER;
+use crate::shaders::lightmapped_bump::LIGHTMAPPED_BUMP_SHADER;
+use crate::shaders::lightmapped_env::LIGHTMAPPED_ENV_SHADER;
 use crate::visibility::{ClusterIndex, Visibility};
 
 #[macro_use]
@@ -336,9 +339,15 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
         // Set up texture objects for cluster lightmaps.
         let mut cluster_lightmaps = Vec::new();
         for cluster_index in 0..lightmap_cluster_table().len() {
-            let mut lightmap = Lightmap::new(cluster_index);
-            lightmap.update(cluster_index, 0, 0);
-            cluster_lightmaps.push(lightmap);
+            let mut lightmap0 = Lightmap::new(cluster_index);
+            lightmap0.update(cluster_index, 0, 0);
+            let mut lightmap1 = Lightmap::new(cluster_index);
+            lightmap1.update(cluster_index, 0, 1);
+            let mut lightmap2 = Lightmap::new(cluster_index);
+            lightmap2.update(cluster_index, 0, 2);
+            let mut lightmap3 = Lightmap::new(cluster_index);
+            lightmap3.update(cluster_index, 0, 3);
+            cluster_lightmaps.push([lightmap0, lightmap1, lightmap2, lightmap3]);
         }
         GX_InvalidateTexAll();
 
@@ -353,7 +362,7 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
                             let x = (4 * coarse_x + fine_x) as u8;
                             let _y = (4 * coarse_y + fine_y) as u8;
                             // A
-                            (*texels) = 0;
+                            (*texels) = 255;
                             texels = texels.offset(1);
                             // R
                             (*texels) = x;
@@ -387,12 +396,12 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
                 GX_CLAMP as u8,
                 GX_FALSE as u8,
             );
-            GX_InitTexObjFilterMode(&mut texobj, GX_LINEAR as u8, GX_LINEAR as u8);
+            GX_InitTexObjFilterMode(&mut texobj, GX_NEAR as u8, GX_NEAR as u8);
             GX_LoadTexObj(&mut texobj, GX_TEXMAP7 as u8);
         }
 
         // Set up texture objects for all other textures.
-        let base_map_texobjs: Vec<GXTexObj> = texture_table()
+        let map_texobjs: Vec<GXTexObj> = texture_table()
             .iter()
             .map(|entry| {
                 let mut texobj = zeroed::<GXTexObj>();
@@ -450,13 +459,22 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
             inverted_pitch_control: false,
             widescreen: get_widescreen_setting(),
             lightmap_style: 0,
-            lightmap_axis: 0,
         };
 
         let mut last_frame_timers = zeroed::<FrameTimers>();
         let mut proj = zeroed::<Mtx44>();
         let mut view = zeroed::<Mtx>();
         loop {
+            match GAME_STATE_CHANGE.load(Ordering::SeqCst) {
+                x if x == GameStateChange::Reset as u32 => {
+                    libc::exit(0);
+                }
+                x if x == GameStateChange::Power as u32 => {
+                    SYS_ResetSystem(SYS_POWEROFF as i32, 0, 0);
+                }
+                _ => (),
+            }
+
             let game_logic_elapsed = Timer::time(|| {
                 do_game_logic(&mut game_state, &mut cluster_lightmaps);
             });
@@ -465,7 +483,7 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
                 do_main_draw(
                     &game_state.pos,
                     visibility,
-                    &base_map_texobjs,
+                    &map_texobjs,
                     &cluster_lightmaps,
                 )
             });
@@ -510,7 +528,6 @@ struct GameState {
     inverted_pitch_control: bool,
     widescreen: bool,
     lightmap_style: usize,
-    lightmap_axis: usize,
 }
 
 impl GameState {
@@ -551,7 +568,7 @@ impl Timer {
     }
 }
 
-fn do_game_logic(game_state: &mut GameState, cluster_lightmaps: &mut [Lightmap]) {
+fn do_game_logic(game_state: &mut GameState, cluster_lightmaps: &mut [[Lightmap; 4]]) {
     unsafe {
         PAD_ScanPads();
 
@@ -599,26 +616,12 @@ fn do_game_logic(game_state: &mut GameState, cluster_lightmaps: &mut [Lightmap])
         }
         new_lightmap_style %= 4;
 
-        let mut new_lightmap_axis = game_state.lightmap_axis;
-        if (PAD_ButtonsDown(0) & PAD_BUTTON_RIGHT as u16) != 0 {
-            new_lightmap_axis = new_lightmap_axis.wrapping_add(1);
-        }
-        if (PAD_ButtonsDown(0) & PAD_BUTTON_LEFT as u16) != 0 {
-            new_lightmap_axis = new_lightmap_axis.wrapping_sub(1);
-        }
-        new_lightmap_axis %= 4;
-
-        if game_state.lightmap_style != new_lightmap_style
-            || game_state.lightmap_axis != new_lightmap_axis
-        {
+        if game_state.lightmap_style != new_lightmap_style {
             game_state.lightmap_style = new_lightmap_style;
-            game_state.lightmap_axis = new_lightmap_axis;
-            for (cluster_index, lightmap) in cluster_lightmaps.iter_mut().enumerate() {
-                lightmap.update(
-                    cluster_index,
-                    game_state.lightmap_style,
-                    game_state.lightmap_axis,
-                );
+            for (cluster_index, lightmaps) in cluster_lightmaps.iter_mut().enumerate() {
+                for axis in 0..4 {
+                    lightmaps[axis].update(cluster_index, game_state.lightmap_style, axis);
+                }
             }
         }
     }
@@ -712,8 +715,8 @@ fn prepare_main_draw(
 fn do_main_draw(
     pos: &guVector,
     visibility: Visibility,
-    base_map_texobjs: &[GXTexObj],
-    cluster_lightmaps: &[Lightmap],
+    map_texobjs: &[GXTexObj],
+    cluster_lightmaps: &[[Lightmap; 4]],
 ) -> i16 {
     unsafe {
         GX_SetZMode(GX_TRUE as u8, GX_LEQUAL as u8, GX_TRUE as u8);
@@ -722,19 +725,43 @@ fn do_main_draw(
         let view_leaf = traverse_bsp(pos);
         let view_cluster = (*view_leaf).cluster;
 
-        // // TODO: Only set these states for flagged alpha-tested geometry.
-        // GX_SetZCompLoc(GX_FALSE as u8);
-        // GX_SetAlphaCompare(GX_GEQUAL as u8, 0x80, GX_AOP_OR as u8, GX_NEVER as u8, 0);
-
         let draw_cluster = move |cluster| {
-            if let Some(lightmap) = cluster_lightmaps.get(cluster as usize) {
-                GX_LoadTexObj(
-                    &lightmap.texobj as *const GXTexObj as *mut GXTexObj,
-                    GX_TEXMAP0 as u8,
-                );
-            } else {
-                return;
-            }
+            let lightmaps = match cluster_lightmaps.get(cluster as usize) {
+                Some(lightmaps) => lightmaps,
+                None => return,
+            };
+
+            let do_per_bump_map_setup = |bump_map_texture: *mut GXTexObj| {
+                // The main map for these TEV stages is the identity ramp in TEXMAP7,
+                // which is 256x256. Since the bump map can be any size, the indirect
+                // texture coordinate needs to be scaled to match.
+                let scale_s = match GX_GetTexObjWidth(bump_map_texture) {
+                    256 => GX_ITS_1,
+                    128 => GX_ITS_2,
+                    64 => GX_ITS_4,
+                    32 => GX_ITS_8,
+                    16 => GX_ITS_16,
+                    8 => GX_ITS_32,
+                    4 => GX_ITS_64,
+                    2 => GX_ITS_128,
+                    1 => GX_ITS_256,
+                    _ => panic!(),
+                } as u8;
+                let scale_t = match GX_GetTexObjHeight(bump_map_texture) {
+                    256 => GX_ITS_1,
+                    128 => GX_ITS_2,
+                    64 => GX_ITS_4,
+                    32 => GX_ITS_8,
+                    16 => GX_ITS_16,
+                    8 => GX_ITS_32,
+                    4 => GX_ITS_64,
+                    2 => GX_ITS_128,
+                    1 => GX_ITS_256,
+                    _ => panic!(),
+                } as u8;
+                GX_SetIndTexCoordScale(GX_INDTEXSTAGE0 as u8, scale_s, scale_t);
+                GX_SetIndTexCoordScale(GX_INDTEXSTAGE1 as u8, scale_s, scale_t);
+            };
 
             let cluster_geometry = get_cluster_geometry(cluster);
             for entry in cluster_geometry.iter_display_lists() {
@@ -755,7 +782,7 @@ fn do_main_draw(
                     }
                     ByteCodeEntry::SetBaseTexture { base_texture_index } => {
                         GX_LoadTexObj(
-                            &base_map_texobjs[base_texture_index as usize] as *const GXTexObj
+                            &map_texobjs[base_texture_index as usize] as *const GXTexObj
                                 as *mut GXTexObj,
                             GX_TEXMAP1 as u8,
                         );
@@ -764,7 +791,7 @@ fn do_main_draw(
                         env_map_texture_index,
                     } => {
                         GX_LoadTexObj(
-                            &base_map_texobjs[env_map_texture_index as usize] as *const GXTexObj
+                            &map_texobjs[env_map_texture_index as usize] as *const GXTexObj
                                 as *mut GXTexObj,
                             GX_TEXMAP2 as u8,
                         );
@@ -808,21 +835,99 @@ fn do_main_draw(
                             GX_SetZMode(GX_TRUE as u8, GX_LEQUAL as u8, GX_TRUE as u8);
                         }
                     }
-                    ByteCodeEntry::SetLightmapTexture {
-                        lightmap_texture_index,
+                    ByteCodeEntry::SetBumpMapTexture {
+                        bump_map_texture_index,
                     } => {
-                        GX_LoadTexObj(
-                            &base_map_texobjs[lightmap_texture_index as usize] as *const GXTexObj
-                                as *mut GXTexObj,
-                            GX_TEXMAP0 as u8,
-                        );
+                        let bump_map_texture = &map_texobjs[bump_map_texture_index as usize]
+                            as *const GXTexObj
+                            as *mut GXTexObj;
+                        GX_LoadTexObj(bump_map_texture, GX_TEXMAP3 as u8);
+                        do_per_bump_map_setup(bump_map_texture);
                     }
                     ByteCodeEntry::SetMode { mode } => match mode {
                         0 => {
                             LIGHTMAPPED_SHADER.apply();
+                            GX_SetTevDirect(GX_TEVSTAGE0 as u8);
+                            GX_SetTevDirect(GX_TEVSTAGE2 as u8);
+                            GX_SetTevDirect(GX_TEVSTAGE4 as u8);
+                            // Load the omnidirectional lightmap.
+                            GX_LoadTexObj(
+                                &lightmaps[0].texobj as *const GXTexObj as *mut GXTexObj,
+                                GX_TEXMAP0 as u8,
+                            );
+                        }
+                        2 | 3 => {
+                            LIGHTMAPPED_BUMP_SHADER.apply();
+                            GX_SetTevIndirect(
+                                GX_TEVSTAGE0 as u8,
+                                GX_INDTEXSTAGE0 as u8,
+                                GX_ITF_8 as u8,
+                                GX_ITB_STU as u8,
+                                GX_ITM_0 as u8,
+                                GX_ITW_0 as u8,
+                                GX_ITW_0 as u8,
+                                GX_FALSE as u8,
+                                GX_FALSE as u8,
+                                GX_ITBA_OFF as u8,
+                            );
+                            GX_SetTevIndirect(
+                                GX_TEVSTAGE2 as u8,
+                                GX_INDTEXSTAGE0 as u8,
+                                GX_ITF_8 as u8,
+                                GX_ITB_STU as u8,
+                                GX_ITM_0 as u8,
+                                GX_ITW_0 as u8,
+                                GX_ITW_0 as u8,
+                                GX_FALSE as u8,
+                                GX_FALSE as u8,
+                                GX_ITBA_OFF as u8,
+                            );
+                            GX_SetTevIndirect(
+                                GX_TEVSTAGE4 as u8,
+                                GX_INDTEXSTAGE1 as u8,
+                                GX_ITF_8 as u8,
+                                GX_ITB_STU as u8,
+                                GX_ITM_1 as u8,
+                                GX_ITW_0 as u8,
+                                GX_ITW_0 as u8,
+                                GX_FALSE as u8,
+                                GX_FALSE as u8,
+                                GX_ITBA_OFF as u8,
+                            );
+                            let mut mtx = [
+                                [sqrtf32(2.0 / 3.0), 0.0, 1.0 / sqrtf32(3.0)],
+                                [-1.0 / sqrtf32(6.0), 1.0 / sqrtf32(2.0), 1.0 / sqrtf32(3.0)],
+                            ];
+                            GX_SetIndTexMatrix(GX_ITM_0 as u8, mtx.as_mut_ptr(), 1);
+                            mtx = [
+                                [-1.0 / sqrtf32(6.0), -1.0 / sqrtf32(2.0), 1.0 / sqrtf32(3.0)],
+                                [0.0, 0.0, 0.0],
+                            ];
+                            GX_SetIndTexMatrix(GX_ITM_1 as u8, mtx.as_mut_ptr(), 1);
+                            // Load the three directional lightmaps.
+                            GX_LoadTexObj(
+                                &lightmaps[1].texobj as *const GXTexObj as *mut GXTexObj,
+                                GX_TEXMAP0 as u8,
+                            );
+                            GX_LoadTexObj(
+                                &lightmaps[2].texobj as *const GXTexObj as *mut GXTexObj,
+                                GX_TEXMAP4 as u8,
+                            );
+                            GX_LoadTexObj(
+                                &lightmaps[3].texobj as *const GXTexObj as *mut GXTexObj,
+                                GX_TEXMAP5 as u8,
+                            );
                         }
                         1 => {
                             LIGHTMAPPED_ENV_SHADER.apply();
+                            GX_SetTevDirect(GX_TEVSTAGE0 as u8);
+                            GX_SetTevDirect(GX_TEVSTAGE2 as u8);
+                            GX_SetTevDirect(GX_TEVSTAGE4 as u8);
+                            // Load the omnidirectional lightmap.
+                            GX_LoadTexObj(
+                                &lightmaps[0].texobj as *const GXTexObj as *mut GXTexObj,
+                                GX_TEXMAP0 as u8,
+                            );
                         }
                         _ => panic!("unexpected render mode: 0x{:02x}", mode),
                     },
@@ -844,8 +949,9 @@ fn do_main_draw(
             }
         }
 
-        // GX_SetZCompLoc(GX_TRUE as u8);
-        // GX_SetAlphaCompare(GX_ALWAYS as u8, 0, GX_AOP_OR as u8, GX_ALWAYS as u8, 0);
+        GX_SetTevDirect(GX_TEVSTAGE0 as u8);
+        GX_SetZCompLoc(GX_TRUE as u8);
+        GX_SetAlphaCompare(GX_ALWAYS as u8, 0, GX_AOP_OR as u8, GX_ALWAYS as u8, 0);
         GX_DrawDone();
 
         view_cluster
@@ -920,7 +1026,7 @@ fn do_debug_draw(
     game_state: &GameState,
     last_frame_timers: &FrameTimers,
     view_cluster: i16,
-    cluster_lightmaps: &[Lightmap],
+    cluster_lightmaps: &[[Lightmap; 4]],
     proj: &mut Mtx44,
     view: &mut Mtx,
 ) {
@@ -1025,13 +1131,11 @@ fn do_debug_draw(
         draw_bit(16, 16, view_cluster != -1);
         draw_bit(16, 0, (game_state.lightmap_style & 2) != 0);
         draw_bit(32, 0, (game_state.lightmap_style & 1) != 0);
-        draw_bit(48, 0, (game_state.lightmap_axis & 2) != 0);
-        draw_bit(64, 0, (game_state.lightmap_axis & 1) != 0);
 
         // Draw the lightmap for the current cluster.
-        if let Some(lightmap) = cluster_lightmaps.get(view_cluster as usize) {
-            let w = GX_GetTexObjWidth(&lightmap.texobj as *const GXTexObj as *mut GXTexObj);
-            let h = GX_GetTexObjHeight(&lightmap.texobj as *const GXTexObj as *mut GXTexObj);
+        if let Some(lightmaps) = cluster_lightmaps.get(view_cluster as usize) {
+            let w = GX_GetTexObjWidth(&lightmaps[0].texobj as *const GXTexObj as *mut GXTexObj);
+            let h = GX_GetTexObjHeight(&lightmaps[0].texobj as *const GXTexObj as *mut GXTexObj);
 
             GX_ClearVtxDesc();
             GX_SetVtxDesc(GX_VA_POS as u8, GX_DIRECT as u8);
@@ -1043,7 +1147,7 @@ fn do_debug_draw(
             FLAT_TEXTURED_SHADER.apply();
 
             GX_LoadTexObj(
-                &lightmap.texobj as *const GXTexObj as *mut GXTexObj,
+                &lightmaps[0].texobj as *const GXTexObj as *mut GXTexObj,
                 GX_TEXMAP0 as u8,
             );
 
@@ -1151,8 +1255,32 @@ fn init_hardware() -> (u16, u16) {
         GX_CopyDisp(xfb, GX_TRUE as u8);
         GX_SetDispCopyGamma(GX_GM_1_0 as u8);
 
+        SYS_SetResetCallback(Some(on_reset_pressed));
+        #[cfg(feature = "wii")]
+        {
+            SYS_SetPowerCallback(Some(on_power_pressed));
+        }
+
         ((*rmode).fbWidth, (*rmode).efbHeight)
     }
+}
+
+#[repr(u32)]
+enum GameStateChange {
+    None,
+    Reset,
+    Power,
+}
+
+static GAME_STATE_CHANGE: AtomicU32 = AtomicU32::new(GameStateChange::None as u32);
+
+unsafe extern "C" fn on_reset_pressed(_irq: u32, _ctx: *mut c_void) {
+    GAME_STATE_CHANGE.store(GameStateChange::Reset as u32, Ordering::SeqCst);
+}
+
+#[cfg(feature = "wii")]
+unsafe extern "C" fn on_power_pressed() {
+    GAME_STATE_CHANGE.store(GameStateChange::Power as u32, Ordering::SeqCst);
 }
 
 struct FrameTimers {

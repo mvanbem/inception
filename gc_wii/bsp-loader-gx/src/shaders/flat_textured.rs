@@ -2,13 +2,14 @@ use crate::gx::*;
 use crate::shader::*;
 
 pub static FLAT_TEXTURED_SHADER: Shader = Shader {
-    stages: tev_builder()
+    tev_stages: tev_builder()
         .add_stage(
             TevStage::color_only(TevStageColor::just(TevColorIn::TexColor))
                 .with_tex_coord(TevTexCoord::TexCoord0)
                 .with_tex_map(TevTexMap::TEXMAP0),
         )
         .build(),
+    ind_tex_stages: [None; 4],
     num_chans: 0,
     tex_gens: [
         // Texture coord.
