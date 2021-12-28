@@ -8,7 +8,6 @@
 extern crate alloc;
 
 use core::ffi::c_void;
-use core::intrinsics::sqrtf32;
 use core::mem::{zeroed, MaybeUninit};
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
@@ -22,7 +21,6 @@ use crate::memalign::Memalign;
 use crate::shaders::flat_textured::FLAT_TEXTURED_SHADER;
 use crate::shaders::flat_vertex_color::FLAT_VERTEX_COLOR_SHADER;
 use crate::shaders::lightmapped::LIGHTMAPPED_SHADER;
-use crate::shaders::lightmapped_bump::LIGHTMAPPED_BUMP_SHADER;
 use crate::shaders::lightmapped_env::LIGHTMAPPED_ENV_SHADER;
 use crate::visibility::{ClusterIndex, Visibility};
 
@@ -156,8 +154,8 @@ struct LightmapPatchTableEntry {
     block_width: u8,
     block_height: u8,
     style_count: u8,
-    bump_light: u8,
-    _padding: u16,
+    _padding1: u8,
+    _padding2: u16,
     data_start_offset: usize,
     data_end_offset: usize,
 }
@@ -267,9 +265,8 @@ impl Lightmap {
         }
     }
 
-    fn update(&mut self, cluster_index: usize, style: usize, axis: usize) {
+    fn update(&mut self, cluster_index: usize, style: usize) {
         assert!(style < 4);
-        assert!(axis < 4);
 
         let cluster = &lightmap_cluster_table()[cluster_index];
         let coarse_width = ((cluster.width + 3) / 4).max(1);
@@ -278,15 +275,10 @@ impl Lightmap {
             &lightmap_patch_table()[cluster.patch_table_start_index..cluster.patch_table_end_index];
         for patch in patches {
             let style = style.min(patch.style_count as usize - 1);
-            let (axis, axis_count) = if patch.bump_light != 0 {
-                (axis, 4)
-            } else {
-                (0, 1)
-            };
 
             let patch_data = &LIGHTMAP_DATA[patch.data_start_offset..patch.data_end_offset];
             let page_size = 64 * patch.block_width as usize * patch.block_height as usize;
-            let page_index = axis_count * style + axis;
+            let page_index = style;
             let page_offset = page_size * page_index;
             let page_data = &patch_data[page_offset..page_offset + page_size];
 
@@ -339,15 +331,9 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
         // Set up texture objects for cluster lightmaps.
         let mut cluster_lightmaps = Vec::new();
         for cluster_index in 0..lightmap_cluster_table().len() {
-            let mut lightmap0 = Lightmap::new(cluster_index);
-            lightmap0.update(cluster_index, 0, 0);
-            let mut lightmap1 = Lightmap::new(cluster_index);
-            lightmap1.update(cluster_index, 0, 1);
-            let mut lightmap2 = Lightmap::new(cluster_index);
-            lightmap2.update(cluster_index, 0, 2);
-            let mut lightmap3 = Lightmap::new(cluster_index);
-            lightmap3.update(cluster_index, 0, 3);
-            cluster_lightmaps.push([lightmap0, lightmap1, lightmap2, lightmap3]);
+            let mut lightmap = Lightmap::new(cluster_index);
+            lightmap.update(cluster_index, 0);
+            cluster_lightmaps.push(lightmap);
         }
         GX_InvalidateTexAll();
 
@@ -462,8 +448,6 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
         };
 
         let mut last_frame_timers = zeroed::<FrameTimers>();
-        let mut proj = zeroed::<Mtx44>();
-        let mut view = zeroed::<Mtx>();
         loop {
             match GAME_STATE_CHANGE.load(Ordering::SeqCst) {
                 x if x == GameStateChange::Reset as u32 => {
@@ -479,7 +463,7 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
                 do_game_logic(&mut game_state, &mut cluster_lightmaps);
             });
             let (main_draw_elapsed, view_cluster) = Timer::time_with_result(|| {
-                prepare_main_draw(width, height, &game_state, &mut proj, &mut view);
+                prepare_main_draw(width, height, &game_state);
                 do_main_draw(
                     &game_state.pos,
                     visibility,
@@ -492,13 +476,12 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
             });
             let debug_draw_elapsed = Timer::time(|| {
                 do_debug_draw(
+                    width,
                     height,
                     &game_state,
                     &last_frame_timers,
                     view_cluster,
                     &cluster_lightmaps,
-                    &mut proj,
-                    &mut view,
                 );
             });
             let draw_done_elapsed = Timer::time(|| {
@@ -568,7 +551,7 @@ impl Timer {
     }
 }
 
-fn do_game_logic(game_state: &mut GameState, cluster_lightmaps: &mut [[Lightmap; 4]]) {
+fn do_game_logic(game_state: &mut GameState, cluster_lightmaps: &mut [Lightmap]) {
     unsafe {
         PAD_ScanPads();
 
@@ -582,7 +565,7 @@ fn do_game_logic(game_state: &mut GameState, cluster_lightmaps: &mut [[Lightmap;
         let right = [libm::sinf(game_state.yaw), -libm::cosf(game_state.yaw), 0.0];
         let forward = [libm::cosf(game_state.yaw), libm::sinf(game_state.yaw), 0.0];
         let speed = if PAD_TriggerR(0) >= 128 { 100.0 } else { 10.0 };
-        let angspeed = 0.05;
+        let angspeed = 0.1;
         let (dx, dy) = get_processed_stick(0, false);
         let (cx, cy) = get_processed_stick(0, true);
         let cy = if game_state.inverted_pitch_control {
@@ -618,22 +601,14 @@ fn do_game_logic(game_state: &mut GameState, cluster_lightmaps: &mut [[Lightmap;
 
         if game_state.lightmap_style != new_lightmap_style {
             game_state.lightmap_style = new_lightmap_style;
-            for (cluster_index, lightmaps) in cluster_lightmaps.iter_mut().enumerate() {
-                for axis in 0..4 {
-                    lightmaps[axis].update(cluster_index, game_state.lightmap_style, axis);
-                }
+            for (cluster_index, lightmap) in cluster_lightmaps.iter_mut().enumerate() {
+                lightmap.update(cluster_index, game_state.lightmap_style);
             }
         }
     }
 }
 
-fn prepare_main_draw(
-    width: u16,
-    height: u16,
-    game_state: &GameState,
-    proj: &mut Mtx44,
-    view: &mut Mtx,
-) {
+fn prepare_main_draw(width: u16, height: u16, game_state: &GameState) {
     unsafe {
         GX_ClearVtxDesc();
         GX_SetVtxDesc(GX_VA_POS as u8, GX_INDEX16 as u8);
@@ -650,6 +625,7 @@ fn prepare_main_draw(
         GX_SetArray(GX_VA_TEX1, TEXTURE_COORD_DATA.as_ptr() as *mut _, 4);
         GX_InvVtxCache();
 
+        let mut proj = zeroed::<Mtx44>();
         guPerspective(
             proj.as_mut_ptr(),
             90.0,
@@ -688,6 +664,7 @@ fn prepare_main_draw(
             look_at.as_mut_ptr(),
             tmp.as_mut_ptr(),
         );
+        let mut view = zeroed::<Mtx>();
         c_guMtxConcat(
             pitch_rotation.as_mut_ptr(),
             tmp.as_mut_ptr(),
@@ -716,7 +693,7 @@ fn do_main_draw(
     pos: &guVector,
     visibility: Visibility,
     map_texobjs: &[GXTexObj],
-    cluster_lightmaps: &[[Lightmap; 4]],
+    cluster_lightmaps: &[Lightmap],
 ) -> i16 {
     unsafe {
         GX_SetZMode(GX_TRUE as u8, GX_LEQUAL as u8, GX_TRUE as u8);
@@ -726,42 +703,24 @@ fn do_main_draw(
         let view_cluster = (*view_leaf).cluster;
 
         let draw_cluster = move |cluster| {
-            let lightmaps = match cluster_lightmaps.get(cluster as usize) {
-                Some(lightmaps) => lightmaps,
+            match cluster_lightmaps.get(cluster as usize) {
+                Some(lightmap) => {
+                    GX_LoadTexObj(
+                        &lightmap.texobj as *const GXTexObj as *mut GXTexObj,
+                        GX_TEXMAP0 as u8,
+                    );
+                }
                 None => return,
-            };
-
-            let do_per_bump_map_setup = |bump_map_texture: *mut GXTexObj| {
-                // The main map for these TEV stages is the identity ramp in TEXMAP7,
-                // which is 256x256. Since the bump map can be any size, the indirect
-                // texture coordinate needs to be scaled to match.
-                let scale_s = match GX_GetTexObjWidth(bump_map_texture) {
-                    256 => GX_ITS_1,
-                    128 => GX_ITS_2,
-                    64 => GX_ITS_4,
-                    32 => GX_ITS_8,
-                    16 => GX_ITS_16,
-                    8 => GX_ITS_32,
-                    4 => GX_ITS_64,
-                    2 => GX_ITS_128,
-                    1 => GX_ITS_256,
-                    _ => panic!(),
-                } as u8;
-                let scale_t = match GX_GetTexObjHeight(bump_map_texture) {
-                    256 => GX_ITS_1,
-                    128 => GX_ITS_2,
-                    64 => GX_ITS_4,
-                    32 => GX_ITS_8,
-                    16 => GX_ITS_16,
-                    8 => GX_ITS_32,
-                    4 => GX_ITS_64,
-                    2 => GX_ITS_128,
-                    1 => GX_ITS_256,
-                    _ => panic!(),
-                } as u8;
-                GX_SetIndTexCoordScale(GX_INDTEXSTAGE0 as u8, scale_s, scale_t);
-                GX_SetIndTexCoordScale(GX_INDTEXSTAGE1 as u8, scale_s, scale_t);
-            };
+            }
+            GX_SetTevKColor(
+                GX_TEVSTAGE0 as u8,
+                GXColor {
+                    r: 0,
+                    g: 0,
+                    b: 0,
+                    a: 255,
+                },
+            );
 
             let cluster_geometry = get_cluster_geometry(cluster);
             for entry in cluster_geometry.iter_display_lists() {
@@ -797,7 +756,7 @@ fn do_main_draw(
                         );
                     }
                     ByteCodeEntry::SetEnvMapTint { r, g, b } => {
-                        GX_SetTevKColor(GX_TEVSTAGE0 as u8, GXColor { r, g, b, a: 0 });
+                        GX_SetTevKColor(GX_TEVSTAGE0 as u8, GXColor { r, g, b, a: 255 });
                     }
                     ByteCodeEntry::SetAlpha {
                         test_threshold,
@@ -835,99 +794,12 @@ fn do_main_draw(
                             GX_SetZMode(GX_TRUE as u8, GX_LEQUAL as u8, GX_TRUE as u8);
                         }
                     }
-                    ByteCodeEntry::SetBumpMapTexture {
-                        bump_map_texture_index,
-                    } => {
-                        let bump_map_texture = &map_texobjs[bump_map_texture_index as usize]
-                            as *const GXTexObj
-                            as *mut GXTexObj;
-                        GX_LoadTexObj(bump_map_texture, GX_TEXMAP3 as u8);
-                        do_per_bump_map_setup(bump_map_texture);
-                    }
                     ByteCodeEntry::SetMode { mode } => match mode {
                         0 => {
                             LIGHTMAPPED_SHADER.apply();
-                            GX_SetTevDirect(GX_TEVSTAGE0 as u8);
-                            GX_SetTevDirect(GX_TEVSTAGE2 as u8);
-                            GX_SetTevDirect(GX_TEVSTAGE4 as u8);
-                            // Load the omnidirectional lightmap.
-                            GX_LoadTexObj(
-                                &lightmaps[0].texobj as *const GXTexObj as *mut GXTexObj,
-                                GX_TEXMAP0 as u8,
-                            );
-                        }
-                        2 | 3 => {
-                            LIGHTMAPPED_BUMP_SHADER.apply();
-                            GX_SetTevIndirect(
-                                GX_TEVSTAGE0 as u8,
-                                GX_INDTEXSTAGE0 as u8,
-                                GX_ITF_8 as u8,
-                                GX_ITB_STU as u8,
-                                GX_ITM_0 as u8,
-                                GX_ITW_0 as u8,
-                                GX_ITW_0 as u8,
-                                GX_FALSE as u8,
-                                GX_FALSE as u8,
-                                GX_ITBA_OFF as u8,
-                            );
-                            GX_SetTevIndirect(
-                                GX_TEVSTAGE2 as u8,
-                                GX_INDTEXSTAGE0 as u8,
-                                GX_ITF_8 as u8,
-                                GX_ITB_STU as u8,
-                                GX_ITM_0 as u8,
-                                GX_ITW_0 as u8,
-                                GX_ITW_0 as u8,
-                                GX_FALSE as u8,
-                                GX_FALSE as u8,
-                                GX_ITBA_OFF as u8,
-                            );
-                            GX_SetTevIndirect(
-                                GX_TEVSTAGE4 as u8,
-                                GX_INDTEXSTAGE1 as u8,
-                                GX_ITF_8 as u8,
-                                GX_ITB_STU as u8,
-                                GX_ITM_1 as u8,
-                                GX_ITW_0 as u8,
-                                GX_ITW_0 as u8,
-                                GX_FALSE as u8,
-                                GX_FALSE as u8,
-                                GX_ITBA_OFF as u8,
-                            );
-                            let mut mtx = [
-                                [sqrtf32(2.0 / 3.0), 0.0, 1.0 / sqrtf32(3.0)],
-                                [-1.0 / sqrtf32(6.0), 1.0 / sqrtf32(2.0), 1.0 / sqrtf32(3.0)],
-                            ];
-                            GX_SetIndTexMatrix(GX_ITM_0 as u8, mtx.as_mut_ptr(), 1);
-                            mtx = [
-                                [-1.0 / sqrtf32(6.0), -1.0 / sqrtf32(2.0), 1.0 / sqrtf32(3.0)],
-                                [0.0, 0.0, 0.0],
-                            ];
-                            GX_SetIndTexMatrix(GX_ITM_1 as u8, mtx.as_mut_ptr(), 1);
-                            // Load the three directional lightmaps.
-                            GX_LoadTexObj(
-                                &lightmaps[1].texobj as *const GXTexObj as *mut GXTexObj,
-                                GX_TEXMAP0 as u8,
-                            );
-                            GX_LoadTexObj(
-                                &lightmaps[2].texobj as *const GXTexObj as *mut GXTexObj,
-                                GX_TEXMAP4 as u8,
-                            );
-                            GX_LoadTexObj(
-                                &lightmaps[3].texobj as *const GXTexObj as *mut GXTexObj,
-                                GX_TEXMAP5 as u8,
-                            );
                         }
                         1 => {
                             LIGHTMAPPED_ENV_SHADER.apply();
-                            GX_SetTevDirect(GX_TEVSTAGE0 as u8);
-                            GX_SetTevDirect(GX_TEVSTAGE2 as u8);
-                            GX_SetTevDirect(GX_TEVSTAGE4 as u8);
-                            // Load the omnidirectional lightmap.
-                            GX_LoadTexObj(
-                                &lightmaps[0].texobj as *const GXTexObj as *mut GXTexObj,
-                                GX_TEXMAP0 as u8,
-                            );
                         }
                         _ => panic!("unexpected render mode: 0x{:02x}", mode),
                     },
@@ -949,7 +821,6 @@ fn do_main_draw(
             }
         }
 
-        GX_SetTevDirect(GX_TEVSTAGE0 as u8);
         GX_SetZCompLoc(GX_TRUE as u8);
         GX_SetAlphaCompare(GX_ALWAYS as u8, 0, GX_AOP_OR as u8, GX_ALWAYS as u8, 0);
         GX_DrawDone();
@@ -1022,13 +893,12 @@ fn _do_copy_to_texture(screen_texture_color_data: &Memalign<32>) {
 }
 
 fn do_debug_draw(
+    width: u16,
     height: u16,
     game_state: &GameState,
     last_frame_timers: &FrameTimers,
     view_cluster: i16,
-    cluster_lightmaps: &[[Lightmap; 4]],
-    proj: &mut Mtx44,
-    view: &mut Mtx,
+    cluster_lightmaps: &[Lightmap],
 ) {
     unsafe {
         GX_ClearVtxDesc();
@@ -1043,17 +913,27 @@ fn do_debug_draw(
         GX_SetZMode(GX_FALSE as u8, GX_ALWAYS as u8, GX_FALSE as u8);
         GX_SetColorUpdate(GX_TRUE as u8);
 
-        guOrtho(proj.as_mut_ptr(), 0.0, 480.0, 0.0, 640.0, -1.0, 1.0);
+        let mut proj = zeroed::<Mtx44>();
+        guOrtho(
+            proj.as_mut_ptr(),
+            0.0,
+            height as f32,
+            0.0,
+            width as f32,
+            -1.0,
+            1.0,
+        );
         GX_LoadProjectionMtx(proj.as_mut_ptr(), GX_ORTHOGRAPHIC as u8);
 
+        let mut view = zeroed::<Mtx>();
         c_guMtxIdentity(view.as_mut_ptr());
         GX_LoadPosMtxImm(view.as_mut_ptr(), GX_PNMTX0);
 
         let to_y = height - 16;
         let from_y = to_y - 16;
         let emit_debug_quad = |from_x, to_x, max_x, r, g, b| {
-            let from_x = (from_x as f32 * 640.0 / max_x as f32) as u16;
-            let to_x = (to_x as f32 * 640.0 / max_x as f32) as u16;
+            let from_x = (from_x as f32 * width as f32 / max_x as f32) as u16;
+            let to_x = (to_x as f32 * width as f32 / max_x as f32) as u16;
 
             GX_Begin(GX_QUADS as u8, GX_VTXFMT0 as u8, 4);
 
@@ -1133,9 +1013,9 @@ fn do_debug_draw(
         draw_bit(32, 0, (game_state.lightmap_style & 1) != 0);
 
         // Draw the lightmap for the current cluster.
-        if let Some(lightmaps) = cluster_lightmaps.get(view_cluster as usize) {
-            let w = GX_GetTexObjWidth(&lightmaps[0].texobj as *const GXTexObj as *mut GXTexObj);
-            let h = GX_GetTexObjHeight(&lightmaps[0].texobj as *const GXTexObj as *mut GXTexObj);
+        if let Some(lightmap) = cluster_lightmaps.get(view_cluster as usize) {
+            let w = GX_GetTexObjWidth(&lightmap.texobj as *const GXTexObj as *mut GXTexObj);
+            let h = GX_GetTexObjHeight(&lightmap.texobj as *const GXTexObj as *mut GXTexObj);
 
             GX_ClearVtxDesc();
             GX_SetVtxDesc(GX_VA_POS as u8, GX_DIRECT as u8);
@@ -1146,10 +1026,26 @@ fn do_debug_draw(
 
             FLAT_TEXTURED_SHADER.apply();
 
-            GX_LoadTexObj(
-                &lightmaps[0].texobj as *const GXTexObj as *mut GXTexObj,
-                GX_TEXMAP0 as u8,
-            );
+            {
+                let src = &lightmap.texobj as *const GXTexObj as *mut GXTexObj;
+                let data = GX_GetTexObjData(src);
+                let format = GX_GetTexObjFmt(src) as u8;
+                let width = GX_GetTexObjWidth(src);
+                let height = GX_GetTexObjHeight(src);
+                let mut dst = zeroed::<GXTexObj>();
+                GX_InitTexObj(
+                    &mut dst,
+                    data,
+                    width,
+                    height,
+                    format,
+                    GX_CLAMP as u8,
+                    GX_CLAMP as u8,
+                    GX_FALSE as u8,
+                );
+                GX_InitTexObjFilterMode(&mut dst, GX_NEAR as u8, GX_NEAR as u8);
+                GX_LoadTexObj(&mut dst, GX_TEXMAP0 as u8);
+            }
 
             GX_Begin(GX_QUADS as u8, GX_VTXFMT0 as u8, 4);
 

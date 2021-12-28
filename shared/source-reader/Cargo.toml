@@ -15,6 +15,7 @@ nalgebra-glm = "0.15"
 nom = "7"
 recursive-iter = { path = "../recursive-iter" }
 texture-atlas = { path = "../texture-atlas" }
+texture-format = { path = "../texture-format" }
 try-insert-ext = "0.1"
 try_map = "0.3"
 zip = "0.5"

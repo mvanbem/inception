@@ -17,5 +17,6 @@ png = "0.17"
 recursive-iter = { path = "../../shared/recursive-iter" }
 source-reader = { path = "../../shared/source-reader" }
 texture-atlas = { path = "../../shared/texture-atlas" }
+texture-format = { path = "../../shared/texture-format" }
 try-insert-ext = "0.1"
 zip = "0.5"

@@ -14,29 +14,34 @@ use glium::glutin::event::{DeviceEvent, Event, WindowEvent};
 use glium::glutin::event_loop::{ControlFlow, EventLoop};
 use glium::glutin::window::WindowBuilder;
 use glium::index::PrimitiveType;
-use glium::texture::compressed_srgb_texture2d::CompressedSrgbTexture2d;
-use glium::texture::{ClientFormat, CompressedMipmapsOption, CompressedSrgbFormat, RawImage2d};
-use glium::uniforms::{MagnifySamplerFilter, MinifySamplerFilter, Sampler};
+use glium::program::ProgramCreationInput;
+use glium::texture::{ClientFormat, MipmapsOption, RawImage2d, SrgbFormat, SrgbTexture2d};
+use glium::uniforms::{MagnifySamplerFilter, MinifySamplerFilter, Sampler, SamplerWrapFunction};
 use glium::{
     implement_vertex, uniform, BackfaceCullingMode, Depth, DepthTest, Display, DrawParameters,
     IndexBuffer, Program, Rect, Surface, VertexBuffer,
 };
 use memmap::Mmap;
 use nalgebra_glm::{look_at, perspective, radians, rotate, translate, vec1, vec3};
-use source_reader::asset::vmt::Shader;
-use source_reader::asset::vtf::{ImageData, ImageFormat};
+use source_reader::asset::vmt::{LightmappedGeneric, Shader};
 use source_reader::asset::AssetLoader;
 use source_reader::bsp::{self, Bsp};
 use source_reader::file::zip::ZipArchiveLoader;
 use source_reader::file::{FallbackFileLoader, FileLoader};
 use source_reader::geometry::convert_vertex;
-use source_reader::lightmap::{build_lightmaps, Lightmap};
+use source_reader::lightmap::build_lightmaps;
 use source_reader::vpk::path::VpkPath;
 use source_reader::vpk::Vpk;
+use texture_format::{AnyTexture, AnyTextureBuf, Rgb8};
 
 use crate::game_state::GameState;
+use crate::texture::{
+    create_texture, create_texture_encoded, AnyTexture2d, CreateCompressedSrgbTexture2dDxt1,
+    CreateCompressedSrgbTexture2dDxt5, CreateSrgbTexture2dRgba8,
+};
 
 mod game_state;
+mod texture;
 
 #[derive(Clone, Copy)]
 struct Vertex {
@@ -58,9 +63,9 @@ impl From<source_reader::geometry::Vertex> for Vertex {
 implement_vertex!(Vertex, position, lightmap_coord, texture_coord);
 
 struct GraphicsData {
-    lightmap: Lightmap,
+    cluster_lightmap_textures: HashMap<i16, SrgbTexture2d>,
     vertices: Vec<Vertex>,
-    indices_by_material: HashMap<VpkPath, Vec<u16>>,
+    indices_by_cluster_material: HashMap<i16, HashMap<VpkPath, Vec<u16>>>,
 }
 
 fn main() -> Result<()> {
@@ -70,12 +75,6 @@ fn main() -> Result<()> {
     let bsp_data = unsafe { Mmap::map(&bsp_file) }?;
     let bsp = Bsp::new(&bsp_data);
     let asset_loader = build_asset_loader(hl2_base, bsp)?;
-
-    let GraphicsData {
-        lightmap,
-        vertices,
-        indices_by_material,
-    } = load_graphics_data(bsp, &asset_loader)?;
 
     let events_loop = EventLoop::new();
     let display = Display::new(
@@ -87,14 +86,19 @@ fn main() -> Result<()> {
     )
     .unwrap();
 
+    let GraphicsData {
+        cluster_lightmap_textures,
+        vertices,
+        indices_by_cluster_material,
+    } = load_graphics_data(&display, bsp, &asset_loader)?;
+
     let program = build_shaders(&display)?;
-    let lightmap_texture = build_lightmap_texture(&display, &lightmap)?;
     let vertex_buffer = VertexBuffer::new(&display, &vertices)?;
-    let textures_by_path = load_textures(&display, &asset_loader, &indices_by_material)?;
-    let batches = build_batches(
+    let textures_by_path = load_textures(&display, &asset_loader, &indices_by_cluster_material)?;
+    let batches_by_cluster = build_batches_by_cluster(
         &display,
         asset_loader,
-        indices_by_material,
+        indices_by_cluster_material,
         &textures_by_path,
     )?;
 
@@ -123,10 +127,10 @@ fn main() -> Result<()> {
                 &display,
                 &game_state,
                 &vertex_buffer,
-                &batches,
+                &batches_by_cluster,
                 &program,
                 &textures_by_path,
-                &lightmap_texture,
+                &cluster_lightmap_textures,
             );
 
             let next_frame_time = Instant::now();
@@ -149,8 +153,12 @@ fn build_asset_loader<'a>(hl2_base: &Path, bsp: Bsp<'a>) -> Result<AssetLoader<'
     Ok(AssetLoader::new(material_loader, texture_loader))
 }
 
-fn load_graphics_data(bsp: Bsp, asset_loader: &AssetLoader) -> Result<GraphicsData> {
-    let lightmap = build_lightmaps(bsp)?;
+fn load_graphics_data(
+    display: &Display,
+    bsp: Bsp,
+    asset_loader: &AssetLoader,
+) -> Result<GraphicsData> {
+    let cluster_lightmaps = build_lightmaps(bsp)?;
 
     #[derive(Clone, Copy, PartialEq, Eq, Hash)]
     struct VertexKey {
@@ -158,14 +166,20 @@ fn load_graphics_data(bsp: Bsp, asset_loader: &AssetLoader) -> Result<GraphicsDa
         vertex_index: usize,
     }
 
+    let mut cluster_lightmap_texture_data: HashMap<i16, Vec<u8>> = HashMap::new();
     let mut vertices = Vec::new();
-    let mut indices_by_material: HashMap<VpkPath, Vec<u16>> = HashMap::new();
-    let mut emitted_vertices_by_source = HashMap::new();
+    let mut indices_by_cluster_material: HashMap<i16, HashMap<VpkPath, Vec<u16>>> = HashMap::new();
     for leaf in bsp.iter_worldspawn_leaves() {
         if leaf.cluster == -1 {
             // Leaf is not potentially visible from anywhere.
             continue;
         }
+        let cluster_lightmap = &cluster_lightmaps[&leaf.cluster];
+        let lightmap_texture_data = cluster_lightmap_texture_data
+            .entry(leaf.cluster)
+            .or_insert_with(|| vec![0u8; 3 * cluster_lightmap.width * cluster_lightmap.height]);
+        let indices_by_material = indices_by_cluster_material.entry(leaf.cluster).or_default();
+        let mut emitted_vertices_by_source = HashMap::new();
 
         for face in bsp.iter_faces_from_leaf(leaf) {
             if face.light_ofs == -1 || face.tex_info == -1 {
@@ -173,12 +187,42 @@ fn load_graphics_data(bsp: Bsp, asset_loader: &AssetLoader) -> Result<GraphicsDa
                 continue;
             }
 
-            let lightmap_metadata = &lightmap.metadata_by_data_offset[&face.light_ofs];
+            let lightmap_metadata = &cluster_lightmap.metadata_by_data_offset[&face.light_ofs];
             let tex_info = &bsp.tex_infos()[face.tex_info as usize];
             if tex_info.tex_data == -1 {
                 // Not textured.
                 // TODO: Determine whether any such faces need to be drawn.
                 continue;
+            }
+
+            // Write texels to the lightmap.
+            {
+                let patch_width = face.lightmap_texture_size_in_luxels[0] as usize + 1;
+                let patch_height = face.lightmap_texture_size_in_luxels[1] as usize + 1;
+                assert_eq!(lightmap_metadata.luxel_offset[0] % 4, 0);
+                assert_eq!(lightmap_metadata.luxel_offset[1] % 4, 0);
+
+                let mut src_offset = face.light_ofs as usize;
+                for src_dy in 0..patch_height {
+                    for src_dx in 0..patch_width {
+                        let rgb = bsp.lighting().at_offset(src_offset, 1)[0].to_srgb8();
+                        src_offset += 4;
+
+                        let (dst_x, dst_y) = if lightmap_metadata.is_flipped {
+                            (
+                                lightmap_metadata.luxel_offset[0] + src_dy,
+                                lightmap_metadata.luxel_offset[1] + src_dx,
+                            )
+                        } else {
+                            (
+                                lightmap_metadata.luxel_offset[0] + src_dx,
+                                lightmap_metadata.luxel_offset[1] + src_dy,
+                            )
+                        };
+                        let dst_offset = 3 * (cluster_lightmap.width * dst_y + dst_x);
+                        lightmap_texture_data[dst_offset..dst_offset + 3].copy_from_slice(&rgb);
+                    }
+                }
             }
 
             // This is a textured face.
@@ -203,7 +247,7 @@ fn load_graphics_data(bsp: Bsp, asset_loader: &AssetLoader) -> Result<GraphicsDa
                 } else {
                     let vertex = convert_vertex(
                         bsp,
-                        &lightmap.image,
+                        (cluster_lightmap.width, cluster_lightmap.height),
                         lightmap_metadata,
                         face,
                         tex_info,
@@ -231,10 +275,40 @@ fn load_graphics_data(bsp: Bsp, asset_loader: &AssetLoader) -> Result<GraphicsDa
         }
     }
 
+    let cluster_lightmap_textures: HashMap<i16, SrgbTexture2d> = cluster_lightmap_texture_data
+        .into_iter()
+        .map(|(cluster_index, lightmap_texture_data)| {
+            let cluster_lightmap = &cluster_lightmaps[&cluster_index];
+
+            let lightmap_texture = SrgbTexture2d::empty_with_format(
+                display,
+                SrgbFormat::U8U8U8,
+                MipmapsOption::NoMipmap,
+                cluster_lightmap.width as u32,
+                cluster_lightmap.height as u32,
+            )?;
+            lightmap_texture.write(
+                Rect {
+                    left: 0,
+                    bottom: 0,
+                    width: cluster_lightmap.width as u32,
+                    height: cluster_lightmap.height as u32,
+                },
+                RawImage2d {
+                    data: Cow::Owned(lightmap_texture_data),
+                    width: cluster_lightmap.width as u32,
+                    height: cluster_lightmap.height as u32,
+                    format: ClientFormat::U8U8U8,
+                },
+            );
+            Ok((cluster_index, lightmap_texture))
+        })
+        .collect::<Result<_>>()?;
+
     Ok(GraphicsData {
-        lightmap,
+        cluster_lightmap_textures,
         vertices,
-        indices_by_material,
+        indices_by_cluster_material,
     })
 }
 
@@ -272,93 +346,61 @@ fn build_shaders(display: &Display) -> Result<Program> {
         void main() {
             vec4 lightmap_color = vec4(texture(lightmap, interpolated_lightmap_coord).rgb, 1.0);
             vec4 base_color = texture(base_map, interpolated_texture_coord);
-            rendered_color = lightmap_color * base_color * 2.0;
+            rendered_color = lightmap_color * base_color * 4.59479;
         }
     "#;
-    Ok(Program::from_source(
+    Ok(Program::new(
         display,
-        VERTEX_SHADER_SOURCE,
-        FRAGMENT_SHADER_SOURCE,
-        None,
-    )?)
-}
-
-fn build_lightmap_texture(
-    display: &Display,
-    lightmap: &Lightmap,
-) -> Result<CompressedSrgbTexture2d> {
-    Ok(CompressedSrgbTexture2d::with_format(
-        display,
-        RawImage2d {
-            data: Cow::Borrowed(lightmap.image.data()),
-            width: lightmap.image.width() as u32,
-            height: lightmap.image.height() as u32,
-            format: ClientFormat::U8U8U8,
+        ProgramCreationInput::SourceCode {
+            vertex_shader: VERTEX_SHADER_SOURCE,
+            tessellation_control_shader: None,
+            tessellation_evaluation_shader: None,
+            geometry_shader: None,
+            fragment_shader: FRAGMENT_SHADER_SOURCE,
+            transform_feedback_varyings: None,
+            outputs_srgb: false,
+            uses_point_size: false,
         },
-        CompressedSrgbFormat::S3tcDxt1NoAlpha,
-        CompressedMipmapsOption::NoMipmap,
     )?)
 }
 
 fn load_textures(
     display: &Display,
     asset_loader: &AssetLoader,
-    indices_by_material: &HashMap<VpkPath, Vec<u16>>,
-) -> Result<HashMap<VpkPath, CompressedSrgbTexture2d>> {
+    indices_by_cluster_material: &HashMap<i16, HashMap<VpkPath, Vec<u16>>>,
+) -> Result<HashMap<VpkPath, AnyTexture2d>> {
     let mut textures_by_path = HashMap::new();
-    let mut total_texture_size = 0;
-    for material_path in indices_by_material.keys() {
-        let material = asset_loader.get_material(material_path)?;
-        if let Shader::LightmappedGeneric { base_texture, .. } = material.shader() {
-            if !textures_by_path.contains_key(base_texture.path()) {
-                // Load this texture.
-                let (base_map_width, base_map_height, mips) = match material.shader() {
-                    Shader::LightmappedGeneric { base_texture, .. } => match base_texture.data() {
-                        Some(ImageData {
-                            format: ImageFormat::Dxt1,
-                            mips,
-                        }) => (base_texture.width(), base_texture.height(), mips),
+    for (_cluster_index, indices_by_material) in indices_by_cluster_material {
+        for material_path in indices_by_material.keys() {
+            let material = asset_loader.get_material(material_path)?;
+            if let Shader::LightmappedGeneric(LightmappedGeneric { base_texture, .. }) =
+                material.shader()
+            {
+                if !textures_by_path.contains_key(base_texture.path()) {
+                    // Load this texture.
+                    let data = match base_texture.data() {
+                        Some(data) => data,
                         None => continue,
-                    },
-                    _ => continue,
-                };
+                    };
 
-                let base_map_texture = CompressedSrgbTexture2d::empty_with_format(
-                    display,
-                    CompressedSrgbFormat::S3tcDxt1NoAlpha,
-                    CompressedMipmapsOption::EmptyMipmapsMax(mips.len() as u32 - 1),
-                    base_map_width,
-                    base_map_height,
-                )?;
-                for (mip_level, mip_data) in mips.iter().enumerate() {
-                    let mip_texture = base_map_texture.mipmap(mip_level as u32).unwrap();
-                    let mip_width = mip_texture.width();
-                    let mip_height = mip_texture.height();
-                    assert_eq!(
-                        mip_width.max(4) as usize * mip_height.max(4) as usize / 2,
-                        mip_data.len(),
-                    );
-                    total_texture_size += mip_data.len();
-                    mip_texture
-                        .write_compressed_data(
-                            Rect {
-                                left: 0,
-                                bottom: 0,
-                                width: mip_width,
-                                height: mip_height,
-                            },
-                            mip_data,
-                            mip_width,
-                            mip_height,
-                            CompressedSrgbFormat::S3tcDxt1NoAlpha,
-                        )
-                        .unwrap();
+                    let gl_texture = match &data.mips[0][0] {
+                        AnyTextureBuf::Bgr8(_) => create_texture_encoded::<
+                            CreateSrgbTexture2dRgba8,
+                            Rgb8,
+                        >(display, base_texture)?,
+                        AnyTextureBuf::Dxt1(_) => create_texture::<
+                            CreateCompressedSrgbTexture2dDxt1,
+                        >(display, base_texture)?,
+                        AnyTextureBuf::Dxt5(_) => create_texture::<
+                            CreateCompressedSrgbTexture2dDxt5,
+                        >(display, base_texture)?,
+                        texture => panic!("unexpected texture format: {:?}", texture.dyn_format()),
+                    };
+                    textures_by_path.insert(base_texture.path().to_owned(), gl_texture);
                 }
-                textures_by_path.insert(base_texture.path().to_owned(), base_map_texture);
             }
         }
     }
-    println!("Total texture size: {}", total_texture_size);
     Ok(textures_by_path)
 }
 
@@ -368,40 +410,47 @@ struct Batch {
     inv_base_map_size: [f32; 2],
 }
 
-fn build_batches(
+fn build_batches_by_cluster(
     display: &Display,
     asset_loader: AssetLoader,
-    indices_by_material: HashMap<VpkPath, Vec<u16>>,
-    textures_by_path: &HashMap<VpkPath, CompressedSrgbTexture2d>,
-) -> Result<Vec<Batch>> {
-    let mut batches = Vec::new();
-    for (material_path, indices) in indices_by_material {
-        let material = asset_loader.get_material(&material_path)?;
-        if let Shader::LightmappedGeneric { base_texture, .. } = material.shader() {
-            let index_buffer = IndexBuffer::new(display, PrimitiveType::TrianglesList, &indices)?;
-            if let Some(base_map_texture) = textures_by_path.get(base_texture.path()) {
-                batches.push(Batch {
-                    index_buffer,
-                    base_map_path: base_texture.path().to_owned(),
-                    inv_base_map_size: [
-                        1.0 / base_map_texture.width() as f32,
-                        1.0 / base_map_texture.height() as f32,
-                    ],
-                });
+    indices_by_cluster_material: HashMap<i16, HashMap<VpkPath, Vec<u16>>>,
+    textures_by_path: &HashMap<VpkPath, AnyTexture2d>,
+) -> Result<HashMap<i16, Vec<Batch>>> {
+    let mut batches_by_cluster = HashMap::new();
+    for (cluster_index, indices_by_material) in indices_by_cluster_material {
+        let mut batches = Vec::new();
+        for (material_path, indices) in indices_by_material {
+            let material = asset_loader.get_material(&material_path)?;
+            if let Shader::LightmappedGeneric(LightmappedGeneric { base_texture, .. }) =
+                material.shader()
+            {
+                let index_buffer =
+                    IndexBuffer::new(display, PrimitiveType::TrianglesList, &indices)?;
+                if let Some(base_map_texture) = textures_by_path.get(base_texture.path()) {
+                    batches.push(Batch {
+                        index_buffer,
+                        base_map_path: base_texture.path().to_owned(),
+                        inv_base_map_size: [
+                            1.0 / base_map_texture.width() as f32,
+                            1.0 / base_map_texture.height() as f32,
+                        ],
+                    });
+                }
             }
         }
+        batches_by_cluster.insert(cluster_index, batches);
     }
-    Ok(batches)
+    Ok(batches_by_cluster)
 }
 
 fn draw(
     display: &Display,
     game_state: &GameState,
     vertex_buffer: &VertexBuffer<Vertex>,
-    batches: &[Batch],
+    batches_by_cluster: &HashMap<i16, Vec<Batch>>,
     program: &Program,
-    textures_by_path: &HashMap<VpkPath, CompressedSrgbTexture2d>,
-    lightmap_texture: &CompressedSrgbTexture2d,
+    textures_by_path: &HashMap<VpkPath, AnyTexture2d>,
+    cluster_lightmap_textures: &HashMap<i16, SrgbTexture2d>,
 ) {
     let dimensions = display.get_framebuffer_dimensions();
     let proj = perspective(
@@ -422,31 +471,128 @@ fn draw(
 
     let mut target = display.draw();
     target.clear_color_and_depth((0.5, 0.5, 0.5, 0.0), 1.0);
-    for batch in batches {
-        target
-            .draw(
-                vertex_buffer,
-                &batch.index_buffer,
-                &program,
-                &uniform! {
-                    mvp_matrix: mvp_matrix.data.0,
-                    lightmap: lightmap_texture,
-                    base_map: Sampler::new(&textures_by_path[&batch.base_map_path])
-                        .magnify_filter(MagnifySamplerFilter::Linear)
-                        .minify_filter(MinifySamplerFilter::LinearMipmapLinear),
-                    inv_base_map_size: batch.inv_base_map_size,
-                },
-                &DrawParameters {
-                    depth: Depth {
-                        test: DepthTest::IfLess,
-                        write: true,
-                        ..Default::default()
-                    },
-                    backface_culling: BackfaceCullingMode::CullCounterClockwise,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
+    for (cluster_index, batches) in batches_by_cluster {
+        for batch in batches {
+            let base_texture = &textures_by_path[&batch.base_map_path];
+            match base_texture {
+                AnyTexture2d::Texture2d(x) => target
+                    .draw(
+                        vertex_buffer,
+                        &batch.index_buffer,
+                        &program,
+                        &uniform! {
+                            mvp_matrix: mvp_matrix.data.0,
+                            lightmap: Sampler::new(&cluster_lightmap_textures[cluster_index])
+                                .wrap_function(SamplerWrapFunction::Clamp)
+                                .magnify_filter(MagnifySamplerFilter::Linear)
+                                .minify_filter(MinifySamplerFilter::Nearest),
+                            base_map: Sampler::new(x)
+                                .wrap_function(SamplerWrapFunction::Repeat)
+                                .magnify_filter(MagnifySamplerFilter::Linear)
+                                .minify_filter(MinifySamplerFilter::LinearMipmapNearest)
+                                .anisotropy(16),
+                            inv_base_map_size: batch.inv_base_map_size,
+                        },
+                        &DrawParameters {
+                            depth: Depth {
+                                test: DepthTest::IfLess,
+                                write: true,
+                                ..Default::default()
+                            },
+                            backface_culling: BackfaceCullingMode::CullCounterClockwise,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap(),
+                AnyTexture2d::SrgbTexture2d(x) => target
+                    .draw(
+                        vertex_buffer,
+                        &batch.index_buffer,
+                        &program,
+                        &uniform! {
+                            mvp_matrix: mvp_matrix.data.0,
+                            lightmap: Sampler::new(&cluster_lightmap_textures[cluster_index])
+                                .wrap_function(SamplerWrapFunction::Clamp)
+                                .magnify_filter(MagnifySamplerFilter::Linear)
+                                .minify_filter(MinifySamplerFilter::Nearest),
+                            base_map: Sampler::new(x)
+                                .wrap_function(SamplerWrapFunction::Repeat)
+                                .magnify_filter(MagnifySamplerFilter::Linear)
+                                .minify_filter(MinifySamplerFilter::LinearMipmapLinear)
+                                .anisotropy(16),
+                            inv_base_map_size: batch.inv_base_map_size,
+                        },
+                        &DrawParameters {
+                            depth: Depth {
+                                test: DepthTest::IfLess,
+                                write: true,
+                                ..Default::default()
+                            },
+                            backface_culling: BackfaceCullingMode::CullCounterClockwise,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap(),
+                AnyTexture2d::CompressedTexture2d(x) => target
+                    .draw(
+                        vertex_buffer,
+                        &batch.index_buffer,
+                        &program,
+                        &uniform! {
+                            mvp_matrix: mvp_matrix.data.0,
+                            lightmap: Sampler::new(&cluster_lightmap_textures[cluster_index])
+                                .wrap_function(SamplerWrapFunction::Clamp)
+                                .magnify_filter(MagnifySamplerFilter::Linear)
+                                .minify_filter(MinifySamplerFilter::Nearest),
+                            base_map: Sampler::new(x)
+                                .wrap_function(SamplerWrapFunction::Repeat)
+                                .magnify_filter(MagnifySamplerFilter::Linear)
+                                .minify_filter(MinifySamplerFilter::LinearMipmapLinear)
+                                .anisotropy(16),
+                            inv_base_map_size: batch.inv_base_map_size,
+                        },
+                        &DrawParameters {
+                            depth: Depth {
+                                test: DepthTest::IfLess,
+                                write: true,
+                                ..Default::default()
+                            },
+                            backface_culling: BackfaceCullingMode::CullCounterClockwise,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap(),
+                AnyTexture2d::CompressedSrgbTexture2d(x) => target
+                    .draw(
+                        vertex_buffer,
+                        &batch.index_buffer,
+                        &program,
+                        &uniform! {
+                            mvp_matrix: mvp_matrix.data.0,
+                            lightmap: Sampler::new(&cluster_lightmap_textures[cluster_index])
+                                .wrap_function(SamplerWrapFunction::Clamp)
+                                .magnify_filter(MagnifySamplerFilter::Linear)
+                                .minify_filter(MinifySamplerFilter::Nearest),
+                            base_map: Sampler::new(x)
+                                .wrap_function(SamplerWrapFunction::Repeat)
+                                .magnify_filter(MagnifySamplerFilter::Linear)
+                                .minify_filter(MinifySamplerFilter::LinearMipmapLinear)
+                                .anisotropy(16),
+                            inv_base_map_size: batch.inv_base_map_size,
+                        },
+                        &DrawParameters {
+                            depth: Depth {
+                                test: DepthTest::IfLess,
+                                write: true,
+                                ..Default::default()
+                            },
+                            backface_culling: BackfaceCullingMode::CullCounterClockwise,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap(),
+            }
+        }
     }
     target.finish().unwrap();
 }

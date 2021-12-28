@@ -7,13 +7,12 @@ use std::path::Path;
 use std::rc::Rc;
 
 use anyhow::{bail, Context, Result};
-use byteorder::{BigEndian, LittleEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{BigEndian, WriteBytesExt};
 use clap::{clap_app, crate_authors, crate_description, crate_version, ArgMatches};
 use memmap::Mmap;
 use nalgebra_glm::{mat3_to_mat4, vec2, vec3, vec4, Mat3, Mat3x4, Mat4, Vec3};
 use num_traits::PrimInt;
 use source_reader::asset::vmt::{LightmappedGeneric, Shader, Vmt};
-use source_reader::asset::vtf::ImageFormat;
 use source_reader::asset::AssetLoader;
 use source_reader::bsp::Bsp;
 use source_reader::file::zip::ZipArchiveLoader;
@@ -22,6 +21,9 @@ use source_reader::geometry::convert_vertex;
 use source_reader::lightmap::{build_lightmaps, ClusterLightmap, LightmapPatch};
 use source_reader::vpk::path::VpkPath;
 use source_reader::vpk::Vpk;
+use texture_format::{
+    AnyTexture, AnyTextureBuf, GxTfCmpr, GxTfRgba8, Rgba8, TextureBuf, TextureFormatExt,
+};
 
 use crate::counter::Counter;
 use crate::display_list::DisplayListBuilder;
@@ -224,7 +226,6 @@ impl ClusterGeometryBuilder {
 enum Pass {
     LightmappedGeneric {
         alpha: PassAlpha,
-        bump_map: bool,
         env_map: Option<PassEnvMap>,
     },
 }
@@ -255,7 +256,6 @@ impl Pass {
             Shader::LightmappedGeneric(LightmappedGeneric {
                 alpha_test,
                 base_alpha_env_map_mask,
-                bump_map,
                 env_map,
                 env_map_mask,
                 normal_map_alpha_env_map_mask,
@@ -268,7 +268,6 @@ impl Pass {
                     (true, false) => PassAlpha::AlphaTest,
                     (true, true) => panic!("material is both alpha-tested and alpha-blended"),
                 },
-                bump_map: bump_map.is_some(),
                 env_map: env_map.as_ref().map(|_| PassEnvMap {
                     mask: match (
                         env_map_mask.is_some(),
@@ -295,26 +294,13 @@ impl Pass {
         match self {
             Pass::LightmappedGeneric {
                 alpha: _,
-                bump_map: false,
                 env_map: None,
             } => 0,
             Pass::LightmappedGeneric {
                 alpha: _,
-                bump_map: false,
                 // TODO: Support the various kinds of envmap masks.
                 env_map: Some(_),
             } => 1,
-            Pass::LightmappedGeneric {
-                alpha: _,
-                bump_map: true,
-                env_map: None,
-            } => 2,
-            Pass::LightmappedGeneric {
-                alpha: _,
-                bump_map: true,
-                // TODO: Support the various kinds of envmap masks.
-                env_map: Some(_),
-            } => 3,
         }
     }
 }
@@ -323,7 +309,6 @@ impl Pass {
 struct Batch {
     base_texture_path: VpkPath,
     alpha: BatchAlpha,
-    bump_map: Option<BatchBumpMap>,
     env_map: Option<BatchEnvMap>,
 }
 
@@ -332,11 +317,6 @@ pub enum BatchAlpha {
     Opaque,
     AlphaTest { threshold: u8 },
     AlphaBlend,
-}
-
-#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-struct BatchBumpMap {
-    texture_path: VpkPath,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -363,7 +343,6 @@ impl Batch {
                 alpha_test_reference,
                 base_alpha_env_map_mask,
                 base_texture,
-                bump_map,
                 env_map,
                 env_map_mask,
                 env_map_tint,
@@ -383,9 +362,6 @@ impl Batch {
                         },
                         (true, true) => panic!("material is both alpha-tested and alpha-blended"),
                     },
-                    bump_map: bump_map.as_ref().map(|bump_map| BatchBumpMap {
-                        texture_path: bump_map.path().clone(),
-                    }),
                     env_map: env_map.as_ref().map(|env_map| BatchEnvMap {
                         plane,
                         texture_path: env_map.path().clone(),
@@ -404,7 +380,7 @@ impl Batch {
                                 path: env_map_mask.path().clone(),
                             },
                             (true, false, None) => BatchEnvMapMask::BaseAlpha,
-                            (false, true, None) => BatchEnvMapMask::BumpMapAlpha,
+                            (false, true, None) =>  BatchEnvMapMask::BumpMapAlpha,
                             _ => panic!("bad env map mask combination: base_alpha_env_map_mask={}, normal_map_alpha_env_map_mask={}, env_map_mask={:?}",
                                 base_alpha_env_map_mask,
                                 normal_map_alpha_env_map_mask,
@@ -589,7 +565,6 @@ fn hashable_float<const N: usize>(array: &[f32; N]) -> [FloatByBits; N] {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum TextureType {
     Image,
-    BumpMap,
     Envmap { plane: [FloatByBits; 3] },
 }
 
@@ -616,7 +591,6 @@ fn write_textures(
         match asset_loader.get_material(material_path)?.shader() {
             Shader::LightmappedGeneric(LightmappedGeneric {
                 base_texture,
-                bump_map,
                 env_map,
                 ..
             }) => {
@@ -627,15 +601,6 @@ fn write_textures(
                         textures.push((TextureType::Image, Rc::clone(base_texture)));
                         value
                     });
-                if let Some(bump_map) = bump_map.as_ref() {
-                    texture_ids
-                        .entry((bump_map.path().clone(), None))
-                        .or_insert_with(|| {
-                            let value = textures.len() as u16;
-                            textures.push((TextureType::BumpMap, Rc::clone(bump_map)));
-                            value
-                        });
-                }
                 if let Some(env_map) = env_map.as_ref() {
                     for plane in planes_by_env_map[env_map.path()].iter().copied() {
                         texture_ids
@@ -652,7 +617,7 @@ fn write_textures(
         };
     }
 
-    const GAMECUBE_MEMORY_BUDGET: u32 = 20 * 1024 * 1024;
+    const GAMECUBE_MEMORY_BUDGET: usize = 20 * 1024 * 1024;
     for dimension_divisor in [1, 2, 4, 8, 16, 32] {
         let mut total_size = 0;
         for (type_, texture) in &textures {
@@ -661,7 +626,7 @@ fn write_textures(
             }
             let image_data = texture.data().unwrap();
             match type_ {
-                TextureType::Image | TextureType::BumpMap => {
+                TextureType::Image => {
                     let max_width = texture.width() / dimension_divisor;
                     let max_height = texture.height() / dimension_divisor;
 
@@ -669,27 +634,24 @@ fn write_textures(
                     let mut accepted_mip = false;
                     for face_mip in texture.iter_face_mips() {
                         assert_eq!(face_mip.face, 0);
-                        if face_mip.logical_width <= max_width
-                            && face_mip.logical_height <= max_height
+                        if face_mip.texture.width() <= max_width
+                            && face_mip.texture.height() <= max_height
                         {
-                            match (type_, image_data.format) {
-                                (TextureType::BumpMap, _) => {
-                                    // GameCube's RGBA8 format is organized in 4x4 blocks.
-                                    total_size += face_mip.physical_width.max(4)
-                                        * face_mip.physical_height.max(4)
-                                        * 4;
+                            match &image_data.mips[0][0] {
+                                AnyTextureBuf::Dxt1(_) | AnyTextureBuf::Dxt5(_) => {
+                                    total_size += GxTfCmpr::encoded_size(
+                                        face_mip.texture.width(),
+                                        face_mip.texture.height(),
+                                    );
                                 }
-                                (_, ImageFormat::Dxt1) => {
-                                    // GameCube's DXT1 format is organized in 8x8 blocks.
-                                    total_size += face_mip.physical_width.max(8)
-                                        * face_mip.physical_height.max(8)
-                                        / 2;
+                                AnyTextureBuf::Bgr8(_) => {
+                                    total_size += GxTfRgba8::encoded_size(
+                                        face_mip.texture.width(),
+                                        face_mip.texture.height(),
+                                    );
                                 }
-                                (_, ImageFormat::Rgb8 | ImageFormat::Rgba8) => {
-                                    // GameCube's RGBA8 format is organized in 4x4 blocks.
-                                    total_size += face_mip.physical_width.max(4)
-                                        * face_mip.physical_height.max(4)
-                                        * 4;
+                                texture => {
+                                    bail!("unexpected texture format: {:?}", texture.format())
                                 }
                             }
                             accepted_mip = true;
@@ -735,7 +697,7 @@ fn write_textures(
         for (type_, texture) in &textures {
             let image_data = texture.data().unwrap();
             match type_ {
-                TextureType::Image | TextureType::BumpMap => {
+                TextureType::Image => {
                     assert_eq!(image_data.layer_count, 1);
 
                     // Take all mips that fit within the max_dimension.
@@ -746,112 +708,26 @@ fn write_textures(
                     let mut mips_written = 0;
                     for face_mip in texture.iter_face_mips() {
                         assert_eq!(face_mip.face, 0);
-                        if face_mip.logical_width <= max_width
-                            && face_mip.logical_height <= max_height
+                        if face_mip.texture.width() <= max_width
+                            && face_mip.texture.height() <= max_height
                         {
-                            match image_data.format {
-                                ImageFormat::Dxt1 => {
-                                    if matches!(type_, TextureType::BumpMap) {
-                                        let texel_count = face_mip.physical_width as usize
-                                            * face_mip.physical_height as usize;
-                                        let mut rgba_data = Vec::with_capacity(4 * texel_count);
-                                        read_native_dxt1(
-                                            &mut rgba_data,
-                                            face_mip.data,
-                                            face_mip.physical_width as usize,
-                                            face_mip.physical_height as usize,
-                                        )?;
-
-                                        let mut cursor = rgba_data.as_mut_slice();
-                                        for _ in 0..texel_count {
-                                            let r = cursor[0];
-                                            let g = cursor[1];
-                                            let b = cursor[2];
-                                            let a = cursor[3];
-                                            // Rearrange channels for use as a GX indirect texture.
-                                            cursor[0] = a;
-                                            cursor[1] = b;
-                                            cursor[2] = g;
-                                            cursor[3] = r;
-                                            cursor = &mut cursor[4..];
-                                        }
-                                        assert_eq!(cursor.len(), 0);
-                                        write_gamecube_rgba8(
-                                            &mut texture_data,
-                                            &rgba_data,
-                                            face_mip.physical_width,
-                                            face_mip.physical_height,
-                                        )?;
-                                    } else {
-                                        // Already compressed. Just have to adapt the bit and byte order.
-                                        assert_eq!(
-                                            face_mip.data.len(),
-                                            (face_mip.physical_width * face_mip.physical_height / 2)
-                                                as usize
-                                        );
-                                        write_gamecube_dxt1(
-                                            &mut texture_data,
-                                            face_mip.data,
-                                            face_mip.physical_width,
-                                            face_mip.physical_height,
-                                        )?;
-                                    }
-                                }
-                                ImageFormat::Rgb8 => {
-                                    let texel_count = face_mip.physical_width as usize
-                                        * face_mip.physical_height as usize;
-                                    let mut rgba_data = Vec::with_capacity(4 * texel_count);
-                                    let mut src = face_mip.data;
-                                    for _ in 0..texel_count {
-                                        if matches!(type_, TextureType::BumpMap) {
-                                            // Rearrange channels for use as a GX indirect texture.
-                                            rgba_data.push(0);
-                                            rgba_data.push(src[2]);
-                                            rgba_data.push(src[1]);
-                                            rgba_data.push(src[0]);
-                                        } else {
-                                            rgba_data.extend_from_slice(&src[..3]);
-                                            rgba_data.push(255);
-                                        }
-                                        src = &src[3..];
-                                    }
-                                    assert_eq!(src.len(), 0);
-                                    write_gamecube_rgba8(
-                                        &mut texture_data,
-                                        &rgba_data,
-                                        face_mip.physical_width,
-                                        face_mip.physical_height,
+                            match face_mip.texture {
+                                AnyTextureBuf::Dxt1(texture) => {
+                                    texture_data.write_all(
+                                        TextureBuf::<GxTfCmpr>::encode(texture).data(),
                                     )?;
                                 }
-                                ImageFormat::Rgba8 => {
-                                    if matches!(type_, TextureType::BumpMap) {
-                                        let texel_count = face_mip.physical_width as usize
-                                            * face_mip.physical_height as usize;
-                                        let mut rgba_data = Vec::with_capacity(4 * texel_count);
-                                        let mut src = face_mip.data;
-                                        for _ in 0..texel_count {
-                                            // Rearrange channels for use as a GX indirect texture.
-                                            rgba_data.push(src[3]);
-                                            rgba_data.push(src[2]);
-                                            rgba_data.push(src[1]);
-                                            rgba_data.push(src[0]);
-                                            src = &src[4..];
-                                        }
-                                        write_gamecube_rgba8(
-                                            &mut texture_data,
-                                            &rgba_data,
-                                            face_mip.physical_width,
-                                            face_mip.physical_height,
-                                        )?;
-                                    } else {
-                                        write_gamecube_rgba8(
-                                            &mut texture_data,
-                                            face_mip.data,
-                                            face_mip.physical_width,
-                                            face_mip.physical_height,
-                                        )?;
-                                    }
+                                AnyTextureBuf::Dxt5(texture) => {
+                                    texture_data.write_all(
+                                        TextureBuf::<GxTfCmpr>::encode(texture).data(),
+                                    )?;
                                 }
+                                AnyTextureBuf::Bgr8(texture) => {
+                                    texture_data.write_all(
+                                        TextureBuf::<GxTfRgba8>::encode(texture).data(),
+                                    )?;
+                                }
+                                _ => unreachable!(),
                             }
                             mips_written += 1;
                         }
@@ -889,15 +765,15 @@ fn write_textures(
                             0
                         },
                     )?;
-                    texture_table.write_u8(match (type_, image_data.format) {
-                        (TextureType::BumpMap, _) => 0x6,                   // GX_TF_RGBA8
-                        (_, ImageFormat::Dxt1) => 0xe,                      // GX_TF_CMPR
-                        (_, ImageFormat::Rgb8 | ImageFormat::Rgba8) => 0x6, // GX_TF_RGBA8
+                    texture_table.write_u8(match &image_data.mips[0][0] {
+                        AnyTextureBuf::Dxt1(_) | AnyTextureBuf::Dxt5(_) => 0xe, // GX_TF_CMPR
+                        AnyTextureBuf::Bgr8(_) => 0x6,                          // GX_TF_RGBA8
+                        _ => unreachable!(),
                     })?;
                     texture_table.write_u8(0)?;
                     texture_table.write_u32::<BigEndian>(start_offset)?;
                     texture_table.write_u32::<BigEndian>(end_offset)?;
-                    total_size += end_offset - start_offset;
+                    total_size += (end_offset - start_offset) as usize;
                 }
                 TextureType::Envmap { plane } => {
                     // Emit a sphere map at the cube face dimension.
@@ -911,16 +787,15 @@ fn write_textures(
 
                     // Decode the six cube map faces to flat RGBA8 buffers.
                     let mut faces = Vec::new();
-                    match image_data.format {
-                        ImageFormat::Dxt1 => {
+                    match image_data.mips[0][0] {
+                        AnyTextureBuf::Dxt1(_) => {
                             let encoded_faces = &image_data.mips[0];
                             assert!(encoded_faces.len() == 6 || encoded_faces.len() == 7);
                             for face_index in 0..6 {
-                                let encoded_face = &encoded_faces[face_index];
-                                assert_eq!(encoded_face.len(), cube_size * cube_size / 2);
-                                let mut face = Vec::with_capacity(cube_size * cube_size * 4);
-                                read_native_dxt1(&mut face, encoded_face, cube_size, cube_size)?;
-                                faces.push(face);
+                                faces.push(
+                                    TextureBuf::<Rgba8>::encode_any(&encoded_faces[face_index])
+                                        .into_data(),
+                                );
                             }
                         }
                         _ => bail!("unexpected cube map format: {:?}", image_data.format),
@@ -1017,11 +892,13 @@ fn write_textures(
                     }
 
                     let start_offset = texture_data.stream_position()? as u32;
-                    write_gamecube_rgba8(
-                        &mut texture_data,
-                        &pixels,
-                        sphere_width as u32,
-                        sphere_height as u32,
+                    texture_data.write_all(
+                        TextureBuf::<GxTfRgba8>::encode(TextureBuf::<Rgba8>::new(
+                            sphere_width,
+                            sphere_height,
+                            pixels,
+                        ))
+                        .data(),
                     )?;
                     let end_offset = texture_data.stream_position()? as u32;
 
@@ -1034,7 +911,7 @@ fn write_textures(
                     texture_table.write_u8(0)?;
                     texture_table.write_u32::<BigEndian>(start_offset)?;
                     texture_table.write_u32::<BigEndian>(end_offset)?;
-                    total_size += end_offset - start_offset;
+                    total_size += (end_offset - start_offset) as usize;
                 }
             }
         }
@@ -1047,144 +924,6 @@ fn write_textures(
         return Ok(texture_ids);
     }
     bail!("Unable to fit textures within the memory budget.");
-}
-
-fn read_native_dxt1<W: Write>(dst: &mut W, src: &[u8], width: usize, height: usize) -> Result<()> {
-    let blocks_wide = (width + 3) / 4;
-    for y in 0..height {
-        let coarse_y = y / 4;
-        for x in 0..width {
-            let coarse_x = x / 4;
-            let dxt1_offset = 8 * (blocks_wide * coarse_y + coarse_x);
-            let mut block = &src[dxt1_offset..dxt1_offset + 8];
-            let color_a_encoded = block.read_u16::<LittleEndian>()?;
-            let color_b_encoded = block.read_u16::<LittleEndian>()?;
-            let color_a = decode_rgb565(color_a_encoded);
-            let color_b = decode_rgb565(color_b_encoded);
-            let colors = if color_a > color_b {
-                [
-                    color_a,
-                    color_b,
-                    [
-                        ((2 * color_a[0] as u16 + color_b[0] as u16) / 3) as u8,
-                        ((2 * color_a[1] as u16 + color_b[1] as u16) / 3) as u8,
-                        ((2 * color_a[2] as u16 + color_b[2] as u16) / 3) as u8,
-                        ((2 * color_a[3] as u16 + color_b[3] as u16) / 3) as u8,
-                    ],
-                    [
-                        ((color_a[0] as u16 + 2 * color_b[0] as u16) / 3) as u8,
-                        ((color_a[1] as u16 + 2 * color_b[1] as u16) / 3) as u8,
-                        ((color_a[2] as u16 + 2 * color_b[2] as u16) / 3) as u8,
-                        ((color_a[3] as u16 + 2 * color_b[3] as u16) / 3) as u8,
-                    ],
-                ]
-            } else {
-                [
-                    color_a,
-                    color_b,
-                    [
-                        ((color_a[0] as u16 + color_b[0] as u16) / 2) as u8,
-                        ((color_a[1] as u16 + color_b[1] as u16) / 2) as u8,
-                        ((color_a[2] as u16 + color_b[2] as u16) / 2) as u8,
-                        ((color_a[3] as u16 + color_b[3] as u16) / 2) as u8,
-                    ],
-                    [0, 0, 0, 0],
-                ]
-            };
-            let color_bit = 2 * (4 * (y % 4) + (x % 4));
-            let color_bits = block.read_u32::<LittleEndian>().unwrap();
-            let color = colors[((color_bits >> color_bit) & 3) as usize];
-            dst.write_all(&color)?;
-        }
-    }
-    Ok(())
-}
-
-fn decode_rgb565(encoded: u16) -> [u8; 4] {
-    let extend5 = |x| (x << 3) | (x >> 2);
-    let extend6 = |x| (x << 2) | (x >> 4);
-    [
-        extend5(((encoded >> 11) & 0x1f) as u8),
-        extend6(((encoded >> 5) & 0x3f) as u8),
-        extend5((encoded & 0x1f) as u8),
-        255,
-    ]
-}
-
-fn write_gamecube_dxt1<W: Write + Seek>(
-    dst: &mut W,
-    src: &[u8],
-    width: u32,
-    height: u32,
-) -> Result<()> {
-    for coarse_y in 0..(height / 8).max(1) {
-        for coarse_x in 0..(width / 8).max(1) {
-            for fine_y in 0..2 {
-                for fine_x in 0..2 {
-                    let block_index = (width / 4) * (2 * coarse_y + fine_y) + 2 * coarse_x + fine_x;
-                    let block_offset = 8 * block_index as usize;
-                    if block_offset < src.len() {
-                        let block = &src[block_offset..block_offset + 8];
-                        dst.write_u16::<BigEndian>(
-                            (&block[..]).read_u16::<LittleEndian>().unwrap(),
-                        )?;
-                        dst.write_u16::<BigEndian>(
-                            (&block[2..]).read_u16::<LittleEndian>().unwrap(),
-                        )?;
-                        let reverse_two_bit_groups = |x: u32| {
-                            let x = ((x & 0x0000ffff) << 16) | ((x & 0xffff0000) >> 16);
-                            let x = ((x & 0x00ff00ff) << 8) | ((x & 0xff00ff00) >> 8);
-                            let x = ((x & 0x0f0f0f0f) << 4) | ((x & 0xf0f0f0f0) >> 4);
-                            let x = ((x & 0x33333333) << 2) | ((x & 0xcccccccc) >> 2);
-                            x
-                        };
-                        dst.write_u32::<BigEndian>(reverse_two_bit_groups(
-                            (&block[4..]).read_u32::<LittleEndian>().unwrap(),
-                        ))?;
-                    } else {
-                        // One of the texture dimensions is 4, but GameCube compressed textures are
-                        // organized in 8x8 blocks. The blocks that don't exist in the source image
-                        // are filled with zeros.
-                        dst.write_all(&[0; 8])?;
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn write_gamecube_rgba8<W: Write + Seek>(
-    dst: &mut W,
-    src: &[u8],
-    width: u32,
-    height: u32,
-) -> Result<()> {
-    for coarse_y in 0..(height / 4).max(1) {
-        for coarse_x in 0..(width / 4).max(1) {
-            let mut block = [0; 64];
-            for fine_y in 0..4 {
-                for fine_x in 0..4 {
-                    let x = 4 * coarse_x + fine_x;
-                    let y = 4 * coarse_y + fine_y;
-                    let src_offset = 4 * (width * y + x) as usize;
-                    let rgba: [u8; 4] = if let Some(src_data) = src.get(src_offset..src_offset + 4)
-                    {
-                        *<&[u8; 4]>::try_from(src_data).unwrap()
-                    } else {
-                        [0; 4]
-                    };
-                    let dst_offset = 2 * (4 * fine_y + fine_x) as usize;
-                    block[dst_offset] = rgba[3];
-                    block[dst_offset + 1] = rgba[0];
-                    block[dst_offset + 32] = rgba[1];
-                    block[dst_offset + 33] = rgba[2];
-                }
-            }
-            dst.write_all(&block)?;
-        }
-    }
-    Ok(())
 }
 
 fn write_position_data(dst_path: &Path, position_data: &[u8]) -> Result<()> {
@@ -1274,10 +1013,6 @@ mod byte_code {
         [0x05000000 | (test << 16) | (threshold << 8) | blend]
     }
 
-    pub fn set_bump_map_texture(bump_map_texture_index: u16) -> [u32; 1] {
-        [0x06000000 | bump_map_texture_index as u32]
-    }
-
     pub fn set_mode(mode: u8) -> [u32; 1] {
         [0xff000000 | mode as u32]
     }
@@ -1325,17 +1060,12 @@ fn write_geometry(
 
         let mut prev_mode = None;
         let mut prev_base_texture_path = None;
-        let mut prev_bump_map = None;
         let mut prev_plane = None;
         let mut prev_env_map_path = None;
         let mut prev_env_map_tint = None;
         let mut prev_alpha = None;
         for ((pass, batch), display_list) in &cluster.display_lists_by_pass_batch {
             let mode = pass.as_mode();
-            let bump_map = batch
-                .bump_map
-                .as_ref()
-                .map(|bump_map| &bump_map.texture_path);
             let plane = batch.env_map.as_ref().map(|env_map| env_map.plane);
             let env_map_path = batch.env_map.as_ref().map(|env_map| &env_map.texture_path);
             let env_map_tint = batch.env_map.as_ref().map(|env_map| env_map.tint);
@@ -1381,16 +1111,6 @@ fn write_geometry(
                     let texture_matrix: Mat3x4 = local_to_texture * local_reflect * world_to_local;
 
                     byte_code::set_plane(texture_matrix)
-                        .write_big_endian_to(&mut *byte_code_file)?;
-                }
-            }
-
-            if prev_bump_map != bump_map {
-                prev_bump_map = bump_map;
-
-                if let Some(bump_map) = bump_map {
-                    let bump_map_texture_index = texture_ids[&(bump_map.clone(), None)];
-                    byte_code::set_bump_map_texture(bump_map_texture_index)
                         .write_big_endian_to(&mut *byte_code_file)?;
                 }
             }
@@ -1567,33 +1287,34 @@ fn write_lightmaps(
 
                 let angle_count = if patch.bump_light { 4 } else { 1 };
                 for style in 0..patch.style_count {
-                    for angle in 0..angle_count {
-                        // Higher indexed styles come first. Angles are in increasing index order.
-                        let patch_index =
-                            (angle_count * (patch.style_count - style - 1) + angle) as usize;
-                        let patch_base = data_offset as usize + patch_size * patch_index;
+                    // Only export the first angle, which is the omnidirectional lightmap sample.
+                    let angle = 0u8;
 
-                        // Traverse blocks in texture format order.
-                        for coarse_y in 0..blocks_high {
-                            for coarse_x in 0..blocks_wide {
-                                // Each block consists of individually packed AR and GB sub-blocks.
-                                transcode_lightmap_patch_to_gamecube_rgba8_sub_block(
-                                    bsp,
-                                    patch,
-                                    patch_base,
-                                    4 * coarse_x,
-                                    4 * coarse_y,
-                                    |[r, _g, _b]| Ok(data_file.write_all(&[255, r])?),
-                                )?;
-                                transcode_lightmap_patch_to_gamecube_rgba8_sub_block(
-                                    bsp,
-                                    patch,
-                                    patch_base,
-                                    4 * coarse_x,
-                                    4 * coarse_y,
-                                    |[_r, g, b]| Ok(data_file.write_all(&[g, b])?),
-                                )?;
-                            }
+                    // Higher indexed styles come first. Angles are in increasing index order.
+                    let patch_index =
+                        (angle_count * (patch.style_count - style - 1) + angle) as usize;
+                    let patch_base = data_offset as usize + patch_size * patch_index;
+
+                    // Traverse blocks in texture format order.
+                    for coarse_y in 0..blocks_high {
+                        for coarse_x in 0..blocks_wide {
+                            // Each block consists of individually packed AR and GB sub-blocks.
+                            transcode_lightmap_patch_to_gamecube_rgba8_sub_block(
+                                bsp,
+                                patch,
+                                patch_base,
+                                4 * coarse_x,
+                                4 * coarse_y,
+                                |[r, _g, _b]| Ok(data_file.write_all(&[255, r])?),
+                            )?;
+                            transcode_lightmap_patch_to_gamecube_rgba8_sub_block(
+                                bsp,
+                                patch,
+                                patch_base,
+                                4 * coarse_x,
+                                4 * coarse_y,
+                                |[_r, g, b]| Ok(data_file.write_all(&[g, b])?),
+                            )?;
                         }
                     }
                 }
@@ -1604,7 +1325,7 @@ fn write_lightmaps(
                 patch_table_file.write_u8(blocks_wide as u8)?;
                 patch_table_file.write_u8(blocks_high as u8)?;
                 patch_table_file.write_u8(patch.style_count)?;
-                patch_table_file.write_u8(patch.bump_light as u8)?;
+                patch_table_file.write_u8(0)?; // padding
                 patch_table_file.write_u16::<BigEndian>(0)?; // padding
                 patch_table_file.write_u32::<BigEndian>(data_start_offset)?;
                 patch_table_file.write_u32::<BigEndian>(data_end_offset)?;
@@ -1644,7 +1365,7 @@ fn transcode_lightmap_patch_to_gamecube_rgba8_sub_block(
             if src_x < patch.width as usize && src_y < patch.height as usize {
                 let src_offset =
                     patch_base + 4 * (patch.width as usize * src_y as usize + src_x as usize);
-                let rgb = bsp.lighting().at_offset(src_offset, 1)[0].to_rgb8();
+                let rgb = bsp.lighting().at_offset(src_offset, 1)[0].to_srgb8();
                 f(rgb)?;
             } else {
                 f([0; 3])?;

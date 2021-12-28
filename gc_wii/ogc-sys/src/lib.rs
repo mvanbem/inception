@@ -1,6 +1,7 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
+#![feature(panic_info_message)]
 #![no_std]
 
 extern crate alloc;
@@ -10,7 +11,6 @@ use core::ffi::c_void;
 use core::panic::PanicInfo;
 
 use alloc::format;
-use alloc::string::String;
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
@@ -62,12 +62,11 @@ fn panic(info: &PanicInfo) -> ! {
             libc::printf(b"Panic! (no location information)\n\0".as_ptr());
         }
 
-        if let Some(payload) = info.payload().downcast_ref::<&str>().copied() {
-            let buf = format!("{}\0", payload);
-            libc::printf(b"%s\n\0".as_ptr(), buf);
-        } else if let Some(payload) = info.payload().downcast_ref::<String>() {
-            let buf = format!("{}\0", payload);
-            libc::printf(b"%s\n\0".as_ptr(), buf);
+        if let Some(arguments) = info.message() {
+            let buf = format!("{}\0", arguments);
+            libc::printf(b"%s\n\0".as_ptr(), buf.as_ptr());
+        } else {
+            libc::printf(b"(no message)\n\0".as_ptr());
         }
 
         libc::printf(b"Press Start to exit to the loader.\0".as_ptr());

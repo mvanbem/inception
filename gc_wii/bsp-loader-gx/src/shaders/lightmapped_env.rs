@@ -16,13 +16,9 @@ pub static LIGHTMAPPED_ENV_SHADER: Shader = Shader {
         )
         // Sample the lightmap.
         .add_stage(
-            TevStage::color_only(
-                TevStageColor::just(TevColorIn::TexColor)
-                    // Arbitrary scale to get things in range.
-                    .with_scale(TevScale::K2),
-            )
-            .with_tex_coord(TevTexCoord::TexCoord0)
-            .with_tex_map(TevTexMap::TEXMAP0),
+            TevStage::color_only(TevStageColor::just(TevColorIn::TexColor))
+                .with_tex_coord(TevTexCoord::TexCoord0)
+                .with_tex_map(TevTexMap::TEXMAP0),
         )
         // Sample the base map, multiply it by the lightmap, and add the env map.
         .add_stage(
@@ -31,7 +27,9 @@ pub static LIGHTMAPPED_ENV_SHADER: Shader = Shader {
                     TevColorIn::Reg0Color,
                     TevColorIn::PrevColor,
                     TevColorIn::TexColor,
-                ),
+                )
+                // Arbitrary scale to get things in range.
+                .with_scale(TevScale::K2),
                 TevStageAlpha::just(TevAlphaIn::TexAlpha),
             )
             .with_tex_coord(TevTexCoord::TexCoord1)
@@ -66,11 +64,7 @@ pub static LIGHTMAPPED_ENV_SHADER: Shader = Shader {
             .with_normalize(true)
             .with_post_mtx_index(PostTransformTexMtxIndex::DTTMTX0),
         ),
-        Some(TexGen::new(
-            TexGenType::Mtx2x4,
-            TexGenSrc::Normal,
-            TexMtxIndex::TEXMTX1,
-        )),
+        None,
         None,
         None,
         None,

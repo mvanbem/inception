@@ -130,6 +130,7 @@ dependencies = [
  "recursive-iter",
  "source-reader",
  "texture-atlas",
+ "texture-format",
  "try-insert-ext",
  "zip",
 ]
@@ -760,6 +761,7 @@ dependencies = [
  "seq-macro",
  "source-reader",
  "texture-atlas",
+ "texture-format",
  "try-insert-ext",
 ]
 
@@ -1404,9 +1406,19 @@ dependencies = [
  "nom",
  "recursive-iter",
  "texture-atlas",
+ "texture-format",
  "try-insert-ext",
  "try_map",
  "zip",
+]
+
+[[package]]
+name = "stb_dxt"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08eaf94c5af05013781479cae9d65f32a7b01f28cf70113740bbc26840641b43"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -1444,6 +1456,14 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "png",
+]
+
+[[package]]
+name = "texture-format"
+version = "0.1.0"
+dependencies = [
+ "byteorder",
+ "stb_dxt",
 ]
 
 [[package]]

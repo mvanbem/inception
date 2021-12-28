@@ -2,26 +2,25 @@ use std::rc::Rc;
 
 use anyhow::Result;
 use byteorder::{LittleEndian, ReadBytesExt};
+use texture_format::{
+    AnyTextureBuf, Bgr8, Dxt1, Dxt5, DynTextureFormat, TextureBuf, TextureFormat, TextureFormatExt,
+};
 
 use crate::asset::{Asset, AssetLoader};
 use crate::vpk::path::VpkPath;
 
 pub struct Vtf {
     path: VpkPath,
-    width: u32,
-    height: u32,
+    width: usize,
+    height: usize,
     flags: u32,
     data: Option<ImageData>,
 }
 
 pub struct VtfFaceMip<'a> {
-    pub face: u8,
-    pub mip_level: u8,
-    pub logical_width: u32,
-    pub logical_height: u32,
-    pub physical_width: u32,
-    pub physical_height: u32,
-    pub data: &'a [u8],
+    pub face: usize,
+    pub mip_level: usize,
+    pub texture: &'a AnyTextureBuf,
 }
 
 impl Vtf {
@@ -40,11 +39,11 @@ impl Vtf {
         &self.path
     }
 
-    pub fn width(&self) -> u32 {
+    pub fn width(&self) -> usize {
         self.width
     }
 
-    pub fn height(&self) -> u32 {
+    pub fn height(&self) -> usize {
         self.height
     }
 
@@ -74,9 +73,9 @@ impl Asset for Vtf {
         assert_eq!(major_version, 7);
         let minor_version = r.read_u32::<LittleEndian>()?;
         let header_size = r.read_u32::<LittleEndian>()?;
-        let width = r.read_u16::<LittleEndian>()?;
-        let height = r.read_u16::<LittleEndian>()?;
-        let flags = r.read_i32::<LittleEndian>()?;
+        let width = r.read_u16::<LittleEndian>()? as usize;
+        let height = r.read_u16::<LittleEndian>()? as usize;
+        let flags = r.read_u32::<LittleEndian>()?;
         let _frames = r.read_u16::<LittleEndian>()?;
         let first_frame = r.read_u16::<LittleEndian>()?;
         r = &r[4..];
@@ -86,7 +85,7 @@ impl Asset for Vtf {
         r = &r[4..];
         let _bump_map_scale = f32::from_bits(r.read_u32::<LittleEndian>()?);
         let high_res_image_format = r.read_u32::<LittleEndian>()?;
-        let mipmap_count = r.read_u8()?;
+        let mipmap_count = r.read_u8()? as usize;
         let low_res_image_format = r.read_u32::<LittleEndian>()?;
         let low_res_image_width = r.read_u8()?;
         let low_res_image_height = r.read_u8()?;
@@ -116,174 +115,27 @@ impl Asset for Vtf {
                 let high_res_data = &data[high_res_offset..];
 
                 match high_res_image_format {
-                    3 => {
-                        // BGR888
-                        let mut data = high_res_data;
-                        let mut mips = Vec::new();
-                        for index in 0..mipmap_count {
-                            let mip_level = mipmap_count - 1 - index;
-                            let mut width = width as u32;
-                            let mut height = height as u32;
-                            for _ in 0..mip_level {
-                                width = (width / 2).max(1);
-                                height = (height / 2).max(1);
-                            }
-
-                            let mut layers = Vec::new();
-                            for _ in 0..layer_count {
-                                let pixel_count = width as usize * height as usize;
-                                let mut pixels = Vec::with_capacity(pixel_count * 3);
-                                for _ in 0..pixel_count {
-                                    let b = data.read_u8()?;
-                                    let g = data.read_u8()?;
-                                    let r = data.read_u8()?;
-                                    pixels.extend_from_slice(&[r, g, b]);
-                                }
-                                layers.push(pixels);
-                            }
-                            mips.push(layers);
-                        }
-                        mips.reverse();
-                        Some(ImageData {
-                            format: ImageFormat::Rgb8,
-                            layer_count,
-                            mips,
-                        })
-                    }
-                    13 => {
-                        // DXT1
-                        let mut data = high_res_data;
-                        let mut mips = Vec::new();
-                        for index in 0..mipmap_count {
-                            let mip_level = mipmap_count - 1 - index;
-                            let mut width = width as u32;
-                            let mut height = height as u32;
-                            for _ in 0..mip_level {
-                                width = (width / 2).max(4);
-                                height = (height / 2).max(4);
-                            }
-
-                            let mut layers = Vec::new();
-                            for _ in 0..layer_count {
-                                let size = width as usize * height as usize / 2;
-                                layers.push(data[..size].to_vec());
-                                data = &data[size..];
-                            }
-                            mips.push(layers);
-                        }
-                        mips.reverse();
-                        Some(ImageData {
-                            format: ImageFormat::Dxt1,
-                            layer_count,
-                            mips,
-                        })
-                    }
-                    15 => {
-                        // DXT5
-                        let mut data = high_res_data;
-                        let mut mips = Vec::new();
-                        for index in 0..mipmap_count {
-                            let mip_level = mipmap_count - 1 - index;
-                            let mut width = width as u32;
-                            let mut height = height as u32;
-                            for _ in 0..mip_level {
-                                width = (width / 2).max(4);
-                                height = (height / 2).max(4);
-                            }
-
-                            let mut layers = Vec::new();
-                            for _ in 0..layer_count {
-                                let size = width as usize * height as usize;
-                                let mut pixels =
-                                    Vec::with_capacity(width as usize * height as usize * 4);
-                                let coarse_width = width as usize / 4;
-                                for y in 0..height as usize {
-                                    for x in 0..width as usize {
-                                        let coarse_x = x / 4;
-                                        let coarse_y = y / 4;
-                                        let block_offset =
-                                            16 * (coarse_width * coarse_y + coarse_x);
-                                        let alpha_block = &data[block_offset..block_offset + 8];
-                                        let mut color_block =
-                                            &data[block_offset + 8..block_offset + 16];
-                                        let fine_x = x % 4;
-                                        let fine_y = y % 4;
-
-                                        let a0 = alpha_block[0];
-                                        let a1 = alpha_block[1];
-                                        let alphas = if a0 > a1 {
-                                            [
-                                                a0,
-                                                a1,
-                                                ((6 * a0 as u16 + 1 * a1 as u16) / 7) as u8,
-                                                ((5 * a0 as u16 + 2 * a1 as u16) / 7) as u8,
-                                                ((4 * a0 as u16 + 3 * a1 as u16) / 7) as u8,
-                                                ((3 * a0 as u16 + 4 * a1 as u16) / 7) as u8,
-                                                ((2 * a0 as u16 + 5 * a1 as u16) / 7) as u8,
-                                                ((1 * a0 as u16 + 6 * a1 as u16) / 7) as u8,
-                                            ]
-                                        } else {
-                                            [
-                                                a0,
-                                                a1,
-                                                ((4 * a0 as u16 + 1 * a1 as u16) / 5) as u8,
-                                                ((3 * a0 as u16 + 2 * a1 as u16) / 5) as u8,
-                                                ((2 * a0 as u16 + 3 * a1 as u16) / 5) as u8,
-                                                ((1 * a0 as u16 + 4 * a1 as u16) / 5) as u8,
-                                                0,
-                                                255,
-                                            ]
-                                        };
-                                        let alpha_bit = 3 * (4 * fine_y + fine_x);
-                                        let alpha_bits = alpha_block[2] as u64
-                                            | ((alpha_block[3] as u64) << 8)
-                                            | ((alpha_block[4] as u64) << 16)
-                                            | ((alpha_block[5] as u64) << 24)
-                                            | ((alpha_block[6] as u64) << 32)
-                                            | ((alpha_block[7] as u64) << 40);
-                                        let a = alphas[((alpha_bits >> alpha_bit) & 7) as usize];
-
-                                        let [r0, g0, b0] = decode_rgb565(
-                                            color_block.read_u16::<LittleEndian>().unwrap(),
-                                        );
-                                        let [r1, g1, b1] = decode_rgb565(
-                                            color_block.read_u16::<LittleEndian>().unwrap(),
-                                        );
-                                        let colors = [
-                                            [r0, g0, b0],
-                                            [r1, g1, b1],
-                                            [
-                                                ((2 * r0 as u16 + 1 * r1 as u16) / 3) as u8,
-                                                ((2 * g0 as u16 + 1 * g1 as u16) / 3) as u8,
-                                                ((2 * b0 as u16 + 1 * b1 as u16) / 3) as u8,
-                                            ],
-                                            [
-                                                ((1 * r0 as u16 + 2 * r1 as u16) / 3) as u8,
-                                                ((1 * g0 as u16 + 2 * g1 as u16) / 3) as u8,
-                                                ((1 * b0 as u16 + 2 * b1 as u16) / 3) as u8,
-                                            ],
-                                        ];
-                                        let color_bit = 2 * (4 * fine_y + fine_x);
-                                        let color_bits =
-                                            color_block.read_u32::<LittleEndian>().unwrap();
-                                        let [r, g, b] =
-                                            colors[((color_bits >> color_bit) & 3) as usize];
-
-                                        pixels.extend_from_slice(&[r, g, b, a]);
-                                    }
-                                }
-                                layers.push(pixels);
-                                data = &data[size..];
-                            }
-                            mips.push(layers);
-                        }
-                        mips.reverse();
-                        Some(ImageData {
-                            format: ImageFormat::Rgba8,
-                            layer_count,
-                            mips,
-                        })
-                    }
+                    3 => Some(build_image_data::<Bgr8>(
+                        high_res_data,
+                        mipmap_count,
+                        layer_count,
+                        width,
+                        height,
+                    )),
+                    13 => Some(build_image_data::<Dxt1>(
+                        high_res_data,
+                        mipmap_count,
+                        layer_count,
+                        width,
+                        height,
+                    )),
+                    15 => Some(build_image_data::<Dxt5>(
+                        high_res_data,
+                        mipmap_count,
+                        layer_count,
+                        width,
+                        height,
+                    )),
                     _ => {
                         println!("unexpected image format: {}", high_res_image_format);
                         None
@@ -295,59 +147,70 @@ impl Asset for Vtf {
 
         Ok(Rc::new(Vtf {
             path: path.to_owned(),
-            width: width as u32,
-            height: height as u32,
-            flags: flags as u32,
+            width,
+            height,
+            flags,
             data,
         }))
     }
 }
 
-fn decode_rgb565(encoded: u16) -> [u8; 3] {
-    let extend5 = |x| (x << 3) | (x >> 2);
-    let extend6 = |x| (x << 2) | (x >> 4);
-    [
-        extend5(((encoded >> 11) & 0x1f) as u8),
-        extend6(((encoded >> 5) & 0x3f) as u8),
-        extend5((encoded & 0x1f) as u8),
-    ]
+fn build_image_data<F: TextureFormat>(
+    mut data: &[u8],
+    mipmap_count: usize,
+    layer_count: usize,
+    width: usize,
+    height: usize,
+) -> ImageData
+where
+    TextureBuf<F>: Into<AnyTextureBuf>,
+{
+    let mut mips = Vec::new();
+    for index in 0..mipmap_count {
+        let mip_level = mipmap_count - 1 - index;
+        let mip_width = (width >> mip_level).max(1);
+        let mip_height = (height >> mip_level).max(1);
+        let size = F::encoded_size(mip_width, mip_height);
+
+        let mut layers = Vec::new();
+        for _ in 0..layer_count {
+            layers.push(TextureBuf::<F>::new(mip_width, mip_height, data[..size].to_vec()).into());
+            data = &data[size..];
+        }
+        mips.push(layers);
+    }
+    mips.reverse();
+    ImageData {
+        format: F::as_dyn(),
+        layer_count,
+        mips,
+    }
 }
 
 struct FaceMipIter<'a> {
     vtf: &'a Vtf,
     // Valid until the iterator has ended, then forever out of range.
-    face: u8,
+    face: usize,
     // Always valid.
-    mip_level: u8,
+    mip_level: usize,
 }
 
 impl<'a> Iterator for FaceMipIter<'a> {
     type Item = VtfFaceMip<'a>;
 
     fn next(&mut self) -> Option<VtfFaceMip<'a>> {
-        if let Some(data) = self.vtf.data.as_ref() {
-            if (self.face as usize) < data.layer_count {
+        if let Some(image_data) = self.vtf.data.as_ref() {
+            if (self.face as usize) < image_data.layer_count {
                 // Prepare the result.
-                let min_physical_size = match data.format {
-                    ImageFormat::Dxt1 => 4,
-                    ImageFormat::Rgb8 | ImageFormat::Rgba8 => 1,
-                };
-                let logical_width = (self.vtf.width >> self.mip_level).max(1);
-                let logical_height = (self.vtf.height >> self.mip_level).max(1);
-                let physical_width = logical_width.max(min_physical_size);
-                let physical_height = logical_height.max(min_physical_size);
+                let data = &image_data.mips[self.mip_level as usize][self.face as usize];
                 let result = VtfFaceMip {
                     face: self.face,
                     mip_level: self.mip_level,
-                    logical_width,
-                    logical_height,
-                    physical_width,
-                    physical_height,
-                    data: &data.mips[self.mip_level as usize][self.face as usize],
+                    texture: &data,
                 };
 
                 // Advance the counters.
-                if ((self.mip_level + 1) as usize) < data.mips.len() {
+                if ((self.mip_level + 1) as usize) < image_data.mips.len() {
                     self.mip_level += 1;
                 } else {
                     self.mip_level = 0;
@@ -362,15 +225,8 @@ impl<'a> Iterator for FaceMipIter<'a> {
 }
 
 pub struct ImageData {
-    pub format: ImageFormat,
+    pub format: &'static dyn DynTextureFormat,
     pub layer_count: usize,
-    /// `mips[mip_level][layer_index][byte]`
-    pub mips: Vec<Vec<Vec<u8>>>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ImageFormat {
-    Dxt1,
-    Rgb8,
-    Rgba8,
+    /// `mips[mip_level][layer_index]`
+    pub mips: Vec<Vec<AnyTextureBuf>>,
 }

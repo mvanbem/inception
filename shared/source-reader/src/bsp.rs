@@ -508,8 +508,43 @@ pub struct ColorRgbExp32 {
 unsafe impl FullyOccupied for ColorRgbExp32 {}
 
 impl ColorRgbExp32 {
+    const SCALE: f32 = 0.5;
+
+    fn linear_to_srgb(l: f32) -> f32 {
+        if l <= 0.0031308 {
+            l * 12.92
+        } else {
+            1.055 * l.powf(1.0 / 2.4) - 0.055
+        }
+    }
+
     pub fn to_rgb8(&self) -> [u8; 3] {
-        let map = |x| (x as f32 * (self.exponent as f32).exp2()).clamp(0.0, 255.0) as u8;
+        let map = |x| {
+            ((x as f32 * (self.exponent as f32).exp2() * Self::SCALE).clamp(0.0, 255.0) + 0.5) as u8
+        };
+        [map(self.r), map(self.g), map(self.b)]
+    }
+
+    pub fn to_scaled_linear(&self) -> [u8; 3] {
+        // NOTE: This multiplier was observed in the PC fragment shaders. Cut it in half so there's
+        // room to clamp on the upper end after multiplying by the base texture.
+        const MULTIPLIER: f32 = 4.59479 * 0.5;
+
+        let map = |x| {
+            ((x as f32 * (self.exponent as f32).exp2() * Self::SCALE * MULTIPLIER)
+                .clamp(0.0, 255.0)
+                + 0.5) as u8
+        };
+        [map(self.r), map(self.g), map(self.b)]
+    }
+
+    pub fn to_srgb8(&self) -> [u8; 3] {
+        let map = |x| {
+            let linear =
+                (x as f32 * (self.exponent as f32).exp2() / 255.0 * Self::SCALE).clamp(0.0, 1.0);
+            let srgb = Self::linear_to_srgb(linear);
+            (srgb * 255.0 + 0.5) as u8
+        };
         [map(self.r), map(self.g), map(self.b)]
     }
 }
