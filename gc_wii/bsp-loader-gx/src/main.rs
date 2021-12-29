@@ -112,7 +112,7 @@ fn get_widescreen_setting() -> bool {
 
 #[cfg(not(feature = "wii"))]
 fn get_widescreen_setting() -> bool {
-    false
+    true // Probably a bad default, but that's what my test setup wants.
 }
 
 fn _load_texture_tpl(data: &[u8]) -> GXTexObj {
@@ -172,7 +172,7 @@ mod memalign {
     use core::slice::{from_raw_parts, from_raw_parts_mut};
 
     use libc::c_void;
-    use ogc_sys::DCInvalidateRange;
+    use ogc_sys::DCFlushRange;
 
     pub struct Memalign<const ALIGN: usize> {
         ptr: *mut c_void,
@@ -206,8 +206,10 @@ mod memalign {
             unsafe { from_raw_parts_mut(self.ptr as *mut u8, self.size) }
         }
 
-        pub unsafe fn dc_invalidate(&self) {
-            unsafe { DCInvalidateRange(self.ptr, self.size as u32) };
+        pub unsafe fn dc_flush(&self) {
+            unsafe {
+                DCFlushRange(self.ptr, self.size as u32);
+            }
         }
     }
 
@@ -242,7 +244,7 @@ impl Lightmap {
         let image_data =
             Memalign::<32>::new(4 * physical_width as usize * physical_height as usize);
         unsafe { libc::memset(image_data.as_void_ptr_mut(), 0, image_data.size()) };
-        unsafe { image_data.dc_invalidate() };
+        unsafe { image_data.dc_flush() };
 
         let mut texobj = unsafe { zeroed::<GXTexObj>() };
         unsafe {
@@ -294,7 +296,10 @@ impl Lightmap {
                 dst.copy_from_slice(src);
             }
         }
-        unsafe { self.image_data.dc_invalidate() }
+        unsafe {
+            self.image_data.dc_flush();
+            GX_InvalidateTexAll();
+        }
     }
 }
 
