@@ -8,6 +8,7 @@ extern crate alloc;
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::ffi::c_void;
+use core::intrinsics::copy_nonoverlapping;
 use core::panic::PanicInfo;
 
 use alloc::format;
@@ -26,7 +27,7 @@ struct LibogcAllocator;
 
 unsafe impl GlobalAlloc for LibogcAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        libc::malloc(layout.size()) as *mut u8
+        libc::memalign(layout.align(), layout.size()) as *mut u8
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
@@ -34,13 +35,16 @@ unsafe impl GlobalAlloc for LibogcAllocator {
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        let ptr = libc::malloc(layout.size());
+        let ptr = libc::memalign(layout.align(), layout.size());
         libc::memset(ptr, 0, layout.size());
         ptr as *mut u8
     }
 
-    unsafe fn realloc(&self, ptr: *mut u8, _layout: Layout, new_size: usize) -> *mut u8 {
-        libc::realloc(ptr as *mut c_void, new_size) as *mut u8
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let new_ptr = self.alloc(Layout::from_size_align(new_size, layout.align()).unwrap());
+        copy_nonoverlapping::<u8>(ptr, new_ptr, layout.size());
+        self.dealloc(ptr, layout);
+        new_ptr
     }
 }
 
