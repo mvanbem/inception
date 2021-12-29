@@ -1,8 +1,13 @@
 use core::marker::PhantomData;
+use core::ptr;
 
 use alloc::vec::Vec;
 
-use crate::{AnyTexture, AnyTextureSlice, Texture, TextureFormat, TextureFormatExt, TextureSlice};
+use crate::format::gx_tf_cmpr::permute_dxt1_for_gamecube;
+use crate::{
+    AnyTexture, AnyTextureSlice, Dxt1, Dxt5, GxTfCmpr, Texture, TextureFormat, TextureFormatExt,
+    TextureSlice,
+};
 
 pub struct TextureBuf<F> {
     pub(crate) logical_width: usize,
@@ -81,6 +86,28 @@ impl<F: TextureFormat> TextureBuf<F> {
     }
 
     pub fn encode<T: Texture<G>, G: TextureFormat>(src: T) -> Self {
+        if let Some(src_data) = src.data() {
+            if ptr::eq(F::as_dyn(), G::as_dyn()) {
+                // Same format. No transcoding needed.
+                return Self {
+                    logical_width: src.width(),
+                    logical_height: src.height(),
+                    physical_width: F::physical_width(src.width()),
+                    physical_height: F::physical_height(src.height()),
+                    data: src_data.to_vec(),
+                    _phantom_format: PhantomData,
+                };
+            } else if ptr::eq(G::as_dyn(), Dxt1::as_dyn())
+                && ptr::eq(F::as_dyn(), GxTfCmpr::as_dyn())
+            {
+                return encode_dxt1_to_gx_tf_cmpr(src.width(), src.height(), src_data);
+            } else if ptr::eq(G::as_dyn(), Dxt5::as_dyn())
+                && ptr::eq(F::as_dyn(), GxTfCmpr::as_dyn())
+            {
+                return encode_dxt5_to_gx_tf_cmpr(src.width(), src.height(), src_data);
+            }
+        }
+
         let mut data = Vec::new();
 
         let logical_width = src.width();
@@ -123,6 +150,76 @@ impl<F: TextureFormat> TextureBuf<F> {
             data,
             _phantom_format: PhantomData,
         }
+    }
+}
+
+fn encode_dxt1_to_gx_tf_cmpr<F: TextureFormat>(
+    width: usize,
+    height: usize,
+    src_data: &[u8],
+) -> TextureBuf<F> {
+    assert!(ptr::eq(F::as_dyn(), GxTfCmpr::as_dyn()));
+    let physical_width = GxTfCmpr::physical_width(width);
+    let physical_height = GxTfCmpr::physical_height(height);
+
+    let blocks_wide = width / 8;
+    let blocks_high = height / 8;
+    let mut data = Vec::with_capacity(GxTfCmpr::ENCODED_BLOCK_SIZE * blocks_wide * blocks_high);
+    for coarse_y in 0..blocks_high {
+        for coarse_x in 0..blocks_wide {
+            for fine_y in 0..2 {
+                for fine_x in 0..2 {
+                    let offset =
+                        8 * (2 * blocks_wide * (2 * coarse_y + fine_y) + 2 * coarse_x + fine_x);
+                    data.extend_from_slice(&permute_dxt1_for_gamecube(
+                        src_data[offset..offset + 8].try_into().unwrap(),
+                    ));
+                }
+            }
+        }
+    }
+    TextureBuf {
+        logical_width: width,
+        logical_height: height,
+        physical_width,
+        physical_height,
+        data,
+        _phantom_format: PhantomData,
+    }
+}
+
+fn encode_dxt5_to_gx_tf_cmpr<F: TextureFormat>(
+    width: usize,
+    height: usize,
+    src_data: &[u8],
+) -> TextureBuf<F> {
+    assert!(ptr::eq(F::as_dyn(), GxTfCmpr::as_dyn()));
+    let physical_width = GxTfCmpr::physical_width(width);
+    let physical_height = GxTfCmpr::physical_height(height);
+
+    let blocks_wide = width / 8;
+    let blocks_high = height / 8;
+    let mut data = Vec::with_capacity(GxTfCmpr::ENCODED_BLOCK_SIZE * blocks_wide * blocks_high);
+    for coarse_y in 0..blocks_high {
+        for coarse_x in 0..blocks_wide {
+            for fine_y in 0..2 {
+                for fine_x in 0..2 {
+                    let offset =
+                        16 * (2 * blocks_wide * (2 * coarse_y + fine_y) + 2 * coarse_x + fine_x);
+                    data.extend_from_slice(&permute_dxt1_for_gamecube(
+                        src_data[offset + 8..offset + 16].try_into().unwrap(),
+                    ));
+                }
+            }
+        }
+    }
+    TextureBuf {
+        logical_width: width,
+        logical_height: height,
+        physical_width,
+        physical_height,
+        data,
+        _phantom_format: PhantomData,
     }
 }
 
@@ -178,6 +275,10 @@ impl<F: TextureFormat> Texture<F> for TextureBuf<F> {
             _phantom_format: PhantomData,
         }
     }
+
+    fn data(&self) -> Option<&[u8]> {
+        Some(&self.data)
+    }
 }
 
 impl<F: TextureFormat> Texture<F> for &TextureBuf<F> {
@@ -206,6 +307,10 @@ impl<F: TextureFormat> Texture<F> for &TextureBuf<F> {
             y1: self.logical_height,
             _phantom_format: PhantomData,
         }
+    }
+
+    fn data(&self) -> Option<&[u8]> {
+        Some(&self.data)
     }
 }
 

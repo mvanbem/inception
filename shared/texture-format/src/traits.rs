@@ -15,6 +15,7 @@ pub trait Texture<F> {
     fn height(&self) -> usize;
     fn get_texel(&self, x: usize, y: usize) -> [u8; 4];
     fn as_slice(&self) -> TextureSlice<F>;
+    fn data(&self) -> Option<&[u8]>;
 }
 
 pub trait TextureFormat {

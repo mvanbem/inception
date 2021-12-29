@@ -105,4 +105,16 @@ impl<'a, F: TextureFormat> Texture<F> for TextureSlice<'a, F> {
     fn as_slice(&self) -> TextureSlice<F> {
         *self
     }
+
+    fn data(&self) -> Option<&[u8]> {
+        if self.x0 == 0
+            && self.y0 == 0
+            && self.x1 == self.logical_width
+            && self.y1 == self.logical_height
+        {
+            Some(&self.data)
+        } else {
+            None
+        }
+    }
 }

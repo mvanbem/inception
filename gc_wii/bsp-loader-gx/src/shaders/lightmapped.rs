@@ -15,7 +15,7 @@ pub static LIGHTMAPPED_SHADER: Shader = Shader {
                 TevStageColor::mul(TevColorIn::PrevColor, TevColorIn::TexColor)
                     // Arbitrary scale to get things in range.
                     .with_scale(TevScale::K2),
-                TevStageAlpha::just(TevAlphaIn::Konst),
+                TevStageAlpha::just(TevAlphaIn::TexAlpha),
             )
             .with_tex_coord(TevTexCoord::TexCoord1)
             .with_tex_map(TevTexMap::TEXMAP1),

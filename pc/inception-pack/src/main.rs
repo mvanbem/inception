@@ -638,13 +638,13 @@ fn write_textures(
                             && face_mip.texture.height() <= max_height
                         {
                             match &image_data.mips[0][0] {
-                                AnyTextureBuf::Dxt1(_) | AnyTextureBuf::Dxt5(_) => {
+                                AnyTextureBuf::Dxt1(_) => {
                                     total_size += GxTfCmpr::encoded_size(
                                         face_mip.texture.width(),
                                         face_mip.texture.height(),
                                     );
                                 }
-                                AnyTextureBuf::Bgr8(_) => {
+                                AnyTextureBuf::Bgr8(_) | AnyTextureBuf::Dxt5(_) => {
                                     total_size += GxTfRgba8::encoded_size(
                                         face_mip.texture.width(),
                                         face_mip.texture.height(),
@@ -717,14 +717,10 @@ fn write_textures(
                                         TextureBuf::<GxTfCmpr>::encode(texture).data(),
                                     )?;
                                 }
-                                AnyTextureBuf::Dxt5(texture) => {
+                                AnyTextureBuf::Dxt5(_) | AnyTextureBuf::Bgr8(_) => {
                                     texture_data.write_all(
-                                        TextureBuf::<GxTfCmpr>::encode(texture).data(),
-                                    )?;
-                                }
-                                AnyTextureBuf::Bgr8(texture) => {
-                                    texture_data.write_all(
-                                        TextureBuf::<GxTfRgba8>::encode(texture).data(),
+                                        TextureBuf::<GxTfRgba8>::encode_any(face_mip.texture)
+                                            .data(),
                                     )?;
                                 }
                                 _ => unreachable!(),
@@ -766,8 +762,8 @@ fn write_textures(
                         },
                     )?;
                     texture_table.write_u8(match &image_data.mips[0][0] {
-                        AnyTextureBuf::Dxt1(_) | AnyTextureBuf::Dxt5(_) => 0xe, // GX_TF_CMPR
-                        AnyTextureBuf::Bgr8(_) => 0x6,                          // GX_TF_RGBA8
+                        AnyTextureBuf::Dxt1(_) => 0xe,                          // GX_TF_CMPR
+                        AnyTextureBuf::Bgr8(_) | AnyTextureBuf::Dxt5(_) => 0x6, // GX_TF_RGBA8
                         _ => unreachable!(),
                     })?;
                     texture_table.write_u8(0)?;

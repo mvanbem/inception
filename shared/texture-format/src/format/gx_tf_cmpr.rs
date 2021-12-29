@@ -3,7 +3,7 @@ use byteorder::{BigEndian, LittleEndian, ReadBytesExt, WriteBytesExt};
 
 use crate::{Dxt1, DynTextureFormat, TextureFormat};
 
-fn permute_dxt1_for_gamecube(block: [u8; 8]) -> [u8; 8] {
+pub(crate) fn permute_dxt1_for_gamecube(block: [u8; 8]) -> [u8; 8] {
     // NOTE: This function is written as a little endian to big endian conversion, but the
     // resulting transform is its own inverse.
 
