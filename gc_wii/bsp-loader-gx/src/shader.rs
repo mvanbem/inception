@@ -225,12 +225,12 @@ impl TevStage {
         }
     }
 
-    pub const fn with_tex_coord(self, tex_coord: TevTexCoord) -> Self {
-        Self { tex_coord, ..self }
-    }
-
-    pub const fn with_tex_map(self, tex_map: TevTexMap) -> Self {
-        Self { tex_map, ..self }
+    pub const fn with_tex(self, tex_coord: TevTexCoord, tex_map: TevTexMap) -> Self {
+        Self {
+            tex_coord,
+            tex_map,
+            ..self
+        }
     }
 
     pub const fn with_channel(self, channel: TevChannel) -> Self {

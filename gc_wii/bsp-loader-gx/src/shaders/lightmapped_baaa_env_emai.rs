@@ -7,15 +7,8 @@ pub static LIGHTMAPPED_BAAA_ENV_EMAI_SHADER: Shader = Shader {
     tev_stages: tev_builder()
         // Sample the env map.
         .add_stage(
-            TevStage::color_only(
-                TevStageColor::mul(TevColorIn::TexColor, TevColorIn::Konst)
-                    // Cancel out the upcoming scale, which is only for the lightmap.
-                    .with_scale(TevScale::K1_2)
-                    // Env map tint is expected in K0.
-                    .with_konst_sel(Some(TevColorKonst::K0Rgb)),
-            )
-            .with_tex_coord(TevTexCoord::TexCoord2)
-            .with_tex_map(TevTexMap::TEXMAP2),
+            TevStage::color_only(TevStageColor::just(TevColorIn::TexColor))
+                .with_tex(TevTexCoord::TexCoord2, TevTexMap::TEXMAP2),
         )
         // Sample the aux map for alpha and to mask the env map.
         .add_stage(
@@ -24,33 +17,36 @@ pub static LIGHTMAPPED_BAAA_ENV_EMAI_SHADER: Shader = Shader {
                     .with_dst(TevReg::Reg0),
                 TevStageAlpha::just(TevAlphaIn::TexAlpha),
             )
-            .with_tex_coord(TevTexCoord::TexCoord1)
-            .with_tex_map(TevTexMap::TEXMAP3),
+            .with_tex(TevTexCoord::TexCoord1, TevTexMap::TEXMAP3),
         )
+        // Square the env map value for `$envmapcontrast 1`.
+        .add_stage(TevStage::color_only(
+            TevStageColor::mul(TevColorIn::Reg0Color, TevColorIn::Reg0Color).with_dst(TevReg::Reg0),
+        ))
         // Sample the lightmap.
         .add_stage(
-            TevStage::new(
-                TevStageColor::just(TevColorIn::TexColor),
-                TevStageAlpha::just(TevAlphaIn::PrevAlpha),
-            )
-            .with_tex_coord(TevTexCoord::TexCoord0)
-            .with_tex_map(TevTexMap::TEXMAP0),
+            TevStage::color_only(TevStageColor::just(TevColorIn::TexColor))
+                .with_tex(TevTexCoord::TexCoord0, TevTexMap::TEXMAP0),
         )
-        // Sample the base map, multiply it by the lightmap, and add the env map.
+        // Sample the base map and multiply it by the lightmap.
         .add_stage(
-            TevStage::new(
-                TevStageColor::add_mul(
-                    TevColorIn::Reg0Color,
-                    TevColorIn::PrevColor,
-                    TevColorIn::TexColor,
-                )
-                // Arbitrary scale to get things in range.
-                .with_scale(TevScale::K2),
-                TevStageAlpha::just(TevAlphaIn::PrevAlpha),
+            TevStage::color_only(
+                TevStageColor::mul(TevColorIn::PrevColor, TevColorIn::TexColor)
+                    // Scale to allow the lightmap to over-brighten to some degree.
+                    .with_scale(TevScale::K2),
             )
-            .with_tex_coord(TevTexCoord::TexCoord1)
-            .with_tex_map(TevTexMap::TEXMAP1),
+            .with_tex(TevTexCoord::TexCoord1, TevTexMap::TEXMAP1),
         )
+        // Add the env map scaled by the env map tint.
+        .add_stage(TevStage::color_only(
+            TevStageColor::add_mul(
+                TevColorIn::PrevColor,
+                TevColorIn::Reg0Color,
+                TevColorIn::Konst,
+            )
+            // Env map tint is expected in K0.
+            .with_konst_sel(Some(TevColorKonst::K0Rgb)),
+        ))
         .build(),
     ind_tex_stages: [None; 4],
     num_chans: 0,

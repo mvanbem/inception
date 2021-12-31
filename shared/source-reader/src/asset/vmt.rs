@@ -248,6 +248,10 @@ impl<'a> ShaderBuilder<'a> for LightmappedGenericBuilder {
     }
 
     fn build(self: Box<Self>, _loader: &AssetLoader) -> Result<Shader> {
+        if self.env_map_path.is_some() && self.env_map_contrast != Some(1.0) {
+            bail!("unsupported $envmapcontrast: {:?}", self.env_map_contrast);
+        }
+
         Ok(Shader::LightmappedGeneric(LightmappedGeneric {
             alpha_test: self.alpha_test,
             alpha_test_reference: self.alpha_test_reference,

@@ -926,7 +926,6 @@ fn write_textures(
                     let max_height = texture.height() / dimension_divisor;
 
                     let start_offset = texture_data.stream_position()? as u32;
-                    println!("* Encoding texture {}", texture_path);
                     let mut mips_written = 0;
                     for face_mip in texture.iter_face_mips() {
                         assert_eq!(face_mip.face, 0);

@@ -7,19 +7,17 @@ pub static LIGHTMAPPED_BAAA_SHADER: Shader = Shader {
         // Sample the lightmap.
         .add_stage(
             TevStage::color_only(TevStageColor::just(TevColorIn::TexColor))
-                .with_tex_coord(TevTexCoord::TexCoord0)
-                .with_tex_map(TevTexMap::TEXMAP0),
+                .with_tex(TevTexCoord::TexCoord0, TevTexMap::TEXMAP0),
         )
         // Sample the base map and multiply it by the lightmap.
         .add_stage(
             TevStage::new(
                 TevStageColor::mul(TevColorIn::PrevColor, TevColorIn::TexColor)
-                    // Arbitrary scale to get things in range.
+                    // Scale to allow the lightmap to over-brighten to some degree.
                     .with_scale(TevScale::K2),
                 TevStageAlpha::just(TevAlphaIn::TexAlpha),
             )
-            .with_tex_coord(TevTexCoord::TexCoord1)
-            .with_tex_map(TevTexMap::TEXMAP1),
+            .with_tex(TevTexCoord::TexCoord1, TevTexMap::TEXMAP1),
         )
         // Sample the aux map for alpha.
         .add_stage(
@@ -27,8 +25,7 @@ pub static LIGHTMAPPED_BAAA_SHADER: Shader = Shader {
                 TevStageColor::just(TevColorIn::PrevColor),
                 TevStageAlpha::just(TevAlphaIn::TexAlpha),
             )
-            .with_tex_coord(TevTexCoord::TexCoord1)
-            .with_tex_map(TevTexMap::TEXMAP3),
+            .with_tex(TevTexCoord::TexCoord1, TevTexMap::TEXMAP3),
         )
         .build(),
     ind_tex_stages: [None, None, None, None],

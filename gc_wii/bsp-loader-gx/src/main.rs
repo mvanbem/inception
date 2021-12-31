@@ -763,7 +763,7 @@ fn do_main_draw(
                         );
                     }
                     ByteCodeEntry::SetEnvMapTint { r, g, b } => {
-                        GX_SetTevKColor(GX_TEVSTAGE0 as u8, GXColor { r, g, b, a: 255 });
+                        GX_SetTevKColor(GX_KCOLOR0 as u8, GXColor { r, g, b, a: 255 });
                     }
                     ByteCodeEntry::SetAlpha { test_threshold, .. } => {
                         if let Some(threshold) = test_threshold {
@@ -792,24 +792,12 @@ fn do_main_draw(
 
         for pass in 0..16 {
             match pass & 0x7 {
-                0 => {
-                    LIGHTMAPPED_SHADER.apply();
-                }
-                1 | 2 => {
-                    LIGHTMAPPED_ENV_SHADER.apply();
-                }
-                3 => {
-                    LIGHTMAPPED_ENV_EMAI_SHADER.apply();
-                }
-                4 => {
-                    LIGHTMAPPED_BAAA_SHADER.apply();
-                }
-                5 | 6 => {
-                    LIGHTMAPPED_BAAA_ENV_SHADER.apply();
-                }
-                7 => {
-                    LIGHTMAPPED_BAAA_ENV_EMAI_SHADER.apply();
-                }
+                0 => LIGHTMAPPED_SHADER.apply(),
+                1 | 2 => LIGHTMAPPED_ENV_SHADER.apply(),
+                3 => LIGHTMAPPED_ENV_EMAI_SHADER.apply(),
+                4 => LIGHTMAPPED_BAAA_SHADER.apply(),
+                5 | 6 => LIGHTMAPPED_BAAA_ENV_SHADER.apply(),
+                7 => LIGHTMAPPED_BAAA_ENV_EMAI_SHADER.apply(),
                 _ => unreachable!(),
             }
             match pass & 8 {
