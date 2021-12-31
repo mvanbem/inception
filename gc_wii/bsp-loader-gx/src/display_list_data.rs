@@ -20,16 +20,16 @@ static DISPLAY_LISTS_DATA: &[u8] = include_bytes_align!(32, "../../../build/disp
 
 #[repr(C)]
 pub struct ClusterGeometry {
-    byte_code_start_index: usize,
-    byte_code_end_index: usize,
+    byte_code_index_ranges: [[usize; 2]; 16],
 }
 
 unsafe impl FullyOccupied for ClusterGeometry {}
 
 impl ClusterGeometry {
-    pub fn iter_display_lists(&self) -> impl Iterator<Item = ByteCodeEntry> {
+    pub fn iter_display_lists(&self, pass: usize) -> impl Iterator<Item = ByteCodeEntry> {
         ByteCodeReader(
-            &cluster_geometry_byte_code()[self.byte_code_start_index..self.byte_code_end_index],
+            &cluster_geometry_byte_code()
+                [self.byte_code_index_ranges[pass][0]..self.byte_code_index_ranges[pass][1]],
         )
     }
 }
@@ -56,8 +56,8 @@ pub enum ByteCodeEntry<'a> {
         test_threshold: Option<u8>,
         blend: bool,
     },
-    SetMode {
-        mode: u8,
+    SetAuxTexture {
+        aux_texture_index: u16,
     },
 }
 
@@ -111,10 +111,10 @@ impl<'a> Iterator for ByteCodeReader<'a> {
                     blend,
                 })
             }
-            0xff => {
-                let mode = self.0[0] as u8;
+            0x06 => {
+                let aux_texture_index = self.0[0] as u16;
                 self.0 = &self.0[1..];
-                Some(ByteCodeEntry::SetMode { mode })
+                Some(ByteCodeEntry::SetAuxTexture { aux_texture_index })
             }
             _ => panic!("unexpected geometry op: 0x{:02x}", op),
         }

@@ -21,6 +21,9 @@ use crate::memalign::Memalign;
 use crate::shaders::flat_textured::FLAT_TEXTURED_SHADER;
 use crate::shaders::flat_vertex_color::FLAT_VERTEX_COLOR_SHADER;
 use crate::shaders::lightmapped::LIGHTMAPPED_SHADER;
+use crate::shaders::lightmapped_baaa::LIGHTMAPPED_BAAA_SHADER;
+use crate::shaders::lightmapped_baaa_env::LIGHTMAPPED_BAAA_ENV_SHADER;
+use crate::shaders::lightmapped_baaa_env_emai::LIGHTMAPPED_BAAA_ENV_EMAI_SHADER;
 use crate::shaders::lightmapped_env::LIGHTMAPPED_ENV_SHADER;
 use crate::visibility::{ClusterIndex, Visibility};
 
@@ -707,7 +710,7 @@ fn do_main_draw(
         let view_leaf = traverse_bsp(pos);
         let view_cluster = (*view_leaf).cluster;
 
-        let draw_cluster = move |cluster| {
+        let draw_cluster = move |cluster, pass| {
             match cluster_lightmaps.get(cluster as usize) {
                 Some(lightmap) => {
                     GX_LoadTexObj(
@@ -717,18 +720,9 @@ fn do_main_draw(
                 }
                 None => return,
             }
-            GX_SetTevKColor(
-                GX_TEVSTAGE0 as u8,
-                GXColor {
-                    r: 0,
-                    g: 0,
-                    b: 0,
-                    a: 255,
-                },
-            );
 
             let cluster_geometry = get_cluster_geometry(cluster);
-            for entry in cluster_geometry.iter_display_lists() {
+            for entry in cluster_geometry.iter_display_lists(pass) {
                 match entry {
                     ByteCodeEntry::Draw { display_list } => {
                         GX_CallDispList(
@@ -749,6 +743,13 @@ fn do_main_draw(
                             &map_texobjs[base_texture_index as usize] as *const GXTexObj
                                 as *mut GXTexObj,
                             GX_TEXMAP1 as u8,
+                        );
+                    }
+                    ByteCodeEntry::SetAuxTexture { aux_texture_index } => {
+                        GX_LoadTexObj(
+                            &map_texobjs[aux_texture_index as usize] as *const GXTexObj
+                                as *mut GXTexObj,
+                            GX_TEXMAP3 as u8,
                         );
                     }
                     ByteCodeEntry::SetEnvMapTexture {
@@ -799,33 +800,47 @@ fn do_main_draw(
                             GX_SetZMode(GX_TRUE as u8, GX_LEQUAL as u8, GX_TRUE as u8);
                         }
                     }
-                    ByteCodeEntry::SetMode { mode } => match mode {
-                        0 => {
-                            LIGHTMAPPED_SHADER.apply();
-                        }
-                        1 => {
-                            LIGHTMAPPED_ENV_SHADER.apply();
-                        }
-                        _ => panic!("unexpected render mode: 0x{:02x}", mode),
-                    },
                 }
             }
         };
 
-        if view_cluster != -1 {
-            for cluster in visibility
-                .get_cluster(ClusterIndex(view_cluster as usize))
-                .iter_visible_clusters()
-                .map(|cluster| cluster.0 as u16)
-            {
-                draw_cluster(cluster);
+        for pass in 0..16 {
+            match pass {
+                0 | 8 => {
+                    LIGHTMAPPED_SHADER.apply();
+                }
+                4 | 12 => {
+                    LIGHTMAPPED_BAAA_SHADER.apply();
+                }
+                1 | 2 | 3 | 9 | 10 | 11 => {
+                    LIGHTMAPPED_ENV_SHADER.apply();
+                }
+                5 | 6 | 7 | 13 | 14 => {
+                    LIGHTMAPPED_BAAA_ENV_SHADER.apply();
+                }
+                15 => {
+                    LIGHTMAPPED_BAAA_ENV_EMAI_SHADER.apply();
+                }
+                _ => unreachable!(),
             }
-        } else {
-            for cluster in 0..visibility.num_clusters() as u16 {
-                draw_cluster(cluster);
+
+            if view_cluster != -1 {
+                for cluster in visibility
+                    .get_cluster(ClusterIndex(view_cluster as usize))
+                    .iter_visible_clusters()
+                    .map(|cluster| cluster.0 as u16)
+                {
+                    draw_cluster(cluster, pass);
+                }
+            } else {
+                for cluster in 0..visibility.num_clusters() as u16 {
+                    draw_cluster(cluster, pass);
+                }
             }
         }
 
+        GX_SetBlendMode(GX_BM_NONE as u8, 0, 0, 0);
+        GX_SetZMode(GX_TRUE as u8, GX_LEQUAL as u8, GX_TRUE as u8);
         GX_SetZCompLoc(GX_TRUE as u8);
         GX_SetAlphaCompare(GX_ALWAYS as u8, 0, GX_AOP_OR as u8, GX_ALWAYS as u8, 0);
         GX_DrawDone();

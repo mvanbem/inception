@@ -1,5 +1,8 @@
 use std::cmp::Ordering;
-use std::fmt::{self, Display, Formatter};
+use std::fmt::{self, Debug, Display, Formatter};
+
+#[cfg(feature = "quickcheck")]
+use quickcheck::Arbitrary;
 
 use crate::file::canonical_path::{display_canonical, CanonicalPath, CanonicalPathBuf};
 
@@ -57,6 +60,36 @@ impl VpkPath {
 
     pub fn extension(&self) -> &CanonicalPath {
         &self.path[self.last_period_index + 1..]
+    }
+}
+
+#[cfg(feature = "quickcheck")]
+impl Arbitrary for VpkPath {
+    fn arbitrary(g: &mut quickcheck::Gen) -> Self {
+        fn append_four_letters(g: &mut quickcheck::Gen, s: &mut String) {
+            for _ in 0..4 {
+                s.push((b'a' + u8::arbitrary(g) % 26) as char);
+            }
+        }
+
+        let mut name = String::new();
+        append_four_letters(g, &mut name);
+        name.push('/');
+        append_four_letters(g, &mut name);
+
+        let mut prefix = String::new();
+        append_four_letters(g, &mut prefix);
+
+        let mut extension = String::new();
+        append_four_letters(g, &mut extension);
+
+        Self::new_with_prefix_and_extension(&name, &prefix, &extension)
+    }
+}
+
+impl Debug for VpkPath {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "{:?}", self.path)
     }
 }
 

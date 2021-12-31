@@ -1,4 +1,6 @@
-use crate::{DynTextureFormat, TextureFormat};
+use crate::codec::Codec;
+use crate::texture_format::BlockMetrics;
+use crate::TextureFormat;
 
 #[derive(Debug)]
 pub struct Rgb8;
@@ -13,10 +15,13 @@ impl Rgb8 {
     }
 }
 
-impl TextureFormat for Rgb8 {
-    const BLOCK_WIDTH: usize = 1;
-    const BLOCK_HEIGHT: usize = 1;
-    const ENCODED_BLOCK_SIZE: usize = 3;
+impl Codec for Rgb8 {
+    const FORMAT: TextureFormat = TextureFormat::Rgb8;
+    const METRICS: BlockMetrics = BlockMetrics {
+        block_width: 1,
+        block_height: 1,
+        encoded_block_size: 3,
+    };
     type EncodedBlock = [u8; 3];
 
     fn encode_block(texels: &[u8]) -> [u8; 3] {
@@ -36,16 +41,12 @@ impl TextureFormat for Rgb8 {
         let [r, g, b]: [u8; 3] = data[offset..offset + 3].try_into().unwrap();
         [r, g, b, 255]
     }
-
-    fn as_dyn() -> &'static dyn DynTextureFormat {
-        &Self
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::Rgb8;
-    use crate::TextureFormat;
+    use crate::codec::Codec;
 
     #[test]
     fn encode_block() {

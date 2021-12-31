@@ -1,10 +1,8 @@
 use std::rc::Rc;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use byteorder::{LittleEndian, ReadBytesExt};
-use texture_format::{
-    AnyTextureBuf, Bgr8, Dxt1, Dxt5, DynTextureFormat, TextureBuf, TextureFormat, TextureFormatExt,
-};
+use texture_format::{TextureBuf, TextureFormat};
 
 use crate::asset::{Asset, AssetLoader};
 use crate::vpk::path::VpkPath;
@@ -14,13 +12,16 @@ pub struct Vtf {
     width: usize,
     height: usize,
     flags: u32,
-    data: Option<ImageData>,
+    format: TextureFormat,
+    face_count: usize,
+    /// `mips[mip_level][face_index]`
+    mips: Vec<Vec<TextureBuf>>,
 }
 
 pub struct VtfFaceMip<'a> {
     pub face: usize,
     pub mip_level: usize,
-    pub texture: &'a AnyTextureBuf,
+    pub texture: &'a TextureBuf,
 }
 
 impl Vtf {
@@ -51,8 +52,17 @@ impl Vtf {
         self.flags
     }
 
-    pub fn data(&self) -> Option<&ImageData> {
-        self.data.as_ref()
+    pub fn format(&self) -> TextureFormat {
+        self.format
+    }
+
+    pub fn face_count(&self) -> usize {
+        self.face_count
+    }
+
+    /// `mips()[mip_level][face_index]`
+    pub fn mips(&self) -> &[Vec<TextureBuf>] {
+        &self.mips
     }
 
     pub fn iter_face_mips(&self) -> impl Iterator<Item = VtfFaceMip> {
@@ -95,7 +105,7 @@ impl Asset for Vtf {
             assert_eq!(depth, 1);
         }
 
-        let layer_count = if (flags & 0x4000) != 0 {
+        let face_count = if (flags & 0x4000) != 0 {
             assert_eq!(width, height);
             if first_frame != u16::MAX && minor_version < 5 {
                 7
@@ -107,42 +117,35 @@ impl Asset for Vtf {
         };
 
         let low_res_bpp = Self::bits_per_pixel_for_format(low_res_image_format);
-        let data = match low_res_bpp {
+        let (format, mips) = match low_res_bpp {
             Some(low_res_bpp) => {
                 let high_res_offset = header_size as usize
                     + (low_res_image_width as usize * low_res_image_height as usize * low_res_bpp)
                         / 8;
                 let high_res_data = &data[high_res_offset..];
 
-                match high_res_image_format {
-                    3 => Some(build_image_data::<Bgr8>(
+                let format = match high_res_image_format {
+                    3 => TextureFormat::Bgr8,
+                    13 => TextureFormat::Dxt1,
+                    15 => TextureFormat::Dxt5,
+                    _ => bail!(
+                        "unexpected high res image format: {}",
+                        high_res_image_format
+                    ),
+                };
+                (
+                    format,
+                    build_mips(
+                        format,
                         high_res_data,
                         mipmap_count,
-                        layer_count,
+                        face_count,
                         width,
                         height,
-                    )),
-                    13 => Some(build_image_data::<Dxt1>(
-                        high_res_data,
-                        mipmap_count,
-                        layer_count,
-                        width,
-                        height,
-                    )),
-                    15 => Some(build_image_data::<Dxt5>(
-                        high_res_data,
-                        mipmap_count,
-                        layer_count,
-                        width,
-                        height,
-                    )),
-                    _ => {
-                        println!("unexpected image format: {}", high_res_image_format);
-                        None
-                    }
-                }
+                    ),
+                )
             }
-            None => None,
+            _ => bail!("unexpected low res image format: {}", low_res_image_format),
         };
 
         Ok(Rc::new(Vtf {
@@ -150,41 +153,38 @@ impl Asset for Vtf {
             width,
             height,
             flags,
-            data,
+            format,
+            face_count,
+            mips,
         }))
     }
 }
 
-fn build_image_data<F: TextureFormat>(
+fn build_mips(
+    format: TextureFormat,
     mut data: &[u8],
     mipmap_count: usize,
-    layer_count: usize,
+    face_count: usize,
     width: usize,
     height: usize,
-) -> ImageData
-where
-    TextureBuf<F>: Into<AnyTextureBuf>,
-{
+) -> Vec<Vec<TextureBuf>> {
     let mut mips = Vec::new();
     for index in 0..mipmap_count {
         let mip_level = mipmap_count - 1 - index;
         let mip_width = (width >> mip_level).max(1);
         let mip_height = (height >> mip_level).max(1);
-        let size = F::encoded_size(mip_width, mip_height);
+        let size = format.metrics().encoded_size(mip_width, mip_height);
 
-        let mut layers = Vec::new();
-        for _ in 0..layer_count {
-            layers.push(TextureBuf::<F>::new(mip_width, mip_height, data[..size].to_vec()).into());
+        let mut faces = Vec::new();
+        for _ in 0..face_count {
+            faces
+                .push(TextureBuf::new(format, mip_width, mip_height, data[..size].to_vec()).into());
             data = &data[size..];
         }
-        mips.push(layers);
+        mips.push(faces);
     }
     mips.reverse();
-    ImageData {
-        format: F::as_dyn(),
-        layer_count,
-        mips,
-    }
+    mips
 }
 
 struct FaceMipIter<'a> {
@@ -199,34 +199,24 @@ impl<'a> Iterator for FaceMipIter<'a> {
     type Item = VtfFaceMip<'a>;
 
     fn next(&mut self) -> Option<VtfFaceMip<'a>> {
-        if let Some(image_data) = self.vtf.data.as_ref() {
-            if (self.face as usize) < image_data.layer_count {
-                // Prepare the result.
-                let data = &image_data.mips[self.mip_level as usize][self.face as usize];
-                let result = VtfFaceMip {
-                    face: self.face,
-                    mip_level: self.mip_level,
-                    texture: &data,
-                };
+        if (self.face as usize) < self.vtf.face_count {
+            // Prepare the result.
+            let result = VtfFaceMip {
+                face: self.face,
+                mip_level: self.mip_level,
+                texture: &self.vtf.mips[self.mip_level as usize][self.face as usize],
+            };
 
-                // Advance the counters.
-                if ((self.mip_level + 1) as usize) < image_data.mips.len() {
-                    self.mip_level += 1;
-                } else {
-                    self.mip_level = 0;
-                    self.face += 1;
-                }
-
-                return Some(result);
+            // Advance the counters.
+            if ((self.mip_level + 1) as usize) < self.vtf.mips.len() {
+                self.mip_level += 1;
+            } else {
+                self.mip_level = 0;
+                self.face += 1;
             }
+
+            return Some(result);
         }
         None
     }
-}
-
-pub struct ImageData {
-    pub format: &'static dyn DynTextureFormat,
-    pub layer_count: usize,
-    /// `mips[mip_level][layer_index]`
-    pub mips: Vec<Vec<AnyTextureBuf>>,
 }

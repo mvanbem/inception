@@ -1,37 +1,42 @@
-use core::marker::PhantomData;
-use core::ptr;
-
 use alloc::vec::Vec;
 
-use crate::format::gx_tf_cmpr::permute_dxt1_for_gamecube;
-use crate::{
-    AnyTexture, AnyTextureSlice, Dxt1, Dxt5, GxTfCmpr, Texture, TextureFormat, TextureFormatExt,
-    TextureSlice,
-};
+use crate::codec::bgr8::Bgr8;
+use crate::codec::dxt1::Dxt1;
+use crate::codec::dxt5::Dxt5;
+use crate::codec::gx_tf_cmpr::{permute_dxt1_for_gamecube, GxTfCmpr};
+use crate::codec::gx_tf_i8::GxTfI8;
+use crate::codec::gx_tf_ia8::GxTfIa8;
+use crate::codec::gx_tf_rgba8::GxTfRgba8;
+use crate::codec::rgb8::Rgb8;
+use crate::codec::rgba8::Rgba8;
+use crate::codec::Codec;
+use crate::{TextureFormat, TextureSlice};
 
-pub struct TextureBuf<F> {
-    pub(crate) logical_width: usize,
-    pub(crate) logical_height: usize,
+#[derive(Clone)]
+pub struct TextureBuf {
+    pub(crate) format: TextureFormat,
+    pub(crate) width: usize,
+    pub(crate) height: usize,
     pub(crate) physical_width: usize,
     pub(crate) physical_height: usize,
     pub(crate) data: Vec<u8>,
-    pub(crate) _phantom_format: PhantomData<*const F>,
 }
 
-impl<F: TextureFormat> TextureBuf<F> {
-    pub fn new(logical_width: usize, logical_height: usize, data: Vec<u8>) -> Self {
-        let physical_width = F::physical_width(logical_width);
-        let physical_height = F::physical_height(logical_height);
+impl TextureBuf {
+    pub fn new(format: TextureFormat, width: usize, height: usize, data: Vec<u8>) -> Self {
+        let metrics = format.metrics();
+        let blocks_wide = metrics.blocks_wide(width);
+        let blocks_high = metrics.blocks_high(height);
+        let physical_width = blocks_wide * metrics.block_width;
+        let physical_height = blocks_high * metrics.block_height;
 
-        let expected_size = F::ENCODED_BLOCK_SIZE
-            * (physical_width / F::BLOCK_WIDTH)
-            * (physical_height / F::BLOCK_HEIGHT);
+        let expected_size = metrics.encoded_block_size * blocks_wide * blocks_high;
         if data.len() != expected_size {
             panic!(
                 "Data size mismatch: format={:?} logical={}x{} physical={}x{} expected={} actual={}",
-                F::as_dyn(),
-                logical_width,
-                logical_height,
+                format,
+                width,
+                height,
                 physical_width,
                 physical_height,
                 expected_size,
@@ -40,13 +45,25 @@ impl<F: TextureFormat> TextureBuf<F> {
         }
 
         Self {
-            logical_width,
-            logical_height,
+            format,
+            width,
+            height,
             physical_width,
             physical_height,
             data,
-            _phantom_format: PhantomData,
         }
+    }
+
+    pub fn format(&self) -> TextureFormat {
+        self.format
+    }
+
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    pub fn height(&self) -> usize {
+        self.height
     }
 
     pub fn physical_width(&self) -> usize {
@@ -69,102 +86,139 @@ impl<F: TextureFormat> TextureBuf<F> {
         self.data
     }
 
+    /// Fetch and decode the texel at the given location.
+    ///
+    /// # Performance
+    ///
+    /// This function performs a trait object dispatch.
     pub fn get_texel(&self, x: usize, y: usize) -> [u8; 4] {
-        F::get_texel(self.physical_width, self.physical_height, &self.data, x, y)
+        self.format.dyn_codec().get_texel(
+            self.physical_width,
+            self.physical_height,
+            &self.data,
+            x,
+            y,
+        )
     }
 
-    pub fn encode_any<T: AnyTexture>(src: T) -> Self {
-        match src.as_slice() {
-            AnyTextureSlice::Rgb8(x) => Self::encode(x),
-            AnyTextureSlice::Bgr8(x) => Self::encode(x),
-            AnyTextureSlice::Rgba8(x) => Self::encode(x),
-            AnyTextureSlice::Dxt1(x) => Self::encode(x),
-            AnyTextureSlice::Dxt5(x) => Self::encode(x),
-            AnyTextureSlice::GxTfRgba8(x) => Self::encode(x),
-            AnyTextureSlice::GxTfCmpr(x) => Self::encode(x),
+    pub fn as_slice(&self) -> TextureSlice {
+        TextureSlice {
+            format: self.format,
+            x0: 0,
+            y0: 0,
+            x1: self.width,
+            y1: self.height,
+            physical_width: self.physical_width,
+            physical_height: self.physical_height,
+            data: &self.data,
         }
     }
 
-    pub fn encode<T: Texture<G>, G: TextureFormat>(src: T) -> Self {
-        if let Some(src_data) = src.data() {
-            if ptr::eq(F::as_dyn(), G::as_dyn()) {
-                // Same format. No transcoding needed.
-                return Self {
-                    logical_width: src.width(),
-                    logical_height: src.height(),
-                    physical_width: F::physical_width(src.width()),
-                    physical_height: F::physical_height(src.height()),
-                    data: src_data.to_vec(),
-                    _phantom_format: PhantomData,
-                };
-            } else if ptr::eq(G::as_dyn(), Dxt1::as_dyn())
-                && ptr::eq(F::as_dyn(), GxTfCmpr::as_dyn())
-            {
-                return encode_dxt1_to_gx_tf_cmpr(src.width(), src.height(), src_data);
-            } else if ptr::eq(G::as_dyn(), Dxt5::as_dyn())
-                && ptr::eq(F::as_dyn(), GxTfCmpr::as_dyn())
-            {
-                return encode_dxt5_to_gx_tf_cmpr(src.width(), src.height(), src_data);
+    pub fn transcode(src: TextureSlice, format: TextureFormat) -> Self {
+        match (src.format, format, src.data()) {
+            // Same format. No transcoding needed.
+            (x, y, Some(src_data)) if x == y => Self {
+                format,
+                width: src.x1,
+                height: src.y1,
+                physical_width: src.physical_width,
+                physical_height: src.physical_height,
+                data: src_data.to_vec(),
+            },
+
+            // Special cases to preserve DXT color block encoding.
+            (TextureFormat::Dxt1, TextureFormat::GxTfCmpr, Some(src_data)) => {
+                encode_dxt1_to_gx_tf_cmpr(src.width(), src.height(), src_data)
             }
+            (TextureFormat::Dxt5, TextureFormat::GxTfCmpr, Some(src_data)) => {
+                encode_dxt5_to_gx_tf_cmpr(src.width(), src.height(), src_data)
+            }
+
+            // General case.
+            (_, _, _) => Self::transcode_dispatch_src(src, format),
         }
+    }
 
-        let mut data = Vec::new();
+    fn transcode_dispatch_src(src: TextureSlice, format: TextureFormat) -> Self {
+        match src.format {
+            TextureFormat::Bgr8 => Self::transcode_dispatch_dst::<Bgr8>(src, format),
+            TextureFormat::Dxt1 => Self::transcode_dispatch_dst::<Dxt1>(src, format),
+            TextureFormat::Dxt5 => Self::transcode_dispatch_dst::<Dxt5>(src, format),
+            TextureFormat::GxTfCmpr => Self::transcode_dispatch_dst::<GxTfCmpr>(src, format),
+            TextureFormat::GxTfI8 => Self::transcode_dispatch_dst::<GxTfI8>(src, format),
+            TextureFormat::GxTfIa8 => Self::transcode_dispatch_dst::<GxTfIa8>(src, format),
+            TextureFormat::GxTfRgba8 => Self::transcode_dispatch_dst::<GxTfRgba8>(src, format),
+            TextureFormat::Rgb8 => Self::transcode_dispatch_dst::<Rgb8>(src, format),
+            TextureFormat::Rgba8 => Self::transcode_dispatch_dst::<Rgba8>(src, format),
+        }
+    }
 
-        let logical_width = src.width();
-        let logical_height = src.height();
-        let physical_width = F::physical_width(logical_width);
-        let physical_height = F::physical_height(logical_height);
+    fn transcode_dispatch_dst<C: Codec>(src: TextureSlice, format: TextureFormat) -> Self {
+        assert_eq!(src.format, C::FORMAT);
+        match format {
+            TextureFormat::Bgr8 => Self::transcode_static::<C, Bgr8>(src),
+            TextureFormat::Dxt1 => Self::transcode_static::<C, Dxt1>(src),
+            TextureFormat::Dxt5 => Self::transcode_static::<C, Dxt5>(src),
+            TextureFormat::GxTfCmpr => Self::transcode_static::<C, GxTfCmpr>(src),
+            TextureFormat::GxTfI8 => Self::transcode_static::<C, GxTfI8>(src),
+            TextureFormat::GxTfIa8 => Self::transcode_static::<C, GxTfIa8>(src),
+            TextureFormat::GxTfRgba8 => Self::transcode_static::<C, GxTfRgba8>(src),
+            TextureFormat::Rgb8 => Self::transcode_static::<C, Rgb8>(src),
+            TextureFormat::Rgba8 => Self::transcode_static::<C, Rgba8>(src),
+        }
+    }
+
+    fn transcode_static<C: Codec, D: Codec>(src: TextureSlice) -> Self {
+        assert_eq!(src.format, C::FORMAT);
+        let width = src.width();
+        let height = src.height();
+        let dst_blocks_wide = D::METRICS.blocks_wide(width);
+        let dst_blocks_high = D::METRICS.blocks_high(height);
 
         // Visit blocks in order.
-        let blocks_wide = physical_width / F::BLOCK_WIDTH;
-        let blocks_high = physical_height / F::BLOCK_HEIGHT;
-        let mut texels =
-            Vec::with_capacity(F::ENCODED_BLOCK_SIZE * F::BLOCK_WIDTH * F::BLOCK_HEIGHT);
-        for coarse_y in 0..blocks_high {
-            for coarse_x in 0..blocks_wide {
+        let mut data = Vec::new();
+        let mut src_texels =
+            Vec::with_capacity(D::METRICS.encoded_block_size * dst_blocks_wide * dst_blocks_high);
+        for coarse_y in 0..dst_blocks_high {
+            for coarse_x in 0..dst_blocks_wide {
                 // Gather RGBA texels to be encoded.
-                texels.clear();
-                for fine_y in 0..F::BLOCK_HEIGHT {
-                    for fine_x in 0..F::BLOCK_WIDTH {
-                        let x = F::BLOCK_WIDTH * coarse_x + fine_x;
-                        let y = F::BLOCK_HEIGHT * coarse_y + fine_y;
-                        let rgba = if x < logical_width && y < logical_height {
-                            src.get_texel(x, y)
+                src_texels.clear();
+                for fine_y in 0..D::METRICS.block_height {
+                    for fine_x in 0..D::METRICS.block_width {
+                        let x = D::METRICS.block_width * coarse_x + fine_x;
+                        let y = D::METRICS.block_height * coarse_y + fine_y;
+                        let rgba = if x < width && y < height {
+                            C::get_texel(
+                                src.physical_width,
+                                src.physical_height,
+                                src.data,
+                                x + src.x0,
+                                y + src.y0,
+                            )
                         } else {
                             [0; 4]
                         };
-                        texels.extend_from_slice(&rgba);
+                        src_texels.extend_from_slice(&rgba);
                     }
                 }
 
                 // Encode and store the block.
-                data.extend_from_slice(F::encode_block(&texels).as_ref());
+                data.extend_from_slice(D::encode_block(&src_texels).as_ref());
             }
         }
 
-        Self {
-            logical_width,
-            logical_height,
-            physical_width,
-            physical_height,
-            data,
-            _phantom_format: PhantomData,
-        }
+        Self::new(D::FORMAT, width, height, data)
     }
 }
 
-fn encode_dxt1_to_gx_tf_cmpr<F: TextureFormat>(
-    width: usize,
-    height: usize,
-    src_data: &[u8],
-) -> TextureBuf<F> {
-    assert!(ptr::eq(F::as_dyn(), GxTfCmpr::as_dyn()));
-    let physical_width = GxTfCmpr::physical_width(width);
-    let physical_height = GxTfCmpr::physical_height(height);
+fn encode_dxt1_to_gx_tf_cmpr(width: usize, height: usize, src_data: &[u8]) -> TextureBuf {
+    let physical_width = GxTfCmpr::METRICS.physical_width(width);
+    let physical_height = GxTfCmpr::METRICS.physical_height(height);
 
     let blocks_wide = width / 8;
     let blocks_high = height / 8;
-    let mut data = Vec::with_capacity(GxTfCmpr::ENCODED_BLOCK_SIZE * blocks_wide * blocks_high);
+    let mut data =
+        Vec::with_capacity(GxTfCmpr::METRICS.encoded_block_size * blocks_wide * blocks_high);
     for coarse_y in 0..blocks_high {
         for coarse_x in 0..blocks_wide {
             for fine_y in 0..2 {
@@ -179,27 +233,23 @@ fn encode_dxt1_to_gx_tf_cmpr<F: TextureFormat>(
         }
     }
     TextureBuf {
-        logical_width: width,
-        logical_height: height,
+        format: GxTfCmpr::FORMAT,
+        width,
+        height,
         physical_width,
         physical_height,
         data,
-        _phantom_format: PhantomData,
     }
 }
 
-fn encode_dxt5_to_gx_tf_cmpr<F: TextureFormat>(
-    width: usize,
-    height: usize,
-    src_data: &[u8],
-) -> TextureBuf<F> {
-    assert!(ptr::eq(F::as_dyn(), GxTfCmpr::as_dyn()));
-    let physical_width = GxTfCmpr::physical_width(width);
-    let physical_height = GxTfCmpr::physical_height(height);
+fn encode_dxt5_to_gx_tf_cmpr(width: usize, height: usize, src_data: &[u8]) -> TextureBuf {
+    let physical_width = GxTfCmpr::METRICS.physical_width(width);
+    let physical_height = GxTfCmpr::METRICS.physical_height(height);
 
     let blocks_wide = width / 8;
     let blocks_high = height / 8;
-    let mut data = Vec::with_capacity(GxTfCmpr::ENCODED_BLOCK_SIZE * blocks_wide * blocks_high);
+    let mut data =
+        Vec::with_capacity(GxTfCmpr::METRICS.encoded_block_size * blocks_wide * blocks_high);
     for coarse_y in 0..blocks_high {
         for coarse_x in 0..blocks_wide {
             for fine_y in 0..2 {
@@ -214,115 +264,11 @@ fn encode_dxt5_to_gx_tf_cmpr<F: TextureFormat>(
         }
     }
     TextureBuf {
-        logical_width: width,
-        logical_height: height,
+        format: GxTfCmpr::FORMAT,
+        width,
+        height,
         physical_width,
         physical_height,
         data,
-        _phantom_format: PhantomData,
-    }
-}
-
-impl<F: TextureFormat> AnyTexture for TextureBuf<F>
-where
-    for<'a> TextureSlice<'a, F>: Into<AnyTextureSlice<'a>>,
-{
-    fn width(&self) -> usize {
-        self.logical_width
-    }
-
-    fn height(&self) -> usize {
-        self.logical_height
-    }
-
-    fn get_texel(&self, x: usize, y: usize) -> [u8; 4] {
-        self.get_texel(x, y)
-    }
-
-    fn as_slice(&self) -> AnyTextureSlice {
-        <Self as Texture<F>>::as_slice(self).into()
-    }
-
-    fn dyn_format(&self) -> &'static dyn crate::DynTextureFormat {
-        F::as_dyn()
-    }
-}
-
-impl<F: TextureFormat> Texture<F> for TextureBuf<F> {
-    fn width(&self) -> usize {
-        self.logical_width
-    }
-
-    fn height(&self) -> usize {
-        self.logical_height
-    }
-
-    fn get_texel(&self, x: usize, y: usize) -> [u8; 4] {
-        self.get_texel(x, y)
-    }
-
-    fn as_slice(&self) -> TextureSlice<F> {
-        TextureSlice {
-            logical_width: self.logical_width,
-            logical_height: self.logical_height,
-            physical_width: self.physical_width,
-            physical_height: self.physical_height,
-            data: &self.data,
-            x0: 0,
-            y0: 0,
-            x1: self.logical_width,
-            y1: self.logical_height,
-            _phantom_format: PhantomData,
-        }
-    }
-
-    fn data(&self) -> Option<&[u8]> {
-        Some(&self.data)
-    }
-}
-
-impl<F: TextureFormat> Texture<F> for &TextureBuf<F> {
-    fn width(&self) -> usize {
-        self.logical_width
-    }
-
-    fn height(&self) -> usize {
-        self.logical_height
-    }
-
-    fn get_texel(&self, x: usize, y: usize) -> [u8; 4] {
-        (*self).get_texel(x, y)
-    }
-
-    fn as_slice(&self) -> TextureSlice<F> {
-        TextureSlice {
-            logical_width: self.logical_width,
-            logical_height: self.logical_height,
-            physical_width: self.physical_width,
-            physical_height: self.physical_height,
-            data: &self.data,
-            x0: 0,
-            y0: 0,
-            x1: self.logical_width,
-            y1: self.logical_height,
-            _phantom_format: PhantomData,
-        }
-    }
-
-    fn data(&self) -> Option<&[u8]> {
-        Some(&self.data)
-    }
-}
-
-impl<F> Clone for TextureBuf<F> {
-    fn clone(&self) -> Self {
-        Self {
-            logical_width: self.logical_width,
-            logical_height: self.logical_height,
-            physical_width: self.physical_width,
-            physical_height: self.physical_height,
-            data: self.data.clone(),
-            _phantom_format: PhantomData,
-        }
     }
 }

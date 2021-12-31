@@ -13,6 +13,7 @@ fully-occupied = { path = "../fully-occupied" }
 memmap = "0.7"
 nalgebra-glm = "0.15"
 nom = "7"
+quickcheck = { version = "1", optional = true }
 recursive-iter = { path = "../recursive-iter" }
 texture-atlas = { path = "../texture-atlas" }
 texture-format = { path = "../texture-format" }

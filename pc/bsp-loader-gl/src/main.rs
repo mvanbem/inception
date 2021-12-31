@@ -32,7 +32,7 @@ use source_reader::geometry::convert_vertex;
 use source_reader::lightmap::build_lightmaps;
 use source_reader::vpk::path::VpkPath;
 use source_reader::vpk::Vpk;
-use texture_format::{AnyTexture, AnyTextureBuf, Rgb8};
+use texture_format::TextureFormat;
 
 use crate::game_state::GameState;
 use crate::texture::{
@@ -373,30 +373,30 @@ fn load_textures(
     for (_cluster_index, indices_by_material) in indices_by_cluster_material {
         for material_path in indices_by_material.keys() {
             let material = asset_loader.get_material(material_path)?;
-            if let Shader::LightmappedGeneric(LightmappedGeneric { base_texture, .. }) =
-                material.shader()
+            if let Shader::LightmappedGeneric(LightmappedGeneric {
+                base_texture_path, ..
+            }) = material.shader()
             {
-                if !textures_by_path.contains_key(base_texture.path()) {
+                if !textures_by_path.contains_key(base_texture_path) {
                     // Load this texture.
-                    let data = match base_texture.data() {
-                        Some(data) => data,
-                        None => continue,
+                    let base_texture = asset_loader.get_texture(base_texture_path)?;
+                    let gl_texture = match base_texture.format() {
+                        TextureFormat::Bgr8 => create_texture_encoded::<CreateSrgbTexture2dRgba8>(
+                            display,
+                            &base_texture,
+                            TextureFormat::Rgb8,
+                        )?,
+                        TextureFormat::Dxt1 => create_texture::<CreateCompressedSrgbTexture2dDxt1>(
+                            display,
+                            &base_texture,
+                        )?,
+                        TextureFormat::Dxt5 => create_texture::<CreateCompressedSrgbTexture2dDxt5>(
+                            display,
+                            &base_texture,
+                        )?,
+                        format => panic!("unexpected texture format: {:?}", format),
                     };
-
-                    let gl_texture = match &data.mips[0][0] {
-                        AnyTextureBuf::Bgr8(_) => create_texture_encoded::<
-                            CreateSrgbTexture2dRgba8,
-                            Rgb8,
-                        >(display, base_texture)?,
-                        AnyTextureBuf::Dxt1(_) => create_texture::<
-                            CreateCompressedSrgbTexture2dDxt1,
-                        >(display, base_texture)?,
-                        AnyTextureBuf::Dxt5(_) => create_texture::<
-                            CreateCompressedSrgbTexture2dDxt5,
-                        >(display, base_texture)?,
-                        texture => panic!("unexpected texture format: {:?}", texture.dyn_format()),
-                    };
-                    textures_by_path.insert(base_texture.path().to_owned(), gl_texture);
+                    textures_by_path.insert(base_texture_path.to_owned(), gl_texture);
                 }
             }
         }
@@ -421,15 +421,16 @@ fn build_batches_by_cluster(
         let mut batches = Vec::new();
         for (material_path, indices) in indices_by_material {
             let material = asset_loader.get_material(&material_path)?;
-            if let Shader::LightmappedGeneric(LightmappedGeneric { base_texture, .. }) =
-                material.shader()
+            if let Shader::LightmappedGeneric(LightmappedGeneric {
+                base_texture_path, ..
+            }) = material.shader()
             {
                 let index_buffer =
                     IndexBuffer::new(display, PrimitiveType::TrianglesList, &indices)?;
-                if let Some(base_map_texture) = textures_by_path.get(base_texture.path()) {
+                if let Some(base_map_texture) = textures_by_path.get(base_texture_path) {
                     batches.push(Batch {
                         index_buffer,
-                        base_map_path: base_texture.path().to_owned(),
+                        base_map_path: base_texture_path.to_owned(),
                         inv_base_map_size: [
                             1.0 / base_map_texture.width() as f32,
                             1.0 / base_map_texture.height() as f32,

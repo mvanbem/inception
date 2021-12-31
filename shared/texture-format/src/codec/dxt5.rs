@@ -1,7 +1,8 @@
 use stb_dxt::{stb_compress_dxt_block, STB_DXT_NORMAL};
 
-use crate::format::dxt_common;
-use crate::{DynTextureFormat, TextureFormat};
+use crate::codec::{dxt_common, Codec};
+use crate::texture_format::BlockMetrics;
+use crate::TextureFormat;
 
 pub fn block_alpha_a(block: &[u8; 8]) -> u8 {
     block[0]
@@ -97,14 +98,17 @@ pub fn block_alpha(block: &[u8; 8], x: usize, y: usize) -> u8 {
 #[derive(Debug)]
 pub struct Dxt5;
 
-impl TextureFormat for Dxt5 {
-    const BLOCK_WIDTH: usize = 4;
-    const BLOCK_HEIGHT: usize = 4;
-    const ENCODED_BLOCK_SIZE: usize = 16;
+impl Codec for Dxt5 {
+    const FORMAT: TextureFormat = TextureFormat::Dxt5;
+    const METRICS: BlockMetrics = BlockMetrics {
+        block_width: 4,
+        block_height: 4,
+        encoded_block_size: 16,
+    };
     type EncodedBlock = [u8; 16];
 
     fn encode_block(texels: &[u8]) -> [u8; 16] {
-        assert_eq!(texels.len(), 4 * Self::BLOCK_WIDTH * Self::BLOCK_HEIGHT);
+        assert_eq!(texels.len(), 64);
 
         let mut compressed = [0; 16];
         unsafe {
@@ -120,15 +124,15 @@ impl TextureFormat for Dxt5 {
         x: usize,
         y: usize,
     ) -> [u8; 4] {
-        assert_eq!(physical_width % Self::BLOCK_WIDTH, 0);
-        let blocks_wide = physical_width / Self::BLOCK_WIDTH;
+        assert_eq!(physical_width % 4, 0);
+        let blocks_wide = physical_width / 4;
 
-        let coarse_x = x / Self::BLOCK_WIDTH;
-        let coarse_y = y / Self::BLOCK_HEIGHT;
-        let fine_x = x % Self::BLOCK_WIDTH;
-        let fine_y = y % Self::BLOCK_HEIGHT;
+        let coarse_x = x / 4;
+        let coarse_y = y / 4;
+        let fine_x = x % 4;
+        let fine_y = y % 4;
 
-        let offset = Self::ENCODED_BLOCK_SIZE * (blocks_wide * coarse_y + coarse_x);
+        let offset = 16 * (blocks_wide * coarse_y + coarse_x);
         let alpha_block: &[u8; 8] = data[offset..offset + 8].try_into().unwrap();
         let color_block: &[u8; 8] = data[offset + 8..offset + 16].try_into().unwrap();
 
@@ -136,9 +140,5 @@ impl TextureFormat for Dxt5 {
         let a = block_alpha(alpha_block, fine_x, fine_y);
 
         [r, g, b, a]
-    }
-
-    fn as_dyn() -> &'static dyn DynTextureFormat {
-        &Self
     }
 }

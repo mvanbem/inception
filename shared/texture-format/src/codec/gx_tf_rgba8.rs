@@ -1,47 +1,51 @@
 use alloc::vec::Vec;
 
-use crate::{DynTextureFormat, TextureFormat};
+use crate::codec::Codec;
+use crate::texture_format::BlockMetrics;
+use crate::TextureFormat;
 
 #[derive(Debug)]
 pub struct GxTfRgba8;
 
 impl GxTfRgba8 {
     fn size(physical_width: usize, physical_height: usize) -> usize {
-        assert_eq!(physical_width % Self::BLOCK_WIDTH, 0);
-        assert_eq!(physical_height % Self::BLOCK_WIDTH, 0);
+        assert_eq!(physical_width % 4, 0);
+        assert_eq!(physical_height % 4, 0);
         4 * physical_width * physical_height
     }
 
     fn texel_offset(physical_width: usize, x: usize, y: usize) -> usize {
-        assert_eq!(physical_width % Self::BLOCK_WIDTH, 0);
-        let blocks_wide = physical_width / Self::BLOCK_WIDTH;
-        let coarse_x = x / Self::BLOCK_WIDTH;
-        let coarse_y = y / Self::BLOCK_HEIGHT;
-        let fine_x = x % Self::BLOCK_WIDTH;
-        let fine_y = y % Self::BLOCK_HEIGHT;
-        Self::ENCODED_BLOCK_SIZE * (blocks_wide * coarse_y + coarse_x)
-            + 2 * (Self::BLOCK_WIDTH * fine_y + fine_x)
+        assert_eq!(physical_width % 4, 0);
+        let blocks_wide = physical_width / 4;
+        let coarse_x = x / 4;
+        let coarse_y = y / 4;
+        let fine_x = x % 4;
+        let fine_y = y % 4;
+        64 * (blocks_wide * coarse_y + coarse_x) + 2 * (4 * fine_y + fine_x)
     }
 }
 
-impl TextureFormat for GxTfRgba8 {
-    const BLOCK_WIDTH: usize = 4;
-    const BLOCK_HEIGHT: usize = 4;
-    const ENCODED_BLOCK_SIZE: usize = 64;
+impl Codec for GxTfRgba8 {
+    const FORMAT: TextureFormat = TextureFormat::GxTfRgba8;
+    const METRICS: BlockMetrics = BlockMetrics {
+        block_width: 4,
+        block_height: 4,
+        encoded_block_size: 64,
+    };
     type EncodedBlock = [u8; 64];
 
     fn encode_block(texels: &[u8]) -> [u8; 64] {
         assert_eq!(texels.len(), 64);
 
         let mut encoded = Vec::with_capacity(64);
-        for y in 0..Self::BLOCK_HEIGHT {
-            for x in 0..Self::BLOCK_WIDTH {
+        for y in 0..4 {
+            for x in 0..4 {
                 encoded.push(texels[4 * (4 * y + x) + 3]);
                 encoded.push(texels[4 * (4 * y + x)]);
             }
         }
-        for y in 0..Self::BLOCK_HEIGHT {
-            for x in 0..Self::BLOCK_WIDTH {
+        for y in 0..4 {
+            for x in 0..4 {
                 encoded.push(texels[4 * (4 * y + x) + 1]);
                 encoded.push(texels[4 * (4 * y + x) + 2]);
             }
@@ -65,16 +69,12 @@ impl TextureFormat for GxTfRgba8 {
             data[offset + 0],
         ]
     }
-
-    fn as_dyn() -> &'static dyn DynTextureFormat {
-        &Self
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::GxTfRgba8;
-    use crate::TextureFormat;
+    use crate::codec::Codec;
 
     #[test]
     fn encode_block() {

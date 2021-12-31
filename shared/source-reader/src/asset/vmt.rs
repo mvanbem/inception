@@ -3,10 +3,8 @@ use std::str::from_utf8;
 
 use anyhow::{bail, Context, Result};
 use nalgebra_glm::Vec3;
-use try_map::FallibleMapExt;
 
 use crate::asset::vmt::parse::{Entry, KeyValue, Object};
-use crate::asset::vtf::Vtf;
 use crate::asset::{Asset, AssetLoader};
 use crate::vpk::path::VpkPath;
 
@@ -138,16 +136,16 @@ struct LightmappedGenericBuilder {
     alpha_test: bool,
     alpha_test_reference: f32,
     base_alpha_env_map_mask: bool,
-    base_texture: Option<VpkPath>,
-    bump_map: Option<VpkPath>,
-    decal: Option<VpkPath>,
-    detail: Option<VpkPath>,
+    base_texture_path: Option<VpkPath>,
+    bump_map_path: Option<VpkPath>,
+    decal_path: Option<VpkPath>,
+    detail_path: Option<VpkPath>,
     detail_blend_factor: f32,
     detail_blend_mode: i32,
     detail_scale: f32,
-    env_map: Option<VpkPath>,
+    env_map_path: Option<VpkPath>,
     env_map_contrast: Option<f32>,
-    env_map_mask: Option<VpkPath>,
+    env_map_mask_path: Option<VpkPath>,
     env_map_saturation: Option<f32>,
     env_map_tint: Option<Vec3>,
     no_diffuse_bump_lighting: bool,
@@ -162,16 +160,16 @@ impl Default for LightmappedGenericBuilder {
             alpha_test_reference: 0.5, // ?
             alpha_test: false,
             base_alpha_env_map_mask: false,
-            base_texture: None,
-            bump_map: None,
-            decal: None,
-            detail: None,
+            base_texture_path: None,
+            bump_map_path: None,
+            decal_path: None,
+            detail_path: None,
             detail_blend_factor: 1.0, // ?
             detail_blend_mode: 0,
             detail_scale: 4.0,
-            env_map: None,
+            env_map_path: None,
             env_map_contrast: None,
-            env_map_mask: None,
+            env_map_mask_path: None,
             env_map_saturation: None,
             env_map_tint: None,
             no_diffuse_bump_lighting: false,
@@ -195,11 +193,11 @@ impl<'a> ShaderBuilder<'a> for LightmappedGenericBuilder {
                         parse_bool(value).context("$basealphaenvmapmask")?
                 }
                 "$basetexture" => {
-                    self.base_texture = parse_vtf_path(value).context("$basetexture")?
+                    self.base_texture_path = parse_vtf_path(value).context("$basetexture")?
                 }
-                "$bumpmap" => self.bump_map = parse_vtf_path(value).context("$bumpmap")?,
-                "$decal" => self.decal = parse_vtf_path(value).context("$decal")?,
-                "$detail" => self.detail = parse_vtf_path(value).context("$detail")?,
+                "$bumpmap" => self.bump_map_path = parse_vtf_path(value).context("$bumpmap")?,
+                "$decal" => self.decal_path = parse_vtf_path(value).context("$decal")?,
+                "$detail" => self.detail_path = parse_vtf_path(value).context("$detail")?,
                 "$detailblendfactor" => {
                     self.detail_blend_factor = parse_f32(value).context("$detailblendfactor")?
                 }
@@ -207,12 +205,12 @@ impl<'a> ShaderBuilder<'a> for LightmappedGenericBuilder {
                     self.detail_blend_mode = parse_i32(value).context("$detailblendmode")?
                 }
                 "$detailscale" => self.detail_scale = parse_f32(value).context("$detailscale")?,
-                "$envmap" => self.env_map = parse_vtf_path(value).context("$envmap")?,
+                "$envmap" => self.env_map_path = parse_vtf_path(value).context("$envmap")?,
                 "$envmapcontrast" => {
                     self.env_map_contrast = Some(parse_f32(value).context("$envmapcontrast")?)
                 }
                 "$envmapmask" => {
-                    self.env_map_mask = parse_vtf_path(value).context("$envmapmask")?
+                    self.env_map_mask_path = parse_vtf_path(value).context("$envmapmask")?
                 }
                 "$envmapsaturation" => {
                     self.env_map_saturation =
@@ -249,26 +247,24 @@ impl<'a> ShaderBuilder<'a> for LightmappedGenericBuilder {
         Ok(())
     }
 
-    fn build(self: Box<Self>, loader: &AssetLoader) -> Result<Shader> {
+    fn build(self: Box<Self>, _loader: &AssetLoader) -> Result<Shader> {
         Ok(Shader::LightmappedGeneric(LightmappedGeneric {
             alpha_test: self.alpha_test,
             alpha_test_reference: self.alpha_test_reference,
             base_alpha_env_map_mask: self.base_alpha_env_map_mask,
-            base_texture: match self.base_texture {
-                Some(x) => loader.get_texture(&x)?,
+            base_texture_path: match self.base_texture_path {
+                Some(x) => x,
                 None => bail!("LightmappedGeneric $basetexture was unset"),
             },
-            bump_map: self.bump_map.try_map(|path| loader.get_texture(&path))?,
-            decal: self.decal.try_map(|path| loader.get_texture(&path))?,
-            detail: self.detail.try_map(|path| loader.get_texture(&path))?,
+            bump_map_path: self.bump_map_path.clone(),
+            decal_path: self.decal_path.clone(),
+            detail_path: self.detail_path.clone(),
             detail_blend_factor: self.detail_blend_factor,
             detail_blend_mode: self.detail_blend_mode,
             detail_scale: self.detail_scale,
-            env_map: self.env_map.try_map(|path| loader.get_texture(&path))?,
+            env_map_path: self.env_map_path.clone(),
             env_map_contrast: self.env_map_contrast,
-            env_map_mask: self
-                .env_map_mask
-                .try_map(|path| loader.get_texture(&path))?,
+            env_map_mask_path: self.env_map_mask_path.clone(),
             env_map_saturation: self.env_map_saturation,
             env_map_tint: self.env_map_tint,
             no_diffuse_bump_lighting: self.no_diffuse_bump_lighting,
@@ -279,20 +275,21 @@ impl<'a> ShaderBuilder<'a> for LightmappedGenericBuilder {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct LightmappedGeneric {
     pub alpha_test_reference: f32,
     pub alpha_test: bool,
     pub base_alpha_env_map_mask: bool,
-    pub base_texture: Rc<Vtf>,
-    pub bump_map: Option<Rc<Vtf>>,
-    pub decal: Option<Rc<Vtf>>,
-    pub detail: Option<Rc<Vtf>>,
+    pub base_texture_path: VpkPath,
+    pub bump_map_path: Option<VpkPath>,
+    pub decal_path: Option<VpkPath>,
+    pub detail_path: Option<VpkPath>,
     pub detail_blend_factor: f32,
     pub detail_blend_mode: i32,
     pub detail_scale: f32,
-    pub env_map: Option<Rc<Vtf>>,
+    pub env_map_path: Option<VpkPath>,
     pub env_map_contrast: Option<f32>,
-    pub env_map_mask: Option<Rc<Vtf>>,
+    pub env_map_mask_path: Option<VpkPath>,
     pub env_map_saturation: Option<f32>,
     pub env_map_tint: Option<Vec3>,
     pub no_diffuse_bump_lighting: bool,
@@ -307,16 +304,16 @@ impl LightmappedGeneric {
             alpha_test_reference: self.alpha_test_reference,
             alpha_test: self.alpha_test,
             base_alpha_env_map_mask: self.base_alpha_env_map_mask,
-            base_texture: Some(self.base_texture.path().clone()),
-            bump_map: self.bump_map.as_ref().map(|vtf| vtf.path().clone()),
-            decal: self.decal.as_ref().map(|vtf| vtf.path().clone()),
-            detail: self.detail.as_ref().map(|vtf| vtf.path().clone()),
+            base_texture_path: Some(self.base_texture_path.clone()),
+            bump_map_path: self.bump_map_path.clone(),
+            decal_path: self.decal_path.clone(),
+            detail_path: self.detail_path.clone(),
             detail_blend_factor: self.detail_blend_factor,
             detail_blend_mode: self.detail_blend_mode,
             detail_scale: self.detail_scale,
-            env_map: self.env_map.as_ref().map(|vtf| vtf.path().clone()),
+            env_map_path: self.env_map_path.clone(),
             env_map_contrast: self.env_map_contrast,
-            env_map_mask: self.env_map_mask.as_ref().map(|vtf| vtf.path().clone()),
+            env_map_mask_path: self.env_map_mask_path.clone(),
             env_map_saturation: self.env_map_saturation,
             env_map_tint: self.env_map_tint,
             no_diffuse_bump_lighting: self.no_diffuse_bump_lighting,

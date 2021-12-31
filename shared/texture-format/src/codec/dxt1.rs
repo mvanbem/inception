@@ -1,19 +1,23 @@
 use stb_dxt::{stb_compress_dxt_block, STB_DXT_NORMAL};
 
-use crate::format::dxt_common;
-use crate::{DynTextureFormat, TextureFormat};
+use crate::codec::{dxt_common, Codec};
+use crate::texture_format::BlockMetrics;
+use crate::TextureFormat;
 
 #[derive(Debug)]
 pub struct Dxt1;
 
-impl TextureFormat for Dxt1 {
-    const BLOCK_WIDTH: usize = 4;
-    const BLOCK_HEIGHT: usize = 4;
-    const ENCODED_BLOCK_SIZE: usize = 8;
+impl Codec for Dxt1 {
+    const FORMAT: TextureFormat = TextureFormat::Dxt1;
+    const METRICS: BlockMetrics = BlockMetrics {
+        block_width: 4,
+        block_height: 4,
+        encoded_block_size: 8,
+    };
     type EncodedBlock = [u8; 8];
 
     fn encode_block(texels: &[u8]) -> [u8; 8] {
-        assert_eq!(texels.len(), 4 * Self::BLOCK_WIDTH * Self::BLOCK_HEIGHT);
+        assert_eq!(texels.len(), 64);
 
         let mut compressed = [0; 8];
         unsafe {
@@ -29,29 +33,25 @@ impl TextureFormat for Dxt1 {
         x: usize,
         y: usize,
     ) -> [u8; 4] {
-        assert_eq!(physical_width % Self::BLOCK_WIDTH, 0);
-        let blocks_wide = physical_width / Self::BLOCK_WIDTH;
+        assert_eq!(physical_width % 4, 0);
+        let blocks_wide = physical_width / 4;
 
-        let coarse_x = x / Self::BLOCK_WIDTH;
-        let coarse_y = y / Self::BLOCK_HEIGHT;
-        let fine_x = x % Self::BLOCK_WIDTH;
-        let fine_y = y % Self::BLOCK_HEIGHT;
+        let coarse_x = x / 4;
+        let coarse_y = y / 4;
+        let fine_x = x % 4;
+        let fine_y = y % 4;
 
-        let offset = Self::ENCODED_BLOCK_SIZE * (blocks_wide * coarse_y + coarse_x);
+        let offset = 8 * (blocks_wide * coarse_y + coarse_x);
         let block: &[u8; 8] = data[offset..offset + 8].try_into().unwrap();
 
         dxt_common::block_color(block, fine_x, fine_y)
-    }
-
-    fn as_dyn() -> &'static dyn DynTextureFormat {
-        &Self
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::Dxt1;
-    use crate::TextureFormat;
+    use crate::codec::Codec;
 
     #[test]
     fn encode_block() {

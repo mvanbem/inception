@@ -7,7 +7,7 @@ use glium::texture::{
 };
 use glium::{Display, Rect, Texture2d};
 use source_reader::asset::vtf::Vtf;
-use texture_format::{AnyTexture, AnyTextureBuf, TextureBuf, TextureFormat};
+use texture_format::{TextureBuf, TextureFormat};
 
 pub enum AnyTexture2d {
     Texture2d(Texture2d),
@@ -70,7 +70,7 @@ pub trait CreateGliumTexture {
         mip_count: u32,
     ) -> Result<Self::Texture>;
 
-    fn write_mip(texture: &Self::Texture, mip_level: u32, src: &AnyTextureBuf) -> Result<()>;
+    fn write_mip(texture: &Self::Texture, mip_level: u32, src: &TextureBuf) -> Result<()>;
 }
 
 pub fn create_texture<C: CreateGliumTexture>(display: &Display, src: &Vtf) -> Result<AnyTexture2d> {
@@ -78,7 +78,7 @@ pub fn create_texture<C: CreateGliumTexture>(display: &Display, src: &Vtf) -> Re
         display,
         src.width() as u32,
         src.height() as u32,
-        src.data().unwrap().mips.len() as u32,
+        src.mips().len() as u32,
     )?;
 
     for face_mip in src.iter_face_mips() {
@@ -89,18 +89,16 @@ pub fn create_texture<C: CreateGliumTexture>(display: &Display, src: &Vtf) -> Re
     Ok(dst.into())
 }
 
-pub fn create_texture_encoded<C: CreateGliumTexture, F: TextureFormat>(
+pub fn create_texture_encoded<C: CreateGliumTexture>(
     display: &Display,
     src: &Vtf,
-) -> Result<AnyTexture2d>
-where
-    TextureBuf<F>: Into<AnyTextureBuf>,
-{
+    format: TextureFormat,
+) -> Result<AnyTexture2d> {
     let dst = C::create_texture(
         display,
         src.width() as u32,
         src.height() as u32,
-        src.data().unwrap().mips.len() as u32,
+        src.mips().len() as u32,
     )?;
 
     for face_mip in src.iter_face_mips() {
@@ -108,7 +106,7 @@ where
         C::write_mip(
             &dst,
             face_mip.mip_level as u32,
-            &TextureBuf::<F>::encode_any(face_mip.texture).into(),
+            &TextureBuf::transcode(face_mip.texture.as_slice(), format),
         )?;
     }
 
@@ -135,7 +133,7 @@ impl CreateGliumTexture for CreateSrgbTexture2dRgba8 {
         )?)
     }
 
-    fn write_mip(dst: &Self::Texture, mip_level: u32, src: &AnyTextureBuf) -> Result<()> {
+    fn write_mip(dst: &Self::Texture, mip_level: u32, src: &TextureBuf) -> Result<()> {
         let dst_mip = dst.mipmap(mip_level).unwrap();
         assert_eq!(src.width(), dst_mip.width() as usize);
         assert_eq!(src.height(), dst_mip.height() as usize);
@@ -178,7 +176,7 @@ impl CreateGliumTexture for CreateCompressedSrgbTexture2dDxt1 {
         )?)
     }
 
-    fn write_mip(dst: &Self::Texture, mip_level: u32, src: &AnyTextureBuf) -> Result<()> {
+    fn write_mip(dst: &Self::Texture, mip_level: u32, src: &TextureBuf) -> Result<()> {
         let dst_mip = dst.mipmap(mip_level).unwrap();
         assert_eq!(src.width(), dst_mip.width() as usize);
         assert_eq!(src.height(), dst_mip.height() as usize);
@@ -221,7 +219,7 @@ impl CreateGliumTexture for CreateCompressedSrgbTexture2dDxt5 {
         )?)
     }
 
-    fn write_mip(dst: &Self::Texture, mip_level: u32, src: &AnyTextureBuf) -> Result<()> {
+    fn write_mip(dst: &Self::Texture, mip_level: u32, src: &TextureBuf) -> Result<()> {
         let dst_mip = dst.mipmap(mip_level).unwrap();
         assert_eq!(src.width(), dst_mip.width() as usize);
         assert_eq!(src.height(), dst_mip.height() as usize);

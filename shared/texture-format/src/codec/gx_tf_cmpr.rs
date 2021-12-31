@@ -1,7 +1,10 @@
 use alloc::vec::Vec;
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::{Dxt1, DynTextureFormat, TextureFormat};
+use crate::codec::dxt1::Dxt1;
+use crate::codec::Codec;
+use crate::texture_format::BlockMetrics;
+use crate::TextureFormat;
 
 pub(crate) fn permute_dxt1_for_gamecube(block: [u8; 8]) -> [u8; 8] {
     // NOTE: This function is written as a little endian to big endian conversion, but the
@@ -42,16 +45,19 @@ pub struct GxTfCmpr;
 
 impl GxTfCmpr {
     fn size(physical_width: usize, physical_height: usize) -> usize {
-        assert_eq!(physical_width % Self::BLOCK_WIDTH, 0);
-        assert_eq!(physical_height % Self::BLOCK_WIDTH, 0);
+        assert_eq!(physical_width % 8, 0);
+        assert_eq!(physical_height % 8, 0);
         physical_width * physical_height / 2
     }
 }
 
-impl TextureFormat for GxTfCmpr {
-    const BLOCK_WIDTH: usize = 8;
-    const BLOCK_HEIGHT: usize = 8;
-    const ENCODED_BLOCK_SIZE: usize = 32;
+impl Codec for GxTfCmpr {
+    const FORMAT: TextureFormat = TextureFormat::GxTfCmpr;
+    const METRICS: BlockMetrics = BlockMetrics {
+        block_width: 8,
+        block_height: 8,
+        encoded_block_size: 32,
+    };
     type EncodedBlock = [u8; 32];
 
     fn encode_block(texels: &[u8]) -> [u8; 32] {
@@ -90,39 +96,30 @@ impl TextureFormat for GxTfCmpr {
         y: usize,
     ) -> [u8; 4] {
         assert_eq!(data.len(), Self::size(physical_width, physical_height));
-        let blocks_wide = physical_width / Self::BLOCK_WIDTH;
+        let blocks_wide = physical_width / 8;
 
-        let coarse_x = x / Self::BLOCK_WIDTH;
-        let coarse_y = y / Self::BLOCK_WIDTH;
-        let medium_x = (x / Dxt1::BLOCK_WIDTH) % 2;
-        let medium_y = (y / Dxt1::BLOCK_WIDTH) % 2;
-        let fine_x = x % Dxt1::BLOCK_WIDTH;
-        let fine_y = y % Dxt1::BLOCK_HEIGHT;
+        let coarse_x = x / 8;
+        let coarse_y = y / 8;
+        let medium_x = (x / 4) % 2;
+        let medium_y = (y / 4) % 2;
+        let fine_x = x % 4;
+        let fine_y = y % 4;
 
-        let offset = Self::ENCODED_BLOCK_SIZE * (blocks_wide * coarse_y + coarse_x)
-            + Dxt1::ENCODED_BLOCK_SIZE * (2 * medium_y + medium_x);
+        let offset = 32 * (blocks_wide * coarse_y + coarse_x) + 8 * (2 * medium_y + medium_x);
         Dxt1::get_texel(
-            Dxt1::BLOCK_WIDTH,
-            Dxt1::BLOCK_HEIGHT,
-            &permute_dxt1_for_gamecube(
-                data[offset..offset + Dxt1::ENCODED_BLOCK_SIZE]
-                    .try_into()
-                    .unwrap(),
-            ),
+            4,
+            4,
+            &permute_dxt1_for_gamecube(data[offset..offset + 8].try_into().unwrap()),
             fine_x,
             fine_y,
         )
-    }
-
-    fn as_dyn() -> &'static dyn DynTextureFormat {
-        &Self
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::GxTfCmpr;
-    use crate::TextureFormat;
+    use crate::codec::Codec;
 
     #[test]
     fn encode_block() {

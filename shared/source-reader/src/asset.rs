@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 
 use crate::asset::vmt::Vmt;
 use crate::asset::vtf::Vtf;
@@ -57,8 +57,14 @@ impl<'a> AssetLoader<'a> {
             drop(assets);
 
             match (|| {
-                Ok(T::from_data(self, path, loader.load_file(path)?.unwrap())
-                    .with_context(|| format!("Error creating asset from data for {}", path))?)
+                Ok(T::from_data(
+                    self,
+                    path,
+                    loader
+                        .load_file(path)?
+                        .ok_or_else(|| anyhow!("file not found: {}", path))?,
+                )
+                .with_context(|| format!("Error creating asset from data for {}", path))?)
             })() {
                 Ok(asset) => {
                     // Replace the poison entry with the loaded asset.
