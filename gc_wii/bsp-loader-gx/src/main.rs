@@ -25,6 +25,7 @@ use crate::shaders::lightmapped_baaa::LIGHTMAPPED_BAAA_SHADER;
 use crate::shaders::lightmapped_baaa_env::LIGHTMAPPED_BAAA_ENV_SHADER;
 use crate::shaders::lightmapped_baaa_env_emai::LIGHTMAPPED_BAAA_ENV_EMAI_SHADER;
 use crate::shaders::lightmapped_env::LIGHTMAPPED_ENV_SHADER;
+use crate::shaders::lightmapped_env_emai::LIGHTMAPPED_ENV_EMAI_SHADER;
 use crate::visibility::{ClusterIndex, Visibility};
 
 #[macro_use]
@@ -261,7 +262,7 @@ impl Lightmap {
                 GX_CLAMP as u8,
                 GX_FALSE as u8,
             );
-            GX_InitTexObjFilterMode(&mut texobj, GX_LINEAR as u8, GX_LINEAR as u8);
+            GX_InitTexObjFilterMode(&mut texobj, GX_NEAR as u8, GX_LINEAR as u8);
         }
 
         Self {
@@ -434,7 +435,7 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
                     0.0,
                     GX_ENABLE as u8,
                     GX_ENABLE as u8,
-                    GX_ANISO_4 as u8,
+                    GX_ANISO_1 as u8,
                 );
                 texobj
             })
@@ -764,10 +765,7 @@ fn do_main_draw(
                     ByteCodeEntry::SetEnvMapTint { r, g, b } => {
                         GX_SetTevKColor(GX_TEVSTAGE0 as u8, GXColor { r, g, b, a: 255 });
                     }
-                    ByteCodeEntry::SetAlpha {
-                        test_threshold,
-                        blend,
-                    } => {
+                    ByteCodeEntry::SetAlpha { test_threshold, .. } => {
                         if let Some(threshold) = test_threshold {
                             GX_SetAlphaCompare(
                                 GX_GEQUAL as u8,
@@ -787,39 +785,48 @@ fn do_main_draw(
                             );
                             GX_SetZCompLoc(GX_TRUE as u8);
                         }
-                        if blend {
-                            GX_SetBlendMode(
-                                GX_BM_BLEND as u8,
-                                GX_BL_SRCALPHA as u8,
-                                GX_BL_INVSRCALPHA as u8,
-                                0,
-                            );
-                            GX_SetZMode(GX_TRUE as u8, GX_LEQUAL as u8, GX_FALSE as u8);
-                        } else {
-                            GX_SetBlendMode(GX_BM_NONE as u8, 0, 0, 0);
-                            GX_SetZMode(GX_TRUE as u8, GX_LEQUAL as u8, GX_TRUE as u8);
-                        }
                     }
                 }
             }
         };
 
         for pass in 0..16 {
-            match pass {
-                0 | 8 => {
+            match pass & 0x7 {
+                0 => {
                     LIGHTMAPPED_SHADER.apply();
                 }
-                4 | 12 => {
-                    LIGHTMAPPED_BAAA_SHADER.apply();
-                }
-                1 | 2 | 3 | 9 | 10 | 11 => {
+                1 | 2 => {
                     LIGHTMAPPED_ENV_SHADER.apply();
                 }
-                5 | 6 | 7 | 13 | 14 => {
+                3 => {
+                    LIGHTMAPPED_ENV_EMAI_SHADER.apply();
+                }
+                4 => {
+                    LIGHTMAPPED_BAAA_SHADER.apply();
+                }
+                5 | 6 => {
                     LIGHTMAPPED_BAAA_ENV_SHADER.apply();
                 }
-                15 => {
+                7 => {
                     LIGHTMAPPED_BAAA_ENV_EMAI_SHADER.apply();
+                }
+                _ => unreachable!(),
+            }
+            match pass & 8 {
+                0 => {
+                    // Blending off.
+                    GX_SetBlendMode(GX_BM_NONE as u8, 0, 0, 0);
+                    GX_SetZMode(GX_TRUE as u8, GX_LEQUAL as u8, GX_TRUE as u8);
+                }
+                8 => {
+                    // Alpha blending.
+                    GX_SetBlendMode(
+                        GX_BM_BLEND as u8,
+                        GX_BL_SRCALPHA as u8,
+                        GX_BL_INVSRCALPHA as u8,
+                        0,
+                    );
+                    GX_SetZMode(GX_TRUE as u8, GX_LEQUAL as u8, GX_FALSE as u8);
                 }
                 _ => unreachable!(),
             }

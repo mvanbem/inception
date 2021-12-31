@@ -80,6 +80,12 @@ impl PackedMaterial {
                     format => bail!("unexpected base texture format: {:?}", format),
                 };
 
+                #[derive(Clone, Copy, PartialEq, Eq)]
+                enum SourceChannel {
+                    Intensity,
+                    Alpha,
+                }
+
                 let (env_map, env_map_mask_for_aux_intensity) =
                     if let Some(env_map_path) = env_map_path {
                         let ids_by_plane: BTreeMap<Plane, u16> = planes
@@ -112,7 +118,7 @@ impl PackedMaterial {
                                     ids_by_plane,
                                     mask: PackedMaterialEnvMapMask::AuxTextureIntensity,
                                 }),
-                                Some(env_map_mask_path),
+                                Some((env_map_mask_path, SourceChannel::Intensity)),
                             ),
                             // Base alpha env map mask.
                             (None, true, false) => (
@@ -120,6 +126,7 @@ impl PackedMaterial {
                                     ids_by_plane,
                                     mask: base_alpha.into(),
                                 }),
+                                // TODO: Need to keep a note that this is inverted!
                                 None,
                             ),
                             // Normal map alpha env map mask.
@@ -128,8 +135,11 @@ impl PackedMaterial {
                                     ids_by_plane,
                                     mask: PackedMaterialEnvMapMask::AuxTextureIntensity,
                                 }),
-                                // TODO: Make this an error rather than a panic.
-                                Some(bump_map_path.as_ref().unwrap()),
+                                Some((
+                                    // TODO: Make this an error rather than a panic.
+                                    bump_map_path.as_ref().unwrap(),
+                                    SourceChannel::Alpha,
+                                )),
                             ),
                             _ => bail!(
                                 "material {} has unexpected env map mask parameters: \
@@ -158,20 +168,29 @@ impl PackedMaterial {
                             texture_path: base_texture_path,
                         }))
                     }
-                    (PackedMaterialBaseAlpha::BaseTextureAlpha, Some(env_map_mask_path)) => {
-                        Some(ids.get(&BorrowedTextureKey::Intensity {
-                            texture_path: env_map_mask_path,
-                        }))
-                    }
+                    (
+                        PackedMaterialBaseAlpha::BaseTextureAlpha,
+                        Some((env_map_mask_path, SourceChannel::Intensity)),
+                    ) => Some(ids.get(&BorrowedTextureKey::Intensity {
+                        texture_path: env_map_mask_path,
+                    })),
+                    (
+                        PackedMaterialBaseAlpha::BaseTextureAlpha,
+                        Some((env_map_mask_path, SourceChannel::Alpha)),
+                    ) => Some(ids.get(&BorrowedTextureKey::AlphaToIntensity {
+                        texture_path: env_map_mask_path,
+                    })),
 
                     // Two channels. Build an intensity-alpha texture with the env map mask in the
                     // intensity channel and the base texture alpha in the alpha channel.
-                    (PackedMaterialBaseAlpha::AuxTextureAlpha, Some(env_map_mask_path)) => {
-                        Some(ids.get(&BorrowedTextureKey::ComposeIntensityAlpha {
-                            intensity_texture_path: env_map_mask_path,
-                            alpha_texture_path: base_texture_path,
-                        }))
-                    }
+                    (
+                        PackedMaterialBaseAlpha::AuxTextureAlpha,
+                        Some((env_map_mask_path, env_map_mask_src_channel)),
+                    ) => Some(ids.get(&BorrowedTextureKey::ComposeIntensityAlpha {
+                        intensity_texture_path: env_map_mask_path,
+                        intensity_from_alpha: env_map_mask_src_channel == SourceChannel::Alpha,
+                        alpha_texture_path: base_texture_path,
+                    })),
                 };
 
                 Self {

@@ -212,11 +212,8 @@ impl TextureBuf {
 }
 
 fn encode_dxt1_to_gx_tf_cmpr(width: usize, height: usize, src_data: &[u8]) -> TextureBuf {
-    let physical_width = GxTfCmpr::METRICS.physical_width(width);
-    let physical_height = GxTfCmpr::METRICS.physical_height(height);
-
-    let blocks_wide = width / 8;
-    let blocks_high = height / 8;
+    let blocks_wide = GxTfCmpr::METRICS.blocks_wide(width);
+    let blocks_high = GxTfCmpr::METRICS.blocks_high(height);
     let mut data =
         Vec::with_capacity(GxTfCmpr::METRICS.encoded_block_size * blocks_wide * blocks_high);
     for coarse_y in 0..blocks_high {
@@ -225,9 +222,12 @@ fn encode_dxt1_to_gx_tf_cmpr(width: usize, height: usize, src_data: &[u8]) -> Te
                 for fine_x in 0..2 {
                     let offset =
                         8 * (2 * blocks_wide * (2 * coarse_y + fine_y) + 2 * coarse_x + fine_x);
-                    data.extend_from_slice(&permute_dxt1_for_gamecube(
-                        src_data[offset..offset + 8].try_into().unwrap(),
-                    ));
+                    match src_data.get(offset..offset + 8) {
+                        Some(src_block) => data.extend_from_slice(&permute_dxt1_for_gamecube(
+                            src_block.try_into().unwrap(),
+                        )),
+                        None => data.extend_from_slice(&[0; 8]),
+                    }
                 }
             }
         }
@@ -236,18 +236,15 @@ fn encode_dxt1_to_gx_tf_cmpr(width: usize, height: usize, src_data: &[u8]) -> Te
         format: GxTfCmpr::FORMAT,
         width,
         height,
-        physical_width,
-        physical_height,
+        physical_width: GxTfCmpr::METRICS.block_width * blocks_wide,
+        physical_height: GxTfCmpr::METRICS.block_height * blocks_high,
         data,
     }
 }
 
 fn encode_dxt5_to_gx_tf_cmpr(width: usize, height: usize, src_data: &[u8]) -> TextureBuf {
-    let physical_width = GxTfCmpr::METRICS.physical_width(width);
-    let physical_height = GxTfCmpr::METRICS.physical_height(height);
-
-    let blocks_wide = width / 8;
-    let blocks_high = height / 8;
+    let blocks_wide = GxTfCmpr::METRICS.blocks_wide(width);
+    let blocks_high = GxTfCmpr::METRICS.blocks_high(height);
     let mut data =
         Vec::with_capacity(GxTfCmpr::METRICS.encoded_block_size * blocks_wide * blocks_high);
     for coarse_y in 0..blocks_high {
@@ -256,9 +253,12 @@ fn encode_dxt5_to_gx_tf_cmpr(width: usize, height: usize, src_data: &[u8]) -> Te
                 for fine_x in 0..2 {
                     let offset =
                         16 * (2 * blocks_wide * (2 * coarse_y + fine_y) + 2 * coarse_x + fine_x);
-                    data.extend_from_slice(&permute_dxt1_for_gamecube(
-                        src_data[offset + 8..offset + 16].try_into().unwrap(),
-                    ));
+                    match src_data.get(offset + 8..offset + 16) {
+                        Some(src_block) => data.extend_from_slice(&permute_dxt1_for_gamecube(
+                            src_block.try_into().unwrap(),
+                        )),
+                        None => data.extend_from_slice(&[0; 8]),
+                    }
                 }
             }
         }
@@ -267,8 +267,8 @@ fn encode_dxt5_to_gx_tf_cmpr(width: usize, height: usize, src_data: &[u8]) -> Te
         format: GxTfCmpr::FORMAT,
         width,
         height,
-        physical_width,
-        physical_height,
+        physical_width: GxTfCmpr::METRICS.block_width * blocks_wide,
+        physical_height: GxTfCmpr::METRICS.block_height * blocks_high,
         data,
     }
 }

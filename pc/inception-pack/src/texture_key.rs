@@ -44,9 +44,11 @@ impl ToOwned for dyn TextureKey + '_ {
             }
             BorrowedTextureKey::ComposeIntensityAlpha {
                 intensity_texture_path,
+                intensity_from_alpha,
                 alpha_texture_path,
             } => OwnedTextureKey::ComposeIntensityAlpha {
                 intensity_texture_path: intensity_texture_path.to_owned(),
+                intensity_from_alpha,
                 alpha_texture_path: alpha_texture_path.to_owned(),
             },
             BorrowedTextureKey::BakeOrientedEnvmap {
@@ -73,6 +75,7 @@ pub enum OwnedTextureKey {
     },
     ComposeIntensityAlpha {
         intensity_texture_path: VpkPath,
+        intensity_from_alpha: bool,
         alpha_texture_path: VpkPath,
     },
     BakeOrientedEnvmap {
@@ -96,6 +99,7 @@ impl Arbitrary for OwnedTextureKey {
             },
             3 => Self::ComposeIntensityAlpha {
                 intensity_texture_path: VpkPath::arbitrary(g),
+                intensity_from_alpha: bool::arbitrary(g),
                 alpha_texture_path: VpkPath::arbitrary(g),
             },
             4 => Self::BakeOrientedEnvmap {
@@ -117,9 +121,11 @@ impl TextureKey for OwnedTextureKey {
             }
             Self::ComposeIntensityAlpha {
                 intensity_texture_path,
+                intensity_from_alpha,
                 alpha_texture_path,
             } => BorrowedTextureKey::ComposeIntensityAlpha {
                 intensity_texture_path,
+                intensity_from_alpha: *intensity_from_alpha,
                 alpha_texture_path,
             },
             Self::BakeOrientedEnvmap {
@@ -152,6 +158,7 @@ pub enum BorrowedTextureKey<'a> {
     },
     ComposeIntensityAlpha {
         intensity_texture_path: &'a VpkPath,
+        intensity_from_alpha: bool,
         alpha_texture_path: &'a VpkPath,
     },
     BakeOrientedEnvmap {

@@ -1,9 +1,8 @@
 use crate::gx::*;
 use crate::shader::*;
 
-/// LightmappedGeneric, base alpha packed as aux alpha, env mapped, env map mask packed as auxiliary
-/// intensity.
-pub static LIGHTMAPPED_BAAA_ENV_EMAI_SHADER: Shader = Shader {
+/// LightmappedGeneric, env mapped, env map mask packed as auxiliary intensity.
+pub static LIGHTMAPPED_ENV_EMAI_SHADER: Shader = Shader {
     tev_stages: tev_builder()
         // Sample the env map.
         .add_stage(
@@ -17,24 +16,20 @@ pub static LIGHTMAPPED_BAAA_ENV_EMAI_SHADER: Shader = Shader {
             .with_tex_coord(TevTexCoord::TexCoord2)
             .with_tex_map(TevTexMap::TEXMAP2),
         )
-        // Sample the aux map for alpha and to mask the env map.
+        // Sample the aux map to mask the env map.
         .add_stage(
-            TevStage::new(
+            TevStage::color_only(
                 TevStageColor::mul(TevColorIn::PrevColor, TevColorIn::TexColor)
                     .with_dst(TevReg::Reg0),
-                TevStageAlpha::just(TevAlphaIn::TexAlpha),
             )
             .with_tex_coord(TevTexCoord::TexCoord1)
             .with_tex_map(TevTexMap::TEXMAP3),
         )
         // Sample the lightmap.
         .add_stage(
-            TevStage::new(
-                TevStageColor::just(TevColorIn::TexColor),
-                TevStageAlpha::just(TevAlphaIn::PrevAlpha),
-            )
-            .with_tex_coord(TevTexCoord::TexCoord0)
-            .with_tex_map(TevTexMap::TEXMAP0),
+            TevStage::color_only(TevStageColor::just(TevColorIn::TexColor))
+                .with_tex_coord(TevTexCoord::TexCoord0)
+                .with_tex_map(TevTexMap::TEXMAP0),
         )
         // Sample the base map, multiply it by the lightmap, and add the env map.
         .add_stage(
@@ -46,7 +41,7 @@ pub static LIGHTMAPPED_BAAA_ENV_EMAI_SHADER: Shader = Shader {
                 )
                 // Arbitrary scale to get things in range.
                 .with_scale(TevScale::K2),
-                TevStageAlpha::just(TevAlphaIn::PrevAlpha),
+                TevStageAlpha::just(TevAlphaIn::TexAlpha),
             )
             .with_tex_coord(TevTexCoord::TexCoord1)
             .with_tex_map(TevTexMap::TEXMAP1),

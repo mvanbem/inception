@@ -7,6 +7,8 @@ pub static LIGHTMAPPED_ENV_SHADER: Shader = Shader {
         .add_stage(
             TevStage::color_only(
                 TevStageColor::mul(TevColorIn::TexColor, TevColorIn::Konst)
+                    // Cancel out the upcoming scale, which is only for the lightmap.
+                    .with_scale(TevScale::K1_2)
                     .with_dst(TevReg::Reg0)
                     // Env map tint is expected in K0.
                     .with_konst_sel(Some(TevColorKonst::K0Rgb)),

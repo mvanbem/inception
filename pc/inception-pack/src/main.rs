@@ -851,6 +851,7 @@ fn write_textures(
                 OwnedTextureKey::ComposeIntensityAlpha {
                     intensity_texture_path,
                     alpha_texture_path,
+                    ..
                 } => {
                     let intensity_texture = asset_loader.get_texture(intensity_texture_path)?;
                     let alpha_texture = asset_loader.get_texture(alpha_texture_path)?;
@@ -925,6 +926,7 @@ fn write_textures(
                     let max_height = texture.height() / dimension_divisor;
 
                     let start_offset = texture_data.stream_position()? as u32;
+                    println!("* Encoding texture {}", texture_path);
                     let mut mips_written = 0;
                     for face_mip in texture.iter_face_mips() {
                         assert_eq!(face_mip.face, 0);
@@ -1130,6 +1132,7 @@ fn write_textures(
 
                 OwnedTextureKey::ComposeIntensityAlpha {
                     intensity_texture_path,
+                    intensity_from_alpha,
                     alpha_texture_path,
                 } => {
                     let intensity_texture = asset_loader.get_texture(intensity_texture_path)?;
@@ -1174,12 +1177,21 @@ fn write_textures(
                             let mut texels = Vec::with_capacity(4 * width * height);
                             for texel_index in 0..width * height {
                                 let offset = 4 * texel_index;
-                                texels.extend_from_slice(&[
-                                    intensity_data[offset],
-                                    intensity_data[offset + 1],
-                                    intensity_data[offset + 2],
-                                    alpha_data[offset + 3],
-                                ]);
+                                texels.extend_from_slice(&if *intensity_from_alpha {
+                                    [
+                                        intensity_data[offset + 3],
+                                        intensity_data[offset + 3],
+                                        intensity_data[offset + 3],
+                                        alpha_data[offset + 3],
+                                    ]
+                                } else {
+                                    [
+                                        intensity_data[offset],
+                                        intensity_data[offset + 1],
+                                        intensity_data[offset + 2],
+                                        alpha_data[offset + 3],
+                                    ]
+                                });
                             }
 
                             texture_data.write_all(
