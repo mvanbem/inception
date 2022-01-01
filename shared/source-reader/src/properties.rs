@@ -1,8 +1,10 @@
+use std::collections::HashMap;
+
 use nalgebra_glm::{vec3, Vec3};
 use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::character::complete::*;
-use nom::multi::{fold_many0, many0};
+use nom::multi::{fold_many0, many0, many1};
 use nom::sequence::{delimited, preceded, tuple};
 use nom::IResult;
 use nom::{combinator::*, Parser};
@@ -13,6 +15,16 @@ pub fn vmt(input: &str) -> Result<Object, nom::Err<nom::error::Error<&str>>> {
     assert_eq!(input, "");
 
     Ok(root)
+}
+
+pub fn flat_objects(
+    input: &str,
+) -> Result<Vec<HashMap<String, String>>, nom::Err<nom::error::Error<&str>>> {
+    let (input, objects) = many1(flat_object)(input)?;
+    let (input, _) = whitespace0(input)?;
+    assert_eq!(input, "");
+
+    Ok(objects)
 }
 
 fn whitespace_char(input: &str) -> IResult<&str, char> {
@@ -93,6 +105,22 @@ fn object(input: &str) -> IResult<&str, Object> {
     let (input, _) = operator('}')(input)?;
 
     IResult::Ok((input, Object { name, entries }))
+}
+
+fn flat_object(input: &str) -> IResult<&str, HashMap<String, String>> {
+    let (input, _) = whitespace0(input)?;
+    let (input, _) = operator('{')(input)?;
+    let (input, key_values) = fold_many0(
+        key_value,
+        || HashMap::new(),
+        |mut key_values, key_value| {
+            key_values.insert(key_value.key.to_lowercase(), key_value.value.to_lowercase());
+            key_values
+        },
+    )(input)?;
+    let (input, _) = operator('}')(input)?;
+
+    IResult::Ok((input, key_values))
 }
 
 pub fn material_vector(input: &str) -> Result<Vec3, nom::Err<nom::error::Error<&str>>> {

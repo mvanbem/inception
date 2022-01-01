@@ -527,12 +527,27 @@ fn process_geometry(
         }
     }
 
+    let mut ids = TextureIdAllocator::new();
+    // The first five texture IDs are reserved for the 2D skybox.
+    {
+        let entities = bsp.entities();
+        let worldspawn = &entities[0];
+
+        for face in ["rt", "lf", "bk", "ft", "up"] {
+            let texture_path = VpkPath::new_with_prefix_and_extension(
+                &format!("{}{}", &worldspawn["skyname"], face),
+                "materials/skybox",
+                "vtf",
+            );
+            ids.get(&OwnedTextureKey::EncodeAsIs { texture_path });
+        }
+    }
+
     let mut positions = AttributeBuilder::new();
     let mut normals = AttributeBuilder::new();
     let mut lightmap_coords = AttributeBuilder::new();
     let mut texture_coords = AttributeBuilder::new();
     let mut clusters: Vec<ClusterGeometryBuilder> = Vec::new();
-    let mut ids = TextureIdAllocator::new();
     for leaf in bsp.iter_worldspawn_leaves() {
         if leaf.cluster == -1 {
             // Leaf is not potentially visible from anywhere.

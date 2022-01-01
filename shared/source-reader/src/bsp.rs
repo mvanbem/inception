@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::ffi::CStr;
 use std::io::Cursor;
 use std::mem::size_of;
 use std::num::NonZeroUsize;
+use std::str;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use nalgebra_glm::Vec3;
@@ -9,6 +11,8 @@ use recursive_iter::*;
 use zip::ZipArchive;
 
 use fully_occupied::{extract, extract_slice, extract_slice_unchecked, FullyOccupied};
+
+use crate::properties;
 
 #[derive(Clone, Copy)]
 pub struct Bsp<'a>(&'a [u8]);
@@ -20,6 +24,13 @@ impl<'a> Bsp<'a> {
 
     pub fn header(&self) -> &'a Header {
         extract(self.0)
+    }
+
+    pub fn entities(&self) -> Vec<HashMap<String, String>> {
+        let bytes = self.header().lumps[0].data(self.0);
+        assert_eq!(bytes[bytes.len() - 1], 0);
+        let bytes = &bytes[..bytes.len() - 1];
+        properties::flat_objects(str::from_utf8(bytes).unwrap()).unwrap()
     }
 
     pub fn planes(&self) -> &'a [Plane] {

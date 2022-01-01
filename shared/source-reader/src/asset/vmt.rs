@@ -4,11 +4,9 @@ use std::str::from_utf8;
 use anyhow::{bail, Context, Result};
 use nalgebra_glm::Vec3;
 
-use crate::asset::vmt::parse::{Entry, KeyValue, Object};
 use crate::asset::{Asset, AssetLoader};
+use crate::properties::{material_vector, Entry, KeyValue, Object};
 use crate::vpk::path::VpkPath;
-
-mod parse;
 
 fn parse_bool(s: &str) -> Result<bool> {
     match s {
@@ -35,7 +33,7 @@ fn parse_f32(s: &str) -> Result<f32> {
 }
 
 fn parse_material_vector(s: &str) -> Result<Vec3> {
-    match parse::material_vector(s) {
+    match material_vector(s) {
         Ok(v) => Ok(v),
         Err(e) => bail!("{}", e),
     }
@@ -85,7 +83,7 @@ impl Vmt {
 
 impl Asset for Vmt {
     fn from_data(loader: &AssetLoader, path: &VpkPath, data: Vec<u8>) -> Result<Rc<Self>> {
-        let root = parse::vmt(from_utf8(&data)?).unwrap();
+        let root = crate::properties::vmt(from_utf8(&data)?).unwrap();
 
         let mut builder: Box<dyn ShaderBuilder> = match root.name {
             "LightmappedGeneric" => Box::new(LightmappedGenericBuilder::default()),

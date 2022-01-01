@@ -484,12 +484,7 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
             });
             let (main_draw_elapsed, view_cluster) = Timer::time_with_result(|| {
                 prepare_main_draw(width, height, &game_state);
-                do_main_draw(
-                    &game_state.pos,
-                    visibility,
-                    &map_texobjs,
-                    &cluster_lightmaps,
-                )
+                do_main_draw(&game_state, visibility, &map_texobjs, &cluster_lightmaps)
             });
             let copy_to_texture_elapsed = Timer::time(|| {
                 // do_copy_to_texture(&screen_texture_color_data);
@@ -630,67 +625,7 @@ fn do_game_logic(game_state: &mut GameState, cluster_lightmaps: &mut [Lightmap])
 
 fn prepare_main_draw(width: u16, height: u16, game_state: &GameState) {
     unsafe {
-        GX_ClearVtxDesc();
-        GX_SetVtxDesc(GX_VA_POS as u8, GX_INDEX16 as u8);
-        GX_SetVtxDesc(GX_VA_NRM as u8, GX_INDEX16 as u8);
-        GX_SetVtxDesc(GX_VA_TEX0 as u8, GX_INDEX16 as u8);
-        GX_SetVtxDesc(GX_VA_TEX1 as u8, GX_INDEX16 as u8);
-        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
-        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_NRM, GX_NRM_XYZ, GX_S8, 0);
-        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX0, GX_TEX_ST, GX_U16, 15);
-        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX1, GX_TEX_ST, GX_S16, 8);
-        GX_SetArray(GX_VA_POS, POSITION_DATA.as_ptr() as *mut _, 12);
-        GX_SetArray(GX_VA_NRM, NORMAL_DATA.as_ptr() as *mut _, 3);
-        GX_SetArray(GX_VA_TEX0, LIGHTMAP_COORD_DATA.as_ptr() as *mut _, 4);
-        GX_SetArray(GX_VA_TEX1, TEXTURE_COORD_DATA.as_ptr() as *mut _, 4);
-        GX_InvVtxCache();
-
-        let mut proj = zeroed::<Mtx44>();
-        guPerspective(
-            proj.as_mut_ptr(),
-            90.0,
-            width as f32 / height as f32 * game_state.widescreen_factor(),
-            1.0,
-            5000.0,
-        );
-        GX_LoadProjectionMtx(proj.as_mut_ptr(), GX_PERSPECTIVE as u8);
-
-        let mut look_at = zeroed::<Mtx>();
-        let mut yaw_rotation = zeroed::<Mtx>();
-        let mut pitch_rotation = zeroed::<Mtx>();
-        let mut tmp = zeroed::<Mtx>();
-        guLookAt(
-            look_at.as_mut_ptr(),
-            &mut guVector {
-                x: game_state.pos.x,
-                y: game_state.pos.y,
-                z: game_state.pos.z,
-            } as *mut guVector,
-            &mut guVector {
-                x: 0.0,
-                y: 0.0,
-                z: 1.0,
-            } as *mut guVector,
-            &mut guVector {
-                x: game_state.pos.x + 1.0,
-                y: game_state.pos.y,
-                z: game_state.pos.z,
-            } as *mut guVector,
-        );
-        c_guMtxRotRad(yaw_rotation.as_mut_ptr(), b'y', -game_state.yaw);
-        c_guMtxRotRad(pitch_rotation.as_mut_ptr(), b'x', -game_state.pitch);
-        c_guMtxConcat(
-            yaw_rotation.as_mut_ptr(),
-            look_at.as_mut_ptr(),
-            tmp.as_mut_ptr(),
-        );
-        let mut view = zeroed::<Mtx>();
-        c_guMtxConcat(
-            pitch_rotation.as_mut_ptr(),
-            tmp.as_mut_ptr(),
-            view.as_mut_ptr(),
-        );
-        GX_LoadPosMtxImm(view.as_mut_ptr(), GX_PNMTX0);
+        load_camera_proj_matrix(width, height, game_state);
 
         let mut eye_offset = zeroed::<Mtx>();
         c_guMtxTrans(
@@ -709,17 +644,298 @@ fn prepare_main_draw(width: u16, height: u16, game_state: &GameState) {
     }
 }
 
+fn load_camera_proj_matrix(width: u16, height: u16, game_state: &GameState) {
+    unsafe {
+        let mut proj = zeroed::<Mtx44>();
+        guPerspective(
+            proj.as_mut_ptr(),
+            90.0,
+            width as f32 / height as f32 * game_state.widescreen_factor(),
+            1.0,
+            5000.0,
+        );
+        GX_LoadProjectionMtx(proj.as_mut_ptr(), GX_PERSPECTIVE as u8);
+    }
+}
+
+fn load_camera_view_matrix(game_state: &GameState) {
+    unsafe {
+        let mut look_at = zeroed::<Mtx>();
+        let mut yaw_rotation = zeroed::<Mtx>();
+        let mut pitch_rotation = zeroed::<Mtx>();
+        let mut tmp = zeroed::<Mtx>();
+        guLookAt(
+            look_at.as_mut_ptr(),
+            &mut guVector {
+                x: game_state.pos.x,
+                y: game_state.pos.y,
+                z: game_state.pos.z,
+            },
+            &mut guVector {
+                x: 0.0,
+                y: 0.0,
+                z: 1.0,
+            },
+            &mut guVector {
+                x: game_state.pos.x + 1.0,
+                y: game_state.pos.y,
+                z: game_state.pos.z,
+            },
+        );
+        c_guMtxRotRad(yaw_rotation.as_mut_ptr(), b'y', -game_state.yaw);
+        c_guMtxRotRad(pitch_rotation.as_mut_ptr(), b'x', -game_state.pitch);
+        c_guMtxConcat(
+            yaw_rotation.as_mut_ptr(),
+            look_at.as_mut_ptr(),
+            tmp.as_mut_ptr(),
+        );
+        let mut view = zeroed::<Mtx>();
+        c_guMtxConcat(
+            pitch_rotation.as_mut_ptr(),
+            tmp.as_mut_ptr(),
+            view.as_mut_ptr(),
+        );
+        GX_LoadPosMtxImm(view.as_mut_ptr(), GX_PNMTX0);
+    }
+}
+
+fn load_skybox_view_matrix(game_state: &GameState) {
+    unsafe {
+        let mut look_at = zeroed::<Mtx>();
+        let mut yaw_rotation = zeroed::<Mtx>();
+        let mut pitch_rotation = zeroed::<Mtx>();
+        let mut tmp = zeroed::<Mtx>();
+        guLookAt(
+            look_at.as_mut_ptr(),
+            &mut guVector {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            &mut guVector {
+                x: 0.0,
+                y: 0.0,
+                z: 1.0,
+            },
+            &mut guVector {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        );
+        c_guMtxRotRad(yaw_rotation.as_mut_ptr(), b'y', -game_state.yaw);
+        c_guMtxRotRad(pitch_rotation.as_mut_ptr(), b'x', -game_state.pitch);
+        c_guMtxConcat(
+            yaw_rotation.as_mut_ptr(),
+            look_at.as_mut_ptr(),
+            tmp.as_mut_ptr(),
+        );
+        let mut view = zeroed::<Mtx>();
+        c_guMtxConcat(
+            pitch_rotation.as_mut_ptr(),
+            tmp.as_mut_ptr(),
+            view.as_mut_ptr(),
+        );
+        GX_LoadPosMtxImm(view.as_mut_ptr(), GX_PNMTX0);
+    }
+}
+
 fn do_main_draw(
-    pos: &guVector,
+    game_state: &GameState,
     visibility: Visibility,
     map_texobjs: &[GXTexObj],
     cluster_lightmaps: &[Lightmap],
 ) -> i16 {
     unsafe {
-        GX_SetZMode(GX_TRUE as u8, GX_LEQUAL as u8, GX_TRUE as u8);
+        // Draw the skybox.
+
+        GX_ClearVtxDesc();
+        GX_SetVtxDesc(GX_VA_POS as u8, GX_DIRECT as u8);
+        GX_SetVtxDesc(GX_VA_TEX0 as u8, GX_DIRECT as u8);
+        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_POS, GX_POS_XYZ, GX_S8, 0);
+        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX0, GX_TEX_ST, GX_U8, 0);
+        GX_InvVtxCache();
+
+        load_skybox_view_matrix(game_state);
+
+        GX_SetZMode(GX_FALSE as u8, GX_ALWAYS as u8, GX_FALSE as u8);
         GX_SetColorUpdate(GX_TRUE as u8);
 
-        let view_leaf = traverse_bsp(pos);
+        FLAT_TEXTURED_SHADER.apply();
+
+        GX_LoadTexObj(
+            &map_texobjs[0] as *const GXTexObj as *mut GXTexObj,
+            GX_TEXMAP0 as u8,
+        );
+        GX_Begin(GX_QUADS as u8, GX_VTXFMT0 as u8, 4);
+        {
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).U8 = 0;
+            (*wgPipe).U8 = 0;
+
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).U8 = 1;
+            (*wgPipe).U8 = 0;
+
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).U8 = 1;
+            (*wgPipe).U8 = 1;
+
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).U8 = 0;
+            (*wgPipe).U8 = 1;
+        }
+        GX_LoadTexObj(
+            &map_texobjs[1] as *const GXTexObj as *mut GXTexObj,
+            GX_TEXMAP0 as u8,
+        );
+        GX_Begin(GX_QUADS as u8, GX_VTXFMT0 as u8, 4);
+        {
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).U8 = 0;
+            (*wgPipe).U8 = 0;
+
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).U8 = 1;
+            (*wgPipe).U8 = 0;
+
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).U8 = 1;
+            (*wgPipe).U8 = 1;
+
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).U8 = 0;
+            (*wgPipe).U8 = 1;
+        }
+        GX_LoadTexObj(
+            &map_texobjs[2] as *const GXTexObj as *mut GXTexObj,
+            GX_TEXMAP0 as u8,
+        );
+        GX_Begin(GX_QUADS as u8, GX_VTXFMT0 as u8, 4);
+        {
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).U8 = 0;
+            (*wgPipe).U8 = 0;
+
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).U8 = 1;
+            (*wgPipe).U8 = 0;
+
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).U8 = 1;
+            (*wgPipe).U8 = 1;
+
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).U8 = 0;
+            (*wgPipe).U8 = 1;
+        }
+        GX_LoadTexObj(
+            &map_texobjs[3] as *const GXTexObj as *mut GXTexObj,
+            GX_TEXMAP0 as u8,
+        );
+        GX_Begin(GX_QUADS as u8, GX_VTXFMT0 as u8, 4);
+        {
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).U8 = 0;
+            (*wgPipe).U8 = 0;
+
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).U8 = 1;
+            (*wgPipe).U8 = 0;
+
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).U8 = 1;
+            (*wgPipe).U8 = 1;
+
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).U8 = 0;
+            (*wgPipe).U8 = 1;
+        }
+        GX_LoadTexObj(
+            &map_texobjs[4] as *const GXTexObj as *mut GXTexObj,
+            GX_TEXMAP0 as u8,
+        );
+        GX_Begin(GX_QUADS as u8, GX_VTXFMT0 as u8, 4);
+        {
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).U8 = 0;
+            (*wgPipe).U8 = 0;
+
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).U8 = 1;
+            (*wgPipe).U8 = 0;
+
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).U8 = 1;
+            (*wgPipe).U8 = 1;
+
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).U8 = 0;
+            (*wgPipe).U8 = 1;
+        }
+
+        // Draw all visible clusters.
+
+        GX_ClearVtxDesc();
+        GX_SetVtxDesc(GX_VA_POS as u8, GX_INDEX16 as u8);
+        GX_SetVtxDesc(GX_VA_NRM as u8, GX_INDEX16 as u8);
+        GX_SetVtxDesc(GX_VA_TEX0 as u8, GX_INDEX16 as u8);
+        GX_SetVtxDesc(GX_VA_TEX1 as u8, GX_INDEX16 as u8);
+        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_NRM, GX_NRM_XYZ, GX_S8, 0);
+        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX0, GX_TEX_ST, GX_U16, 15);
+        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX1, GX_TEX_ST, GX_S16, 8);
+        GX_SetArray(GX_VA_POS, POSITION_DATA.as_ptr() as *mut _, 12);
+        GX_SetArray(GX_VA_NRM, NORMAL_DATA.as_ptr() as *mut _, 3);
+        GX_SetArray(GX_VA_TEX0, LIGHTMAP_COORD_DATA.as_ptr() as *mut _, 4);
+        GX_SetArray(GX_VA_TEX1, TEXTURE_COORD_DATA.as_ptr() as *mut _, 4);
+        GX_InvVtxCache();
+
+        load_camera_view_matrix(game_state);
+
+        GX_SetZMode(GX_TRUE as u8, GX_LEQUAL as u8, GX_TRUE as u8);
+
+        let view_leaf = traverse_bsp(&game_state.pos);
         let view_cluster = (*view_leaf).cluster;
 
         let draw_cluster = move |cluster, pass| {
