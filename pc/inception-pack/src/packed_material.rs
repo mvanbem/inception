@@ -54,7 +54,7 @@ impl PackedMaterial {
         ids: &mut TextureIdAllocator,
         material: &Vmt,
         planes: I,
-    ) -> Result<Self>
+    ) -> Result<Option<Self>>
     where
         I: IntoIterator,
         I::IntoIter: Iterator<Item = &'a Plane>,
@@ -193,17 +193,15 @@ impl PackedMaterial {
                     })),
                 };
 
-                Self {
+                Some(Self {
                     base_id,
                     aux_id,
                     base_alpha,
                     env_map,
-                }
+                })
             }
 
-            Shader::Unsupported => {
-                bail!("material {} has an unsupported shader", material.path())
-            }
+            Shader::Unsupported { .. } => None,
         })
     }
 }

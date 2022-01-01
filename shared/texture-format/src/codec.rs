@@ -4,6 +4,8 @@ use crate::texture_format::BlockMetrics;
 use crate::TextureFormat;
 
 pub mod bgr8;
+pub mod bgra8;
+pub mod bgrx8;
 pub mod dxt1;
 pub mod dxt5;
 pub mod dxt_common;

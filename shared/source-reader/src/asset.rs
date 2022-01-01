@@ -80,6 +80,14 @@ impl<'a> AssetLoader<'a> {
         }
     }
 
+    pub fn material_loader(&self) -> &(dyn FileLoader + 'a) {
+        &*self.material_loader
+    }
+
+    pub fn texture_loader(&self) -> &(dyn FileLoader + 'a) {
+        &*self.texture_loader
+    }
+
     pub fn get_material(&self, path: &VpkPath) -> Result<Rc<Vmt>> {
         self.get(&*self.material_loader, &self.material_assets, path)
     }

@@ -1,6 +1,8 @@
 use alloc::vec::Vec;
 
 use crate::codec::bgr8::Bgr8;
+use crate::codec::bgra8::Bgra8;
+use crate::codec::bgrx8::Bgrx8;
 use crate::codec::dxt1::Dxt1;
 use crate::codec::dxt5::Dxt5;
 use crate::codec::gx_tf_cmpr::{permute_dxt1_for_gamecube, GxTfCmpr};
@@ -142,6 +144,8 @@ impl TextureBuf {
     fn transcode_dispatch_src(src: TextureSlice, format: TextureFormat) -> Self {
         match src.format {
             TextureFormat::Bgr8 => Self::transcode_dispatch_dst::<Bgr8>(src, format),
+            TextureFormat::Bgra8 => Self::transcode_dispatch_dst::<Bgra8>(src, format),
+            TextureFormat::Bgrx8 => Self::transcode_dispatch_dst::<Bgrx8>(src, format),
             TextureFormat::Dxt1 => Self::transcode_dispatch_dst::<Dxt1>(src, format),
             TextureFormat::Dxt5 => Self::transcode_dispatch_dst::<Dxt5>(src, format),
             TextureFormat::GxTfCmpr => Self::transcode_dispatch_dst::<GxTfCmpr>(src, format),
@@ -157,6 +161,8 @@ impl TextureBuf {
         assert_eq!(src.format, C::FORMAT);
         match format {
             TextureFormat::Bgr8 => Self::transcode_static::<C, Bgr8>(src),
+            TextureFormat::Bgra8 => Self::transcode_static::<C, Bgra8>(src),
+            TextureFormat::Bgrx8 => Self::transcode_static::<C, Bgrx8>(src),
             TextureFormat::Dxt1 => Self::transcode_static::<C, Dxt1>(src),
             TextureFormat::Dxt5 => Self::transcode_static::<C, Dxt5>(src),
             TextureFormat::GxTfCmpr => Self::transcode_static::<C, GxTfCmpr>(src),

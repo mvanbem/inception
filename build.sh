@@ -43,6 +43,27 @@ function subcommand_other {
         "$@"
 }
 
+function subcommand_audit {
+    pushd pc >/dev/null
+    for map in \
+        d1_trainstation_{01,02,03,04,05,06} \
+        d1_canals_{01,01a,02,03,05,06,07,08,09,10,11,12,13} \
+        d1_eli_{01,02} \
+        d1_town_{01,01a,02,03,02a,04,05} \
+        d1_coast_{01,03,04,05,07,08,09,10,11,12} \
+        d2_prison_{01,02,03,04,05,06,07,08} \
+        d3_c17_{01,02,03,04,05,06a,06b,07,08,09,10a,10b,11,12,12b,13} \
+        d3_citadel_{01,02,03,04,05} \
+        d3_breen_01
+    do
+        cargo run -p inception-pack $release_flag -- \
+            --hl2-base ~/.steam/steam/steamapps/common/Half-Life\ 2/hl2 \
+            pack_map \
+            --dst ../build \
+            $map
+    done
+}
+
 release_flag=--release
 while true; do
     case $1 in
@@ -50,8 +71,17 @@ while true; do
             release_flag=
             shift
             ;;
-        "" | build)
+        "")
             subcommand_build
+            exit 0
+            ;;
+        build)
+            shift;
+            subcommand_build "$@"
+            exit 0
+            ;;
+        audit)
+            subcommand_audit
             exit 0
             ;;
         *)

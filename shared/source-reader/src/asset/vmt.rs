@@ -10,6 +10,7 @@ use crate::vpk::path::VpkPath;
 
 fn parse_bool(s: &str) -> Result<bool> {
     match s {
+        "0" => Ok(false),
         "1" => Ok(true),
         _ => match s.parse() {
             Ok(value) => Ok(value),
@@ -83,29 +84,10 @@ impl Vmt {
 
 impl Asset for Vmt {
     fn from_data(loader: &AssetLoader, path: &VpkPath, data: Vec<u8>) -> Result<Rc<Self>> {
-        let root = crate::properties::vmt(from_utf8(&data)?).unwrap();
-
-        let mut builder: Box<dyn ShaderBuilder> = match root.name {
-            "LightmappedGeneric" => Box::new(LightmappedGenericBuilder::default()),
-            "patch" => Box::new(PatchBuilder::default()),
-            "UnlitGeneric" | "Water" | "WorldVertexTransition" => {
-                return Ok(Rc::new(Self {
-                    path: path.clone(),
-                    shader: Shader::Unsupported,
-                }))
-            }
-            _ => panic!("unexpected shader: {}", root.name),
-        };
-        for entry in root.entries {
-            builder
-                .parse(entry)
-                .with_context(|| format!("Parsing material {:?}", path.as_canonical_path()))?;
-        }
-
         Ok(Rc::new(Self {
             path: path.clone(),
-            shader: builder
-                .build(loader)
+            shader: create_shader_builder(path, &data)?
+                .build(loader, path)
                 .with_context(|| format!("Building material {:?}", path.as_canonical_path()))?,
         }))
     }
@@ -113,21 +95,37 @@ impl Asset for Vmt {
 
 pub enum Shader {
     LightmappedGeneric(LightmappedGeneric),
-    Unsupported,
-}
-
-impl Shader {
-    fn to_builder<'a>(&self) -> Result<Box<dyn ShaderBuilder<'a> + 'a>> {
-        match self {
-            Shader::LightmappedGeneric(shader) => shader.to_builder(),
-            Shader::Unsupported => bail!("can't make a builder for an unsupported shader"),
-        }
-    }
+    Unsupported { shader: String },
 }
 
 trait ShaderBuilder<'a> {
-    fn parse(&mut self, entry: Entry<'a>) -> Result<()>;
-    fn build(self: Box<Self>, loader: &AssetLoader) -> Result<Shader>;
+    fn parse(&mut self, material_path: &VpkPath, entry: Entry<'a>) -> Result<()>;
+    fn build(self: Box<Self>, loader: &AssetLoader, material_path: &VpkPath) -> Result<Shader>;
+}
+
+fn create_shader_builder<'a>(
+    path: &VpkPath,
+    data: &'a [u8],
+) -> Result<Box<dyn ShaderBuilder<'a> + 'a>> {
+    let root = crate::properties::vmt(from_utf8(&data)?).unwrap();
+
+    let mut builder: Box<dyn ShaderBuilder<'a> + 'a> = match root.name {
+        "LightmappedGeneric" => Box::new(LightmappedGenericBuilder::default()),
+        "patch" => Box::new(PatchBuilder::default()),
+        shader => {
+            eprintln!("WARNING: Unimplemented shader {} in {}", shader, path);
+            return Ok(Box::new(UnsupportedBuilder {
+                shader: shader.to_string(),
+            }));
+        }
+    };
+    for entry in root.entries {
+        builder
+            .parse(path, entry)
+            .with_context(|| format!("Parsing material {:?}", path.as_canonical_path()))?;
+    }
+
+    Ok(builder)
 }
 
 struct LightmappedGenericBuilder {
@@ -179,7 +177,7 @@ impl Default for LightmappedGenericBuilder {
 }
 
 impl<'a> ShaderBuilder<'a> for LightmappedGenericBuilder {
-    fn parse(&mut self, entry: Entry) -> Result<()> {
+    fn parse(&mut self, material_path: &VpkPath, entry: Entry<'a>) -> Result<()> {
         match entry {
             Entry::KeyValue(KeyValue { key, value }) => match key.to_ascii_lowercase().as_str() {
                 "$alphatest" => self.alpha_test = parse_bool(value).context("$alphatest")?,
@@ -229,25 +227,88 @@ impl<'a> ShaderBuilder<'a> for LightmappedGenericBuilder {
                 "$translucent" => self.translucent = parse_bool(value).context("$translucent")?,
                 "$parallaxmap" | "$parallaxmapscale" | "$reflectivity" | "$surfaceprop" => (),
                 x if x.starts_with("%") => (),
-                _ => println!("unexpected LightmappedGeneric key: {}", key),
+                _ => eprintln!(
+                    "WARNING: Unimplemented LightmappedGeneric key {} in {}",
+                    key, material_path,
+                ),
             },
-            Entry::Object(Object { name, .. }) => match name.to_ascii_lowercase().as_str() {
-                "proxies" => println!("ignoring unsupported material proxy"),
-                name if name.ends_with("_dx8")
-                    || name.ends_with("_dx9")
-                    || name.contains("_hdr_") =>
-                {
-                    ()
+            Entry::Object(Object { name, entries }) => match name.to_ascii_lowercase().as_str() {
+                "proxies" => {
+                    eprintln!(
+                        "WARNING: Unimplemented material proxies in {}",
+                        material_path,
+                    );
                 }
-                _ => println!("unexpected LightmappedGeneric object: {}", name),
+
+                // Fallbacks above the targeted dxlevel. Safe to completely ignore.
+                "lightmappedgeneric_hdr_dx9"
+                | "lightmappedgeneric_dx9"
+                | "lightmappedgeneric_dx8"
+                | "lightmappedgeneric_nobump_dx8" => (),
+
+                // Fallback for the targeted dxlevel. Parse as if inlined in the main object.
+                "lightmappedgeneric_dx6" => {
+                    for entry in entries {
+                        self.parse(material_path, entry)?;
+                    }
+                }
+
+                name if name.contains(&['<', '>'][..]) => {
+                    let operator = if name.starts_with("<=") {
+                        "<="
+                    } else if name.starts_with("<") {
+                        "<"
+                    } else if name.starts_with(">=") {
+                        ">="
+                    } else if name.starts_with(">") {
+                        ">"
+                    } else {
+                        bail!(
+                            "invalid conditional statement {:?} in {}",
+                            name,
+                            material_path,
+                        );
+                    };
+                    let param = &name[operator.len()..];
+                    match param {
+                        "dx90" | "dx90_20b" => (),
+                        _ => bail!(
+                            "unexpected conditional value {:?} in {}",
+                            param,
+                            material_path,
+                        ),
+                    }
+
+                    // Every valid param is above the target dxlevel.
+                    match operator {
+                        // Match. Parse as if inlined in the main object.
+                        "<" | "<=" => {
+                            for entry in entries {
+                                self.parse(material_path, entry)?;
+                            }
+                        }
+
+                        // No match. Safe to completely ignore.
+                        ">=" | ">" => (),
+
+                        _ => unreachable!(),
+                    }
+                }
+                _ => eprintln!(
+                    "WARNING: Unexpected LightmappedGeneric object {} in {}",
+                    name, material_path,
+                ),
             },
         }
         Ok(())
     }
 
-    fn build(self: Box<Self>, _loader: &AssetLoader) -> Result<Shader> {
+    fn build(self: Box<Self>, _loader: &AssetLoader, material_path: &VpkPath) -> Result<Shader> {
         if self.env_map_path.is_some() && self.env_map_contrast != Some(1.0) {
-            bail!("unsupported $envmapcontrast: {:?}", self.env_map_contrast);
+            eprintln!(
+                "WARNING: Unimplemented $envmapcontrast {:?} in {}",
+                self.env_map_contrast, material_path,
+            );
         }
 
         Ok(Shader::LightmappedGeneric(LightmappedGeneric {
@@ -300,32 +361,6 @@ pub struct LightmappedGeneric {
     pub translucent: bool,
 }
 
-impl LightmappedGeneric {
-    fn to_builder<'a>(&self) -> Result<Box<dyn ShaderBuilder<'a> + 'a>> {
-        Ok(Box::new(LightmappedGenericBuilder {
-            alpha_test_reference: self.alpha_test_reference,
-            alpha_test: self.alpha_test,
-            base_alpha_env_map_mask: self.base_alpha_env_map_mask,
-            base_texture_path: Some(self.base_texture_path.clone()),
-            bump_map_path: self.bump_map_path.clone(),
-            decal_path: self.decal_path.clone(),
-            detail_path: self.detail_path.clone(),
-            detail_blend_factor: self.detail_blend_factor,
-            detail_blend_mode: self.detail_blend_mode,
-            detail_scale: self.detail_scale,
-            env_map_path: self.env_map_path.clone(),
-            env_map_contrast: self.env_map_contrast,
-            env_map_mask_path: self.env_map_mask_path.clone(),
-            env_map_saturation: self.env_map_saturation,
-            env_map_tint: self.env_map_tint,
-            no_diffuse_bump_lighting: self.no_diffuse_bump_lighting,
-            normal_map_alpha_env_map_mask: self.normal_map_alpha_env_map_mask,
-            self_illum: self.self_illum,
-            translucent: self.translucent,
-        }))
-    }
-}
-
 #[derive(Default)]
 pub struct PatchBuilder<'a> {
     include: Option<VpkPath>,
@@ -333,31 +368,52 @@ pub struct PatchBuilder<'a> {
 }
 
 impl<'a> ShaderBuilder<'a> for PatchBuilder<'a> {
-    fn parse(&mut self, entry: Entry<'a>) -> Result<()> {
+    fn parse(&mut self, material_path: &VpkPath, entry: Entry<'a>) -> Result<()> {
         match entry {
             Entry::KeyValue(KeyValue { key, value }) => match key.to_ascii_lowercase().as_str() {
                 "include" => self.include = Some(parse_vmt_path(value)?),
-                _ => println!("unexpected patch key: {}", key),
+                _ => eprintln!("WARNING: Unexpected patch key {} in {}", key, material_path),
             },
             Entry::Object(Object { name, mut entries }) => match name.to_ascii_lowercase().as_str()
             {
                 "replace" => self.entries.append(&mut entries),
-                _ => println!("unexpected patch object: {}", name),
+                _ => eprintln!(
+                    "WARNING: Unexpected patch object {} in {}",
+                    name, material_path,
+                ),
             },
         }
         Ok(())
     }
 
-    fn build(self: Box<Self>, loader: &AssetLoader) -> Result<Shader> {
-        let mut builder = match self.include {
-            Some(x) => loader.get_material(&x)?.shader.to_builder()?,
+    fn build(self: Box<Self>, loader: &AssetLoader, material_path: &VpkPath) -> Result<Shader> {
+        let include_path = match self.include {
+            Some(include_path) => include_path,
             None => bail!("patch material without include parameter"),
         };
+        let data = loader.material_loader().load_file(&include_path)?.unwrap();
+        let mut builder = create_shader_builder(&include_path, &data)?;
 
         for entry in self.entries {
-            builder.parse(entry)?;
+            builder.parse(material_path, entry)?;
         }
 
-        builder.build(loader)
+        builder.build(loader, material_path)
+    }
+}
+
+pub struct UnsupportedBuilder {
+    shader: String,
+}
+
+impl ShaderBuilder<'_> for UnsupportedBuilder {
+    fn parse(&mut self, _material_path: &VpkPath, _entry: Entry) -> Result<()> {
+        Ok(())
+    }
+
+    fn build(self: Box<Self>, _loader: &AssetLoader, _material_path: &VpkPath) -> Result<Shader> {
+        Ok(Shader::Unsupported {
+            shader: self.shader.clone(),
+        })
     }
 }

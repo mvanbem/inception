@@ -18,6 +18,7 @@ pub struct Vtf {
     mips: Vec<Vec<TextureBuf>>,
 }
 
+#[derive(Clone, Copy)]
 pub struct VtfFaceMip<'a> {
     pub face: usize,
     pub mip_level: usize,
@@ -126,8 +127,10 @@ impl Asset for Vtf {
 
                 let format = match high_res_image_format {
                     3 => TextureFormat::Bgr8,
+                    12 => TextureFormat::Bgra8,
                     13 => TextureFormat::Dxt1,
                     15 => TextureFormat::Dxt5,
+                    16 => TextureFormat::Bgrx8,
                     _ => bail!(
                         "unexpected high res image format: {}",
                         high_res_image_format

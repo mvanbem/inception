@@ -17,6 +17,7 @@ use memmap::Mmap;
 use nalgebra_glm::{mat3_to_mat4, vec2, vec3, vec4, Mat3, Mat3x4, Mat4, Vec3};
 use num_traits::PrimInt;
 use source_reader::asset::vmt::{LightmappedGeneric, Shader, Vmt};
+use source_reader::asset::vtf::{Vtf, VtfFaceMip};
 use source_reader::asset::AssetLoader;
 use source_reader::bsp::Bsp;
 use source_reader::file::zip::ZipArchiveLoader;
@@ -117,7 +118,7 @@ fn pack_map(hl2_base: &Path, matches: &ArgMatches) -> Result<()> {
         let mut path = hl2_base.join("maps");
         path.push(format!(
             "{}.bsp",
-            matches.value_of("map").unwrap_or("d1_trainstation_01"),
+            matches.value_of("MAP").unwrap_or("d1_trainstation_01"),
         ));
         path
     };
@@ -299,7 +300,7 @@ impl Pass {
                     .as_ref()
                     .map(|env_map| PassEnvMap { mask: env_map.mask }),
             },
-            Shader::Unsupported => panic!(),
+            Shader::Unsupported { .. } => panic!(),
         }
     }
 
@@ -414,14 +415,14 @@ impl Pass {
                 base_alpha: PackedMaterialBaseAlpha::AuxTextureAlpha,
                 env_map: None,
             } => 12,
-            // Pass::LightmappedGeneric {
-            //     alpha: PassAlpha::AlphaBlend,
-            //     base_alpha: PackedMaterialBaseAlpha::AuxTextureAlpha,
-            //     env_map:
-            //         Some(PassEnvMap {
-            //             mask: PackedMaterialEnvMapMask::None,
-            //         }),
-            // } => 13,
+            Pass::LightmappedGeneric {
+                alpha: PassAlpha::AlphaBlend,
+                base_alpha: PackedMaterialBaseAlpha::AuxTextureAlpha,
+                env_map:
+                    Some(PassEnvMap {
+                        mask: PackedMaterialEnvMapMask::None,
+                    }),
+            } => 13,
             // (disallowed) => 14,
             Pass::LightmappedGeneric {
                 alpha: PassAlpha::AlphaBlend,
@@ -481,7 +482,7 @@ impl ShaderParams {
                     },
                 }
             }
-            Shader::Unsupported => panic!(),
+            Shader::Unsupported { .. } => panic!(),
         }
     }
 }
@@ -592,12 +593,15 @@ fn process_geometry(
                 }
                 _ => continue,
             };
-            let packed_material = PackedMaterial::from_material_and_all_planes(
+            let packed_material = match PackedMaterial::from_material_and_all_planes(
                 asset_loader,
                 &mut ids,
                 &material,
                 &material_planes[&material_path],
-            )?;
+            )? {
+                Some(packed_material) => packed_material,
+                None => continue, // Skip any face with a material we can't load.
+            };
             let mut polygon_builder = PolygonBuilder::new(cluster_builder.display_list_builder(
                 Pass::from_material(&material, &packed_material),
                 packed_material,
@@ -755,109 +759,68 @@ fn write_textures(
     fn get_dst_format(src_format: TextureFormat) -> Result<TextureFormat> {
         Ok(match src_format {
             TextureFormat::Dxt1 | TextureFormat::Dxt5 => TextureFormat::GxTfCmpr,
-            TextureFormat::Bgr8 => TextureFormat::GxTfRgba8,
+            TextureFormat::Bgr8 | TextureFormat::Bgrx8 => TextureFormat::GxTfRgba8,
             format => {
-                bail!("unexpected texture format: {:?}", format)
+                panic!("unexpected texture format: {:?}", format)
             }
         })
+    }
+
+    fn limit_face_mips(texture: &Vtf, dimension_divisor: usize) -> Vec<VtfFaceMip> {
+        let max_width = texture.width() / dimension_divisor;
+        let max_height = texture.height() / dimension_divisor;
+
+        let mut any_mip_matched = false;
+        let mut smallest_face_mip = None;
+        let mut limited_face_mips = Vec::new();
+        for face_mip in texture.iter_face_mips() {
+            smallest_face_mip = Some(face_mip);
+            if face_mip.texture.width() <= max_width && face_mip.texture.height() <= max_height {
+                any_mip_matched = true;
+                limited_face_mips.push(face_mip);
+            }
+        }
+
+        if !any_mip_matched {
+            limited_face_mips.push(smallest_face_mip.unwrap());
+        }
+
+        limited_face_mips
     }
 
     const GAMECUBE_MEMORY_BUDGET: usize = 8 * 1024 * 1024;
     for dimension_divisor in [1, 2, 4, 8, 16, 32] {
         let mut total_size = 0;
+        let mut env_map_size = 0;
         for key in &map_geometry.texture_keys {
             match key {
                 OwnedTextureKey::EncodeAsIs { texture_path } => {
                     let texture = asset_loader.get_texture(texture_path)?;
-                    let max_width = texture.width() / dimension_divisor;
-                    let max_height = texture.height() / dimension_divisor;
-
-                    // Take all mips that fit within the max_dimension.
-                    let mut accepted_mip = false;
-                    for face_mip in texture.iter_face_mips() {
-                        assert_eq!(face_mip.face, 0);
-                        if face_mip.texture.width() <= max_width
-                            && face_mip.texture.height() <= max_height
-                        {
-                            let dst_format = get_dst_format(texture.format())?;
-                            total_size += dst_format
-                                .metrics()
-                                .encoded_size(face_mip.texture.width(), face_mip.texture.height());
-                            accepted_mip = true;
-                        }
-                    }
-
-                    if !accepted_mip {
-                        // TODO: Take the smallest available mip.
-
-                        bail!(
-                            "unable to find a mipmap within max_size={}x{} for texture {}",
-                            max_width,
-                            max_height,
-                            texture.path(),
-                        );
+                    let dst_format = get_dst_format(texture.format())?;
+                    for face_mip in limit_face_mips(&texture, dimension_divisor) {
+                        total_size += dst_format
+                            .metrics()
+                            .encoded_size(face_mip.texture.width(), face_mip.texture.height());
                     }
                 }
 
                 OwnedTextureKey::Intensity { texture_path } => {
                     let texture = asset_loader.get_texture(texture_path)?;
-                    let max_width = texture.width() / dimension_divisor;
-                    let max_height = texture.height() / dimension_divisor;
-
-                    // Take all mips that fit within the max_dimension.
-                    let mut accepted_mip = false;
-                    for face_mip in texture.iter_face_mips() {
-                        assert_eq!(face_mip.face, 0);
-                        if face_mip.texture.width() <= max_width
-                            && face_mip.texture.height() <= max_height
-                        {
-                            total_size += TextureFormat::GxTfI8
-                                .metrics()
-                                .encoded_size(face_mip.texture.width(), face_mip.texture.height());
-                            accepted_mip = true;
-                        }
-                    }
-
-                    if !accepted_mip {
-                        // TODO: Take the smallest available mip.
-
-                        bail!(
-                            "unable to find a mipmap within max_size={}x{} for texture {}",
-                            max_width,
-                            max_height,
-                            texture.path(),
-                        );
+                    let dst_format = TextureFormat::GxTfI8;
+                    for face_mip in limit_face_mips(&texture, dimension_divisor) {
+                        total_size += dst_format
+                            .metrics()
+                            .encoded_size(face_mip.texture.width(), face_mip.texture.height());
                     }
                 }
 
                 OwnedTextureKey::AlphaToIntensity { texture_path } => {
                     let texture = asset_loader.get_texture(texture_path)?;
-                    let max_width = texture.width() / dimension_divisor;
-                    let max_height = texture.height() / dimension_divisor;
-
-                    // Take all mips that fit within the max_dimension.
-                    let mut accepted_mip = false;
-                    for face_mip in texture.iter_face_mips() {
-                        assert_eq!(face_mip.face, 0);
-                        if face_mip.texture.width() <= max_width
-                            && face_mip.texture.height() <= max_height
-                        {
-                            total_size += TextureFormat::GxTfI8
-                                .metrics()
-                                .encoded_size(face_mip.texture.width(), face_mip.texture.height());
-                            accepted_mip = true;
-                        }
-                    }
-
-                    if !accepted_mip {
-                        // TODO: Take the smallest available mip.
-
-                        bail!(
-                            "unable to find a mipmap within max_size={}x{} for texture {}",
-                            max_width,
-                            max_height,
-                            texture.path(),
-                        );
+                    let dst_format = TextureFormat::GxTfI8;
+                    for face_mip in limit_face_mips(&texture, dimension_divisor) {
+                        total_size += dst_format
+                            .metrics()
+                            .encoded_size(face_mip.texture.width(), face_mip.texture.height());
                     }
                 }
 
@@ -872,32 +835,11 @@ fn write_textures(
                     assert_eq!(intensity_texture.height(), alpha_texture.height());
                     assert_eq!(intensity_texture.mips().len(), alpha_texture.mips().len());
 
-                    let max_width = intensity_texture.width() / dimension_divisor;
-                    let max_height = intensity_texture.height() / dimension_divisor;
-
-                    // Take all mips that fit within the max_dimension.
-                    let mut accepted_mip = false;
-                    for face_mip in intensity_texture.iter_face_mips() {
-                        assert_eq!(face_mip.face, 0);
-                        if face_mip.texture.width() <= max_width
-                            && face_mip.texture.height() <= max_height
-                        {
-                            total_size += TextureFormat::GxTfIa8
-                                .metrics()
-                                .encoded_size(face_mip.texture.width(), face_mip.texture.height());
-                            accepted_mip = true;
-                        }
-                    }
-
-                    if !accepted_mip {
-                        // TODO: Take the smallest available mip.
-
-                        bail!(
-                            "unable to find a mipmap within max_size={}x{} for texture {}",
-                            max_width,
-                            max_height,
-                            intensity_texture.path(),
-                        );
+                    let dst_format = TextureFormat::GxTfIa8;
+                    for face_mip in limit_face_mips(&intensity_texture, dimension_divisor) {
+                        total_size += dst_format
+                            .metrics()
+                            .encoded_size(face_mip.texture.width(), face_mip.texture.height());
                     }
                 }
 
@@ -907,16 +849,18 @@ fn write_textures(
                     let width = 2 * texture.width() / dimension_divisor;
                     let height = 2 * texture.height() / dimension_divisor;
                     // TODO: Use DXT1.
-                    total_size += TextureFormat::GxTfRgba8
+                    let size = TextureFormat::GxTfRgba8
                         .metrics()
                         .encoded_size(width, height);
+                    total_size += size;
+                    env_map_size += size;
                 }
             }
         }
 
         println!(
-            "Textures occupy {} bytes with dimension_divisor {}",
-            total_size, dimension_divisor,
+            "Textures occupy {} bytes ({} for env maps) with dimension_divisor {}",
+            total_size, env_map_size, dimension_divisor,
         );
 
         if total_size > GAMECUBE_MEMORY_BUDGET {
@@ -926,133 +870,73 @@ fn write_textures(
         let mut texture_table = BufWriter::new(File::create(dst_path.join("texture_table.dat"))?);
         let mut texture_data = BufWriter::new(File::create(dst_path.join("texture_data.dat"))?);
 
+        let budgeted_size = total_size;
         total_size = 0;
         for key in &map_geometry.texture_keys {
-            match key {
+            struct TextureMetadata {
+                width: usize,
+                height: usize,
+                mip_count: usize,
+                gx_flags: u8,
+                gx_format: u8,
+            }
+
+            let start_offset = texture_data.stream_position()? as u32;
+            let metadata = match key {
                 OwnedTextureKey::EncodeAsIs { texture_path } => {
                     let texture = asset_loader.get_texture(texture_path)?;
                     assert_eq!(texture.face_count(), 1);
+
                     let dst_format = get_dst_format(texture.format())?;
-
-                    // Take all mips that fit within the max_dimension.
-                    let max_width = texture.width() / dimension_divisor;
-                    let max_height = texture.height() / dimension_divisor;
-
-                    let start_offset = texture_data.stream_position()? as u32;
-                    let mut mips_written = 0;
-                    for face_mip in texture.iter_face_mips() {
+                    let mut base_mip_size = None;
+                    let mut mip_count = 0;
+                    for face_mip in limit_face_mips(&texture, dimension_divisor) {
                         assert_eq!(face_mip.face, 0);
-                        if face_mip.texture.width() <= max_width
-                            && face_mip.texture.height() <= max_height
-                        {
-                            texture_data.write_all(
-                                TextureBuf::transcode(face_mip.texture.as_slice(), dst_format)
-                                    .data(),
-                            )?;
-                            mips_written += 1;
+                        if base_mip_size.is_none() {
+                            base_mip_size =
+                                Some((face_mip.texture.width(), face_mip.texture.height()));
                         }
+                        texture_data.write_all(
+                            TextureBuf::transcode(face_mip.texture.as_slice(), dst_format).data(),
+                        )?;
+                        mip_count += 1;
                     }
-                    if mips_written == 0 {
-                        // TODO: Take the smallest available mip.
 
-                        bail!(
-                            "unable to find a mipmap within max_size={}x{} for texture {}",
-                            max_width,
-                            max_height,
-                            texture.path(),
-                        );
+                    TextureMetadata {
+                        width: base_mip_size.unwrap().0,
+                        height: base_mip_size.unwrap().1,
+                        mip_count,
+                        gx_flags: gx_texture_flags(texture.flags()),
+                        gx_format: gx_texture_format(dst_format),
                     }
-                    // Pad to a 32 byte boundary.
-                    while (texture_data.stream_position()? & 31) != 0 {
-                        texture_data.write_u8(0)?;
-                    }
-                    let end_offset = texture_data.stream_position()? as u32;
-
-                    // Write a texture table entry.
-                    texture_table
-                        .write_u16::<BigEndian>((texture.width() / dimension_divisor) as u16)?;
-                    texture_table
-                        .write_u16::<BigEndian>((texture.height() / dimension_divisor) as u16)?;
-                    texture_table.write_u8(mips_written)?;
-                    texture_table.write_u8(
-                        if (texture.flags() & 0x4) != 0 {
-                            0x01
-                        } else {
-                            0
-                        } | if (texture.flags() & 0x8) != 0 {
-                            0x02
-                        } else {
-                            0
-                        },
-                    )?;
-                    texture_table.write_u8(gx_texture_format(dst_format))?;
-                    texture_table.write_u8(0)?;
-                    texture_table.write_u32::<BigEndian>(start_offset)?;
-                    texture_table.write_u32::<BigEndian>(end_offset)?;
-                    total_size += (end_offset - start_offset) as usize;
                 }
 
                 OwnedTextureKey::Intensity { texture_path } => {
                     let texture = asset_loader.get_texture(texture_path)?;
                     assert_eq!(texture.face_count(), 1);
+
                     let dst_format = TextureFormat::GxTfI8;
-
-                    // Take all mips that fit within the max_dimension.
-                    let max_width = texture.width() / dimension_divisor;
-                    let max_height = texture.height() / dimension_divisor;
-
-                    let start_offset = texture_data.stream_position()? as u32;
-                    let mut mips_written = 0;
-                    for face_mip in texture.iter_face_mips() {
+                    let mut base_mip_size = None;
+                    let mut mip_count = 0;
+                    for face_mip in limit_face_mips(&texture, dimension_divisor) {
                         assert_eq!(face_mip.face, 0);
-                        if face_mip.texture.width() <= max_width
-                            && face_mip.texture.height() <= max_height
-                        {
-                            texture_data.write_all(
-                                TextureBuf::transcode(face_mip.texture.as_slice(), dst_format)
-                                    .data(),
-                            )?;
-                            mips_written += 1;
+                        if base_mip_size.is_none() {
+                            base_mip_size =
+                                Some((face_mip.texture.width(), face_mip.texture.height()));
                         }
+                        texture_data.write_all(
+                            TextureBuf::transcode(face_mip.texture.as_slice(), dst_format).data(),
+                        )?;
+                        mip_count += 1;
                     }
-                    if mips_written == 0 {
-                        // TODO: Take the smallest available mip.
 
-                        bail!(
-                            "unable to find a mipmap within max_size={}x{} for texture {}",
-                            max_width,
-                            max_height,
-                            texture.path(),
-                        );
+                    TextureMetadata {
+                        width: base_mip_size.unwrap().0,
+                        height: base_mip_size.unwrap().1,
+                        mip_count,
+                        gx_flags: gx_texture_flags(texture.flags()),
+                        gx_format: gx_texture_format(dst_format),
                     }
-                    // Pad to a 32 byte boundary.
-                    while (texture_data.stream_position()? & 31) != 0 {
-                        texture_data.write_u8(0)?;
-                    }
-                    let end_offset = texture_data.stream_position()? as u32;
-
-                    // Write a texture table entry.
-                    texture_table
-                        .write_u16::<BigEndian>((texture.width() / dimension_divisor) as u16)?;
-                    texture_table
-                        .write_u16::<BigEndian>((texture.height() / dimension_divisor) as u16)?;
-                    texture_table.write_u8(mips_written)?;
-                    texture_table.write_u8(
-                        if (texture.flags() & 0x4) != 0 {
-                            0x01
-                        } else {
-                            0
-                        } | if (texture.flags() & 0x8) != 0 {
-                            0x02
-                        } else {
-                            0
-                        },
-                    )?;
-                    texture_table.write_u8(gx_texture_format(dst_format))?;
-                    texture_table.write_u8(0)?;
-                    texture_table.write_u32::<BigEndian>(start_offset)?;
-                    texture_table.write_u32::<BigEndian>(end_offset)?;
-                    total_size += (end_offset - start_offset) as usize;
                 }
 
                 OwnedTextureKey::AlphaToIntensity { texture_path } => {
@@ -1060,86 +944,52 @@ fn write_textures(
                     assert_eq!(texture.face_count(), 1);
                     let dst_format = TextureFormat::GxTfI8;
 
-                    // Take all mips that fit within the max_dimension.
-                    let max_width = texture.width() / dimension_divisor;
-                    let max_height = texture.height() / dimension_divisor;
-
-                    let start_offset = texture_data.stream_position()? as u32;
-                    let mut mips_written = 0;
-                    for face_mip in texture.iter_face_mips() {
+                    let mut base_mip_size = None;
+                    let mut mip_count = 0;
+                    for face_mip in limit_face_mips(&texture, dimension_divisor) {
                         assert_eq!(face_mip.face, 0);
-                        if face_mip.texture.width() <= max_width
-                            && face_mip.texture.height() <= max_height
-                        {
-                            // Broadcast alpha to all channels.
-                            let mut texel_data = TextureBuf::transcode(
-                                face_mip.texture.as_slice(),
-                                TextureFormat::Rgba8,
-                            )
-                            .into_data();
-                            for texel_index in
-                                0..face_mip.texture.width() * face_mip.texture.height()
-                            {
-                                let offset = 4 * texel_index;
-                                texel_data[offset] = texel_data[offset + 3];
-                                texel_data[offset + 1] = texel_data[offset + 3];
-                                texel_data[offset + 2] = texel_data[offset + 3];
-                            }
-
-                            texture_data.write_all(
-                                TextureBuf::transcode(
-                                    TextureBuf::new(
-                                        TextureFormat::Rgba8,
-                                        face_mip.texture.width(),
-                                        face_mip.texture.height(),
-                                        texel_data,
-                                    )
-                                    .as_slice(),
-                                    dst_format,
-                                )
-                                .data(),
-                            )?;
-                            mips_written += 1;
+                        if base_mip_size.is_none() {
+                            base_mip_size =
+                                Some((face_mip.texture.width(), face_mip.texture.height()));
                         }
-                    }
-                    if mips_written == 0 {
-                        // TODO: Take the smallest available mip.
 
-                        bail!(
-                            "unable to find a mipmap within max_size={}x{} for texture {}",
-                            max_width,
-                            max_height,
-                            texture.path(),
-                        );
-                    }
-                    // Pad to a 32 byte boundary.
-                    while (texture_data.stream_position()? & 31) != 0 {
-                        texture_data.write_u8(0)?;
-                    }
-                    let end_offset = texture_data.stream_position()? as u32;
+                        // Broadcast alpha to all channels.
+                        let mut texel_data = TextureBuf::transcode(
+                            face_mip.texture.as_slice(),
+                            TextureFormat::Rgba8,
+                        )
+                        .into_data();
+                        for texel_index in 0..face_mip.texture.width() * face_mip.texture.height() {
+                            let offset = 4 * texel_index;
+                            texel_data[offset] = texel_data[offset + 3];
+                            texel_data[offset + 1] = texel_data[offset + 3];
+                            texel_data[offset + 2] = texel_data[offset + 3];
+                        }
 
-                    // Write a texture table entry.
-                    texture_table
-                        .write_u16::<BigEndian>((texture.width() / dimension_divisor) as u16)?;
-                    texture_table
-                        .write_u16::<BigEndian>((texture.height() / dimension_divisor) as u16)?;
-                    texture_table.write_u8(mips_written)?;
-                    texture_table.write_u8(
-                        if (texture.flags() & 0x4) != 0 {
-                            0x01
-                        } else {
-                            0
-                        } | if (texture.flags() & 0x8) != 0 {
-                            0x02
-                        } else {
-                            0
-                        },
-                    )?;
-                    texture_table.write_u8(gx_texture_format(dst_format))?;
-                    texture_table.write_u8(0)?;
-                    texture_table.write_u32::<BigEndian>(start_offset)?;
-                    texture_table.write_u32::<BigEndian>(end_offset)?;
-                    total_size += (end_offset - start_offset) as usize;
+                        texture_data.write_all(
+                            TextureBuf::transcode(
+                                TextureBuf::new(
+                                    TextureFormat::Rgba8,
+                                    face_mip.texture.width(),
+                                    face_mip.texture.height(),
+                                    texel_data,
+                                )
+                                .as_slice(),
+                                dst_format,
+                            )
+                            .data(),
+                        )?;
+
+                        mip_count += 1;
+                    }
+
+                    TextureMetadata {
+                        width: base_mip_size.unwrap().0,
+                        height: base_mip_size.unwrap().1,
+                        mip_count,
+                        gx_flags: gx_texture_flags(texture.flags()),
+                        gx_format: gx_texture_format(dst_format),
+                    }
                 }
 
                 OwnedTextureKey::ComposeIntensityAlpha {
@@ -1157,107 +1007,78 @@ fn write_textures(
                     assert_eq!(alpha_texture.face_count(), 1);
                     let dst_format = TextureFormat::GxTfIa8;
 
-                    // Take all mips that fit within the max_dimension.
-                    let max_width = intensity_texture.width() / dimension_divisor;
-                    let max_height = intensity_texture.height() / dimension_divisor;
+                    let mut base_mip_size = None;
+                    let mut mip_count = 0;
+                    let intensity_face_mips =
+                        limit_face_mips(&intensity_texture, dimension_divisor);
+                    let alpha_face_mips = limit_face_mips(&alpha_texture, dimension_divisor);
+                    assert_eq!(intensity_face_mips.len(), alpha_face_mips.len());
+                    for index in 0..intensity_face_mips.len() {
+                        let intensity_face_mip = intensity_face_mips[index];
+                        let alpha_face_mip = alpha_face_mips[index];
+                        assert_eq!(intensity_face_mip.face, 0);
+                        assert_eq!(alpha_face_mip.face, 0);
+                        assert_eq!(intensity_face_mip.mip_level, alpha_face_mip.mip_level);
+                        let width = intensity_face_mip.texture.width();
+                        let height = intensity_face_mip.texture.height();
 
-                    let start_offset = texture_data.stream_position()? as u32;
-                    let mut mips_written = 0;
-                    for (mip_level, (intensity_faces, alpha_faces)) in intensity_texture
-                        .mips()
-                        .iter()
-                        .zip(alpha_texture.mips().iter())
-                        .enumerate()
-                    {
-                        let intensity_mip = &intensity_faces[0];
-                        let alpha_mip = &alpha_faces[0];
-
-                        let width = (intensity_texture.width() >> mip_level).max(1);
-                        let height = (intensity_texture.height() >> mip_level).max(1);
-
-                        if width <= max_width && height <= max_height {
-                            // Combine the intensity and alpha textures by channel into a new
-                            // texture.
-                            let intensity_data = TextureBuf::transcode(
-                                intensity_mip.as_slice(),
-                                TextureFormat::Rgba8,
-                            )
-                            .into_data();
-                            let alpha_data =
-                                TextureBuf::transcode(alpha_mip.as_slice(), TextureFormat::Rgba8)
-                                    .into_data();
-                            let mut texels = Vec::with_capacity(4 * width * height);
-                            for texel_index in 0..width * height {
-                                let offset = 4 * texel_index;
-                                texels.extend_from_slice(&if *intensity_from_alpha {
-                                    [
-                                        intensity_data[offset + 3],
-                                        intensity_data[offset + 3],
-                                        intensity_data[offset + 3],
-                                        alpha_data[offset + 3],
-                                    ]
-                                } else {
-                                    [
-                                        intensity_data[offset],
-                                        intensity_data[offset + 1],
-                                        intensity_data[offset + 2],
-                                        alpha_data[offset + 3],
-                                    ]
-                                });
-                            }
-
-                            texture_data.write_all(
-                                TextureBuf::transcode(
-                                    TextureBuf::new(TextureFormat::Rgba8, width, height, texels)
-                                        .as_slice(),
-                                    dst_format,
-                                )
-                                .data(),
-                            )?;
-                            mips_written += 1;
+                        if base_mip_size.is_none() {
+                            base_mip_size = Some((
+                                intensity_face_mip.texture.width(),
+                                intensity_face_mip.texture.height(),
+                            ));
                         }
-                    }
-                    if mips_written == 0 {
-                        // TODO: Take the smallest available mip.
 
-                        bail!(
-                            "unable to find a mipmap within max_size={}x{} for textures {} and {}",
-                            max_width,
-                            max_height,
-                            intensity_texture_path,
-                            alpha_texture_path,
-                        );
-                    }
-                    // Pad to a 32 byte boundary.
-                    while (texture_data.stream_position()? & 31) != 0 {
-                        texture_data.write_u8(0)?;
-                    }
-                    let end_offset = texture_data.stream_position()? as u32;
+                        // Combine the intensity and alpha textures by channel into a new
+                        // texture.
+                        let intensity_data = TextureBuf::transcode(
+                            intensity_face_mip.texture.as_slice(),
+                            TextureFormat::Rgba8,
+                        )
+                        .into_data();
+                        let alpha_data = TextureBuf::transcode(
+                            alpha_face_mip.texture.as_slice(),
+                            TextureFormat::Rgba8,
+                        )
+                        .into_data();
+                        let mut texels = Vec::with_capacity(4 * width * height);
+                        for texel_index in 0..width * height {
+                            let offset = 4 * texel_index;
+                            texels.extend_from_slice(&if *intensity_from_alpha {
+                                [
+                                    intensity_data[offset + 3],
+                                    intensity_data[offset + 3],
+                                    intensity_data[offset + 3],
+                                    alpha_data[offset + 3],
+                                ]
+                            } else {
+                                [
+                                    intensity_data[offset],
+                                    intensity_data[offset + 1],
+                                    intensity_data[offset + 2],
+                                    alpha_data[offset + 3],
+                                ]
+                            });
+                        }
 
-                    // Write a texture table entry.
-                    texture_table.write_u16::<BigEndian>(
-                        (intensity_texture.width() / dimension_divisor) as u16,
-                    )?;
-                    texture_table.write_u16::<BigEndian>(
-                        (intensity_texture.height() / dimension_divisor) as u16,
-                    )?;
-                    texture_table.write_u8(mips_written)?;
-                    texture_table.write_u8(
-                        if (intensity_texture.flags() & 0x4) != 0 {
-                            0x01
-                        } else {
-                            0
-                        } | if (intensity_texture.flags() & 0x8) != 0 {
-                            0x02
-                        } else {
-                            0
-                        },
-                    )?;
-                    texture_table.write_u8(gx_texture_format(dst_format))?;
-                    texture_table.write_u8(0)?;
-                    texture_table.write_u32::<BigEndian>(start_offset)?;
-                    texture_table.write_u32::<BigEndian>(end_offset)?;
-                    total_size += (end_offset - start_offset) as usize;
+                        texture_data.write_all(
+                            TextureBuf::transcode(
+                                TextureBuf::new(TextureFormat::Rgba8, width, height, texels)
+                                    .as_slice(),
+                                dst_format,
+                            )
+                            .data(),
+                        )?;
+                        mip_count += 1;
+                    }
+
+                    TextureMetadata {
+                        width: base_mip_size.unwrap().0,
+                        height: base_mip_size.unwrap().1,
+                        mip_count,
+                        gx_flags: gx_texture_flags(intensity_texture.flags()),
+                        gx_format: gx_texture_format(dst_format),
+                    }
                 }
 
                 OwnedTextureKey::BakeOrientedEnvmap {
@@ -1378,7 +1199,6 @@ fn write_textures(
                         }
                     }
 
-                    let start_offset = texture_data.stream_position()? as u32;
                     texture_data.write_all(
                         TextureBuf::transcode(
                             TextureBuf::new(
@@ -1393,23 +1213,33 @@ fn write_textures(
                         )
                         .data(),
                     )?;
-                    let end_offset = texture_data.stream_position()? as u32;
 
-                    // Write a texture table entry.
-                    texture_table.write_u16::<BigEndian>(sphere_width as u16)?;
-                    texture_table.write_u16::<BigEndian>(sphere_height as u16)?;
-                    texture_table.write_u8(1)?; // mip count
-                    texture_table.write_u8(0x3)?; // flags: CLAMP_S | CLAMP_T
-                    texture_table.write_u8(gx_texture_format(TextureFormat::GxTfRgba8))?;
-                    texture_table.write_u8(0)?;
-                    texture_table.write_u32::<BigEndian>(start_offset)?;
-                    texture_table.write_u32::<BigEndian>(end_offset)?;
-                    total_size += (end_offset - start_offset) as usize;
+                    TextureMetadata {
+                        width: sphere_width,
+                        height: sphere_height,
+                        mip_count: 1,
+                        gx_flags: 0x3, // CLAMP_S | CLAMP_T
+                        gx_format: gx_texture_format(TextureFormat::GxTfRgba8),
+                    }
                 }
-            }
+            };
+
+            let end_offset = texture_data.stream_position()? as u32;
+            assert_eq!(texture_data.stream_position()? % 32, 0);
+
+            // Write a texture table entry.
+            texture_table.write_u16::<BigEndian>(metadata.width as u16)?;
+            texture_table.write_u16::<BigEndian>(metadata.height as u16)?;
+            texture_table.write_u8(metadata.mip_count as u8)?;
+            texture_table.write_u8(metadata.gx_flags)?;
+            texture_table.write_u8(metadata.gx_format)?;
+            texture_table.write_u8(0)?;
+            texture_table.write_u32::<BigEndian>(start_offset)?;
+            texture_table.write_u32::<BigEndian>(end_offset)?;
+            total_size += (end_offset - start_offset) as usize;
         }
 
-        println!("wrote total size: {} bytes", total_size);
+        assert_eq!(total_size, budgeted_size);
 
         texture_table.flush()?;
         texture_data.flush()?;
@@ -1417,6 +1247,12 @@ fn write_textures(
         return Ok(());
     }
     bail!("Unable to fit textures within the memory budget.");
+}
+
+fn gx_texture_flags(vtf_flags: u32) -> u8 {
+    let wrap_s = (vtf_flags & 0x4) >> 2; // 0x01
+    let wrap_t = (vtf_flags & 0x8) >> 2; // 0x02
+    (wrap_s | wrap_t) as u8
 }
 
 fn gx_texture_format(format: TextureFormat) -> u8 {

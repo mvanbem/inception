@@ -1,4 +1,6 @@
 use crate::codec::bgr8::Bgr8;
+use crate::codec::bgra8::Bgra8;
+use crate::codec::bgrx8::Bgrx8;
 use crate::codec::dxt1::Dxt1;
 use crate::codec::dxt5::Dxt5;
 use crate::codec::gx_tf_cmpr::GxTfCmpr;
@@ -12,6 +14,8 @@ use crate::codec::DynCodec;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TextureFormat {
     Bgr8,
+    Bgra8,
+    Bgrx8,
     Dxt1,
     Dxt5,
     GxTfCmpr,
@@ -57,6 +61,8 @@ impl TextureFormat {
     pub(crate) fn dyn_codec(self) -> &'static dyn DynCodec {
         match self {
             Self::Bgr8 => &Bgr8,
+            Self::Bgra8 => &Bgra8,
+            Self::Bgrx8 => &Bgrx8,
             Self::Dxt1 => &Dxt1,
             Self::Dxt5 => &Dxt5,
             Self::GxTfCmpr => &GxTfCmpr,
