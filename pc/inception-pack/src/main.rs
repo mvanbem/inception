@@ -32,11 +32,9 @@ use quickcheck::Arbitrary;
 
 use crate::counter::Counter;
 use crate::display_list::DisplayListBuilder;
-use crate::packed_material::{
-    PackedMaterial, PackedMaterialBaseAlpha, PackedMaterialEnvMapMask, TextureIdAllocator,
-};
+use crate::packed_material::{PackedMaterial, PackedMaterialBaseAlpha, PackedMaterialEnvMapMask};
 use crate::record_writer::RecordWriter;
-use crate::texture_key::OwnedTextureKey;
+use crate::texture_key::{OwnedTextureKey, TextureIdAllocator};
 use crate::write_big_endian::WriteBigEndian;
 
 mod counter;

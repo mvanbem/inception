@@ -1,11 +1,11 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use anyhow::{bail, Result};
 use source_reader::asset::vmt::{LightmappedGeneric, Shader, Vmt};
 use source_reader::asset::AssetLoader;
 use texture_format::TextureFormat;
 
-use crate::texture_key::{BorrowedTextureKey, OwnedTextureKey, TextureKey};
+use crate::texture_key::{BorrowedTextureKey, TextureIdAllocator};
 use crate::Plane;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -205,33 +205,5 @@ impl PackedMaterial {
                 bail!("material {} has an unsupported shader", material.path())
             }
         })
-    }
-}
-
-#[derive(Default)]
-pub struct TextureIdAllocator {
-    keys_by_id: Vec<OwnedTextureKey>,
-    ids_by_key: HashMap<OwnedTextureKey, u16>,
-}
-
-impl TextureIdAllocator {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn get(&mut self, key: &dyn TextureKey) -> u16 {
-        match self.ids_by_key.get(key) {
-            Some(&id) => id,
-            None => {
-                let id = self.keys_by_id.len() as u16;
-                self.keys_by_id.push(key.to_owned());
-                self.ids_by_key.insert(key.to_owned(), id);
-                id
-            }
-        }
-    }
-
-    pub fn into_keys(self) -> Vec<OwnedTextureKey> {
-        self.keys_by_id
     }
 }

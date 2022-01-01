@@ -1,4 +1,5 @@
 use std::borrow::Borrow;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use source_reader::vpk::path::VpkPath;
@@ -176,6 +177,34 @@ impl<'a> TextureKey for BorrowedTextureKey<'a> {
 impl<'a> Borrow<dyn TextureKey + 'a> for BorrowedTextureKey<'a> {
     fn borrow(&self) -> &(dyn TextureKey + 'a) {
         self
+    }
+}
+
+#[derive(Default)]
+pub struct TextureIdAllocator {
+    keys_by_id: Vec<OwnedTextureKey>,
+    ids_by_key: HashMap<OwnedTextureKey, u16>,
+}
+
+impl TextureIdAllocator {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn get(&mut self, key: &dyn TextureKey) -> u16 {
+        match self.ids_by_key.get(key) {
+            Some(&id) => id,
+            None => {
+                let id = self.keys_by_id.len() as u16;
+                self.keys_by_id.push(key.to_owned());
+                self.ids_by_key.insert(key.to_owned(), id);
+                id
+            }
+        }
+    }
+
+    pub fn into_keys(self) -> Vec<OwnedTextureKey> {
+        self.keys_by_id
     }
 }
 
