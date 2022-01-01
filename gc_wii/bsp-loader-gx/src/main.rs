@@ -153,10 +153,10 @@ fn lightmap_cluster_table() -> &'static [LightmapClusterTableEntry] {
 
 #[repr(C)]
 struct LightmapPatchTableEntry {
-    block_x: u8,
-    block_y: u8,
-    block_width: u8,
-    block_height: u8,
+    sub_block_x: u8,
+    sub_block_y: u8,
+    sub_blocks_wide: u8,
+    sub_blocks_high: u8,
     style_count: u8,
     _padding1: u8,
     _padding2: u16,
@@ -257,7 +257,7 @@ impl Lightmap {
                 image_data.as_void_ptr_mut(),
                 physical_width as u16,
                 physical_height as u16,
-                GX_TF_RGBA8 as u8,
+                GX_TF_CMPR as u8,
                 GX_CLAMP as u8,
                 GX_CLAMP as u8,
                 GX_FALSE as u8,
@@ -275,7 +275,7 @@ impl Lightmap {
         assert!(style < 4);
 
         let cluster = &lightmap_cluster_table()[cluster_index];
-        let coarse_width = ((cluster.width + 3) / 4).max(1);
+        let blocks_wide = ((cluster.width + 7) / 8).max(1) as usize;
 
         let patches =
             &lightmap_patch_table()[cluster.patch_table_start_index..cluster.patch_table_end_index];
@@ -283,21 +283,32 @@ impl Lightmap {
             let style = style.min(patch.style_count as usize - 1);
 
             let patch_data = &LIGHTMAP_DATA[patch.data_start_offset..patch.data_end_offset];
-            let page_size = 64 * patch.block_width as usize * patch.block_height as usize;
+            let page_size = 8 * patch.sub_blocks_wide as usize * patch.sub_blocks_high as usize;
             let page_index = style;
             let page_offset = page_size * page_index;
             let page_data = &patch_data[page_offset..page_offset + page_size];
 
-            let row_size = 64 * patch.block_width as usize;
-            for block_dy in 0..patch.block_height {
-                let src_offset = 64 * patch.block_width as usize * block_dy as usize;
-                let src = &page_data[src_offset..src_offset + row_size];
-                let dst_offset = 64
-                    * (coarse_width as usize * (patch.block_y as usize + block_dy as usize)
-                        + patch.block_x as usize);
-                let dst = &mut self.image_data.as_mut()[dst_offset..dst_offset + row_size];
+            for sub_block_dx in 0..patch.sub_blocks_wide {
+                for sub_block_dy in 0..patch.sub_blocks_high {
+                    let src_offset = 8
+                        * (patch.sub_blocks_wide as usize * sub_block_dy as usize
+                            + sub_block_dx as usize);
+                    let dst_x = patch.sub_block_x as usize + sub_block_dx as usize;
+                    let dst_y = patch.sub_block_y as usize + sub_block_dy as usize;
+                    // bits: y..y x..x y x 000
+                    //       \__/ \__/ | | \_/
+                    //         |    |  | |  `-- byte within sub-block
+                    //         |    |  |  `---- sub-block x position within block
+                    //         |    |  `------- sub-block y position within block
+                    //         |    `---------- block x position (as many as needed for width/8)
+                    //         `--------------- block y position (as many as needed for height/8)
+                    let dst_offset = 32 * (blocks_wide * (dst_y >> 1) + (dst_x >> 1))
+                        + 16 * (dst_y & 1)
+                        + 8 * (dst_x & 1);
 
-                dst.copy_from_slice(src);
+                    self.image_data.as_mut()[dst_offset..dst_offset + 8]
+                        .copy_from_slice(&page_data[src_offset..src_offset + 8]);
+                }
             }
         }
         unsafe {

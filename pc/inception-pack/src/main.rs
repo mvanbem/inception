@@ -1790,22 +1790,14 @@ fn write_lightmaps(
                     // Traverse blocks in texture format order.
                     for coarse_y in 0..blocks_high {
                         for coarse_x in 0..blocks_wide {
-                            // Each block consists of individually packed AR and GB sub-blocks.
-                            transcode_lightmap_patch_to_gamecube_rgba8_sub_block(
-                                bsp,
-                                patch,
-                                patch_base,
-                                4 * coarse_x,
-                                4 * coarse_y,
-                                |[r, _g, _b]| Ok(data_file.write_all(&[255, r])?),
-                            )?;
-                            transcode_lightmap_patch_to_gamecube_rgba8_sub_block(
-                                bsp,
-                                patch,
-                                patch_base,
-                                4 * coarse_x,
-                                4 * coarse_y,
-                                |[_r, g, b]| Ok(data_file.write_all(&[g, b])?),
+                            data_file.write_all(
+                                &transcode_lightmap_patch_to_gamecube_cmpr_sub_block(
+                                    bsp,
+                                    patch,
+                                    patch_base,
+                                    4 * coarse_x,
+                                    4 * coarse_y,
+                                ),
                             )?;
                         }
                     }
@@ -1837,14 +1829,15 @@ fn write_lightmaps(
     Ok(())
 }
 
-fn transcode_lightmap_patch_to_gamecube_rgba8_sub_block(
+fn transcode_lightmap_patch_to_gamecube_cmpr_sub_block(
     bsp: Bsp,
     patch: &LightmapPatch,
     patch_base: usize,
     x0: usize,
     y0: usize,
-    mut f: impl FnMut([u8; 3]) -> Result<()>,
-) -> Result<()> {
+) -> [u8; 8] {
+    // Gather a 4x4 block of texels.
+    let mut texels = Vec::with_capacity(64);
     for fine_y in 0..4 {
         for fine_x in 0..4 {
             let dst_x = x0 + fine_x;
@@ -1854,15 +1847,25 @@ fn transcode_lightmap_patch_to_gamecube_rgba8_sub_block(
             } else {
                 (dst_x, dst_y)
             };
-            if src_x < patch.width as usize && src_y < patch.height as usize {
-                let src_offset =
-                    patch_base + 4 * (patch.width as usize * src_y as usize + src_x as usize);
-                let rgb = bsp.lighting().at_offset(src_offset, 1)[0].to_srgb8();
-                f(rgb)?;
-            } else {
-                f([0; 3])?;
-            }
+            // Clamp source coordinates to smear the last row/column into unused space. This should
+            // be more friendly to DXT1 encoding, avoiding arbitrary additional colors.
+            let src_x = src_x.min(patch.width as usize);
+            let src_y = src_y.min(patch.height as usize);
+            let src_offset =
+                patch_base + 4 * (patch.width as usize * src_y as usize + src_x as usize);
+            let rgb = bsp.lighting().at_offset(src_offset, 1)[0].to_srgb8();
+            texels.extend_from_slice(&rgb);
+            texels.push(255);
         }
     }
-    Ok(())
+
+    // Transcode to GX_TF_CMPR. Note that there is an 8x8 encoding block size, composed of four 4x4
+    // permuted DXT1 blocks. The three padding sub-blocks are discarded.
+    TextureBuf::transcode(
+        TextureBuf::new(TextureFormat::Rgba8, 4, 4, texels).as_slice(),
+        TextureFormat::GxTfCmpr,
+    )
+    .into_data()[..8]
+        .try_into()
+        .unwrap()
 }
