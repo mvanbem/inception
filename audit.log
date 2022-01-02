@@ -1,0 +1,41 @@
+WARNING: Unimplemented $envmapcontrast None
+WARNING: Unimplemented $envmapcontrast Some(0.3)
+WARNING: Unimplemented $envmapcontrast Some(0.6)
+WARNING: Unimplemented LightmappedGeneric key $additive
+WARNING: Unimplemented LightmappedGeneric key $AllowAlphaToCoverage
+WARNING: Unimplemented LightmappedGeneric key $basetexturetransform
+WARNING: Unimplemented LightmappedGeneric key $basetexturetransform2
+WARNING: Unimplemented LightmappedGeneric key $bottommaterial
+WARNING: Unimplemented LightmappedGeneric key $color
+WARNING: Unimplemented LightmappedGeneric key $crackmaterial
+WARNING: Unimplemented LightmappedGeneric key $decalscale
+WARNING: Unimplemented LightmappedGeneric key $fallbackmaterial
+WARNING: Unimplemented LightmappedGeneric key $fogcolor
+WARNING: Unimplemented LightmappedGeneric key $fogenable
+WARNING: Unimplemented LightmappedGeneric key $fogend
+WARNING: Unimplemented LightmappedGeneric key $fogstart
+WARNING: Unimplemented LightmappedGeneric key $fresnelreflection
+WARNING: Unimplemented LightmappedGeneric key $FRESNELREFLECTION
+WARNING: Unimplemented LightmappedGeneric key $multipass
+WARNING: Unimplemented LightmappedGeneric key $nocull
+WARNING: Unimplemented LightmappedGeneric key $nodecal
+WARNING: Unimplemented LightmappedGeneric key $nomip
+WARNING: Unimplemented LightmappedGeneric key $normalmapalpha
+WARNING: Unimplemented LightmappedGeneric key $vertexalpha
+WARNING: Unimplemented LightmappedGeneric key $vertexcolor
+WARNING: Unimplemented material proxies
+WARNING: Unimplemented shader decalbasetimeslightmapalphablendselfillum
+WARNING: Unimplemented shader water
+WARNING: Unimplemented shader worldvertextransition
+WARNING: Unimplemented Sky key $basetexturetransform
+WARNING: Unimplemented Sky key $hdrbaseTexture
+WARNING: Unimplemented Sky key $hdrcompressedTexture
+WARNING: Unimplemented Sky key $ignorez
+WARNING: Unimplemented Sky key $nofog
+WARNING: Unimplemented UnlitGeneric key $basetexturetransform
+WARNING: Unimplemented UnlitGeneric key $ignorez
+WARNING: Unimplemented UnlitGeneric key $nodecal
+WARNING: Unimplemented UnlitGeneric key $nofog
+WARNING: Unimplemented UnlitGeneric key $reflectivity
+WARNING: Unimplemented UnlitGeneric key $selfillum
+WARNING: Unimplemented UnlitGeneric key $surfaceprop

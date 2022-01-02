@@ -93,8 +93,11 @@ impl Asset for Vmt {
     }
 }
 
+#[derive(Debug)]
 pub enum Shader {
     LightmappedGeneric(LightmappedGeneric),
+    UnlitGeneric(UnlitGeneric),
+    Sky(Sky),
     Unsupported { shader: String },
 }
 
@@ -109,8 +112,11 @@ fn create_shader_builder<'a>(
 ) -> Result<Box<dyn ShaderBuilder<'a> + 'a>> {
     let root = crate::properties::vmt(from_utf8(&data)?).unwrap();
 
-    let mut builder: Box<dyn ShaderBuilder<'a> + 'a> = match root.name {
-        "LightmappedGeneric" => Box::new(LightmappedGenericBuilder::default()),
+    let mut builder: Box<dyn ShaderBuilder<'a> + 'a> = match root.name.to_ascii_lowercase().as_str()
+    {
+        "lightmappedgeneric" => Box::new(LightmappedGenericBuilder::default()),
+        "unlitgeneric" => Box::new(UnlitGenericBuilder::default()),
+        "sky" => Box::new(SkyBuilder::default()),
         "patch" => Box::new(PatchBuilder::default()),
         shader => {
             eprintln!("WARNING: Unimplemented shader {} in {}", shader, path);
@@ -338,7 +344,111 @@ impl<'a> ShaderBuilder<'a> for LightmappedGenericBuilder {
     }
 }
 
-#[derive(Clone, Debug)]
+struct UnlitGenericBuilder {
+    base_texture_path: Option<VpkPath>,
+}
+
+impl Default for UnlitGenericBuilder {
+    fn default() -> Self {
+        Self {
+            base_texture_path: None,
+        }
+    }
+}
+
+impl<'a> ShaderBuilder<'a> for UnlitGenericBuilder {
+    fn parse(&mut self, material_path: &VpkPath, entry: Entry<'a>) -> Result<()> {
+        match entry {
+            Entry::KeyValue(KeyValue { key, value }) => match key.to_ascii_lowercase().as_str() {
+                "$basetexture" => {
+                    self.base_texture_path = parse_vtf_path(value).context("$basetexture")?
+                }
+                x if x.starts_with("%") => (),
+                _ => eprintln!(
+                    "WARNING: Unimplemented UnlitGeneric key {} in {}",
+                    key, material_path,
+                ),
+            },
+            Entry::Object(Object { name, entries: _ }) => {
+                match name.to_ascii_lowercase().as_str() {
+                    _ => eprintln!(
+                        "WARNING: Unexpected UnlitGeneric object {} in {}",
+                        name, material_path,
+                    ),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn build(self: Box<Self>, _loader: &AssetLoader, _material_path: &VpkPath) -> Result<Shader> {
+        Ok(Shader::UnlitGeneric(UnlitGeneric {
+            base_texture_path: match self.base_texture_path {
+                Some(x) => x,
+                None => bail!("UnlitGeneric $basetexture was unset"),
+            },
+        }))
+    }
+}
+
+#[derive(Debug)]
+pub struct UnlitGeneric {
+    pub base_texture_path: VpkPath,
+}
+
+struct SkyBuilder {
+    base_texture_path: Option<VpkPath>,
+}
+
+impl Default for SkyBuilder {
+    fn default() -> Self {
+        Self {
+            base_texture_path: None,
+        }
+    }
+}
+
+impl<'a> ShaderBuilder<'a> for SkyBuilder {
+    fn parse(&mut self, material_path: &VpkPath, entry: Entry<'a>) -> Result<()> {
+        match entry {
+            Entry::KeyValue(KeyValue { key, value }) => match key.to_ascii_lowercase().as_str() {
+                "$basetexture" => {
+                    self.base_texture_path = parse_vtf_path(value).context("$basetexture")?
+                }
+                x if x.starts_with("%") => (),
+                _ => eprintln!(
+                    "WARNING: Unimplemented Sky key {} in {}",
+                    key, material_path,
+                ),
+            },
+            Entry::Object(Object { name, entries: _ }) => {
+                match name.to_ascii_lowercase().as_str() {
+                    _ => eprintln!(
+                        "WARNING: Unexpected Sky object {} in {}",
+                        name, material_path,
+                    ),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn build(self: Box<Self>, _loader: &AssetLoader, _material_path: &VpkPath) -> Result<Shader> {
+        Ok(Shader::Sky(Sky {
+            base_texture_path: match self.base_texture_path {
+                Some(x) => x,
+                None => bail!("Sky $basetexture was unset"),
+            },
+        }))
+    }
+}
+
+#[derive(Debug)]
+pub struct Sky {
+    pub base_texture_path: VpkPath,
+}
+
+#[derive(Debug)]
 pub struct LightmappedGeneric {
     pub alpha_test_reference: f32,
     pub alpha_test: bool,

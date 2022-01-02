@@ -10,6 +10,7 @@ use crate::codec::gx_tf_i8::GxTfI8;
 use crate::codec::gx_tf_ia8::GxTfIa8;
 use crate::codec::gx_tf_rgba8::GxTfRgba8;
 use crate::codec::rgb8::Rgb8;
+use crate::codec::rgba16f::Rgba16f;
 use crate::codec::rgba8::Rgba8;
 use crate::codec::Codec;
 use crate::{TextureFormat, TextureSlice};
@@ -153,6 +154,7 @@ impl TextureBuf {
             TextureFormat::GxTfIa8 => Self::transcode_dispatch_dst::<GxTfIa8>(src, format),
             TextureFormat::GxTfRgba8 => Self::transcode_dispatch_dst::<GxTfRgba8>(src, format),
             TextureFormat::Rgb8 => Self::transcode_dispatch_dst::<Rgb8>(src, format),
+            TextureFormat::Rgba16f => Self::transcode_dispatch_dst::<Rgba16f>(src, format),
             TextureFormat::Rgba8 => Self::transcode_dispatch_dst::<Rgba8>(src, format),
         }
     }
@@ -170,6 +172,7 @@ impl TextureBuf {
             TextureFormat::GxTfIa8 => Self::transcode_static::<C, GxTfIa8>(src),
             TextureFormat::GxTfRgba8 => Self::transcode_static::<C, GxTfRgba8>(src),
             TextureFormat::Rgb8 => Self::transcode_static::<C, Rgb8>(src),
+            TextureFormat::Rgba16f => Self::transcode_static::<C, Rgba16f>(src),
             TextureFormat::Rgba8 => Self::transcode_static::<C, Rgba8>(src),
         }
     }

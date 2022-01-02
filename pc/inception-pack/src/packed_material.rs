@@ -60,7 +60,6 @@ impl PackedMaterial {
         I::IntoIter: Iterator<Item = &'a Plane>,
     {
         Ok(match material.shader() {
-            // Generic path
             Shader::LightmappedGeneric(LightmappedGeneric {
                 base_alpha_env_map_mask,
                 base_texture_path,
@@ -130,7 +129,10 @@ impl PackedMaterial {
                                 None,
                             ),
                             // Normal map alpha env map mask.
-                            (None, false, true) => (
+                            (None, false, true)
+                                // This one doesn't make sense, but tile/tilefloor019a sets it and
+                                // clearly wants to use the normal map alpha channel.
+                                | (None, true, true) => (
                                 Some(PackedMaterialEnvMap {
                                     ids_by_plane,
                                     mask: PackedMaterialEnvMapMask::AuxTextureIntensity,
@@ -201,7 +203,7 @@ impl PackedMaterial {
                 })
             }
 
-            Shader::Unsupported { .. } => None,
+            _ => None,
         })
     }
 }

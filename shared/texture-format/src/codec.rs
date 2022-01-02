@@ -14,6 +14,7 @@ pub mod gx_tf_i8;
 pub mod gx_tf_ia8;
 pub mod gx_tf_rgba8;
 pub mod rgb8;
+pub mod rgba16f;
 pub mod rgba8;
 
 pub(crate) trait Codec {

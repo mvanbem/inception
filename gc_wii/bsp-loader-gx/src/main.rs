@@ -39,8 +39,6 @@ mod visibility;
 
 static POSITION_DATA: &[u8] = include_bytes_align!(32, "../../../build/position_data.dat");
 static NORMAL_DATA: &[u8] = include_bytes_align!(32, "../../../build/normal_data.dat");
-static LIGHTMAP_COORD_DATA: &[u8] =
-    include_bytes_align!(32, "../../../build/lightmap_coord_data.dat");
 static TEXTURE_COORD_DATA: &[u8] =
     include_bytes_align!(32, "../../../build/texture_coord_data.dat");
 static BSP_NODE_DATA: &[u8] = include_bytes_align!(4, "../../../build/bsp_nodes.dat");
@@ -652,7 +650,7 @@ fn load_camera_proj_matrix(width: u16, height: u16, game_state: &GameState) {
             90.0,
             width as f32 / height as f32 * game_state.widescreen_factor(),
             1.0,
-            5000.0,
+            16384.0,
         );
         GX_LoadProjectionMtx(proj.as_mut_ptr(), GX_PERSPECTIVE as u8);
     }
@@ -746,180 +744,21 @@ fn do_main_draw(
     map_texobjs: &[GXTexObj],
     cluster_lightmaps: &[Lightmap],
 ) -> i16 {
+    draw_skybox(game_state, map_texobjs);
+    draw_visible_clusters(game_state, cluster_lightmaps, map_texobjs, visibility)
+}
+
+fn draw_visible_clusters(
+    game_state: &GameState,
+    cluster_lightmaps: &[Lightmap],
+    map_texobjs: &[GXTexObj],
+    visibility: Visibility,
+) -> i16 {
     unsafe {
-        // Draw the skybox.
-
-        GX_ClearVtxDesc();
-        GX_SetVtxDesc(GX_VA_POS as u8, GX_DIRECT as u8);
-        GX_SetVtxDesc(GX_VA_TEX0 as u8, GX_DIRECT as u8);
-        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_POS, GX_POS_XYZ, GX_S8, 0);
-        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX0, GX_TEX_ST, GX_U8, 0);
-        GX_InvVtxCache();
-
-        load_skybox_view_matrix(game_state);
-
-        GX_SetZMode(GX_FALSE as u8, GX_ALWAYS as u8, GX_FALSE as u8);
-        GX_SetColorUpdate(GX_TRUE as u8);
-
-        FLAT_TEXTURED_SHADER.apply();
-
-        GX_LoadTexObj(
-            &map_texobjs[0] as *const GXTexObj as *mut GXTexObj,
-            GX_TEXMAP0 as u8,
-        );
-        GX_Begin(GX_QUADS as u8, GX_VTXFMT0 as u8, 4);
-        {
-            (*wgPipe).S8 = 10;
-            (*wgPipe).S8 = 10;
-            (*wgPipe).S8 = 10;
-            (*wgPipe).U8 = 0;
-            (*wgPipe).U8 = 0;
-
-            (*wgPipe).S8 = 10;
-            (*wgPipe).S8 = -10;
-            (*wgPipe).S8 = 10;
-            (*wgPipe).U8 = 1;
-            (*wgPipe).U8 = 0;
-
-            (*wgPipe).S8 = 10;
-            (*wgPipe).S8 = -10;
-            (*wgPipe).S8 = -10;
-            (*wgPipe).U8 = 1;
-            (*wgPipe).U8 = 1;
-
-            (*wgPipe).S8 = 10;
-            (*wgPipe).S8 = 10;
-            (*wgPipe).S8 = -10;
-            (*wgPipe).U8 = 0;
-            (*wgPipe).U8 = 1;
-        }
-        GX_LoadTexObj(
-            &map_texobjs[1] as *const GXTexObj as *mut GXTexObj,
-            GX_TEXMAP0 as u8,
-        );
-        GX_Begin(GX_QUADS as u8, GX_VTXFMT0 as u8, 4);
-        {
-            (*wgPipe).S8 = -10;
-            (*wgPipe).S8 = -10;
-            (*wgPipe).S8 = 10;
-            (*wgPipe).U8 = 0;
-            (*wgPipe).U8 = 0;
-
-            (*wgPipe).S8 = -10;
-            (*wgPipe).S8 = 10;
-            (*wgPipe).S8 = 10;
-            (*wgPipe).U8 = 1;
-            (*wgPipe).U8 = 0;
-
-            (*wgPipe).S8 = -10;
-            (*wgPipe).S8 = 10;
-            (*wgPipe).S8 = -10;
-            (*wgPipe).U8 = 1;
-            (*wgPipe).U8 = 1;
-
-            (*wgPipe).S8 = -10;
-            (*wgPipe).S8 = -10;
-            (*wgPipe).S8 = -10;
-            (*wgPipe).U8 = 0;
-            (*wgPipe).U8 = 1;
-        }
-        GX_LoadTexObj(
-            &map_texobjs[2] as *const GXTexObj as *mut GXTexObj,
-            GX_TEXMAP0 as u8,
-        );
-        GX_Begin(GX_QUADS as u8, GX_VTXFMT0 as u8, 4);
-        {
-            (*wgPipe).S8 = -10;
-            (*wgPipe).S8 = 10;
-            (*wgPipe).S8 = 10;
-            (*wgPipe).U8 = 0;
-            (*wgPipe).U8 = 0;
-
-            (*wgPipe).S8 = 10;
-            (*wgPipe).S8 = 10;
-            (*wgPipe).S8 = 10;
-            (*wgPipe).U8 = 1;
-            (*wgPipe).U8 = 0;
-
-            (*wgPipe).S8 = 10;
-            (*wgPipe).S8 = 10;
-            (*wgPipe).S8 = -10;
-            (*wgPipe).U8 = 1;
-            (*wgPipe).U8 = 1;
-
-            (*wgPipe).S8 = -10;
-            (*wgPipe).S8 = 10;
-            (*wgPipe).S8 = -10;
-            (*wgPipe).U8 = 0;
-            (*wgPipe).U8 = 1;
-        }
-        GX_LoadTexObj(
-            &map_texobjs[3] as *const GXTexObj as *mut GXTexObj,
-            GX_TEXMAP0 as u8,
-        );
-        GX_Begin(GX_QUADS as u8, GX_VTXFMT0 as u8, 4);
-        {
-            (*wgPipe).S8 = 10;
-            (*wgPipe).S8 = -10;
-            (*wgPipe).S8 = 10;
-            (*wgPipe).U8 = 0;
-            (*wgPipe).U8 = 0;
-
-            (*wgPipe).S8 = -10;
-            (*wgPipe).S8 = -10;
-            (*wgPipe).S8 = 10;
-            (*wgPipe).U8 = 1;
-            (*wgPipe).U8 = 0;
-
-            (*wgPipe).S8 = -10;
-            (*wgPipe).S8 = -10;
-            (*wgPipe).S8 = -10;
-            (*wgPipe).U8 = 1;
-            (*wgPipe).U8 = 1;
-
-            (*wgPipe).S8 = 10;
-            (*wgPipe).S8 = -10;
-            (*wgPipe).S8 = -10;
-            (*wgPipe).U8 = 0;
-            (*wgPipe).U8 = 1;
-        }
-        GX_LoadTexObj(
-            &map_texobjs[4] as *const GXTexObj as *mut GXTexObj,
-            GX_TEXMAP0 as u8,
-        );
-        GX_Begin(GX_QUADS as u8, GX_VTXFMT0 as u8, 4);
-        {
-            (*wgPipe).S8 = -10;
-            (*wgPipe).S8 = 10;
-            (*wgPipe).S8 = 10;
-            (*wgPipe).U8 = 0;
-            (*wgPipe).U8 = 0;
-
-            (*wgPipe).S8 = -10;
-            (*wgPipe).S8 = -10;
-            (*wgPipe).S8 = 10;
-            (*wgPipe).U8 = 1;
-            (*wgPipe).U8 = 0;
-
-            (*wgPipe).S8 = 10;
-            (*wgPipe).S8 = -10;
-            (*wgPipe).S8 = 10;
-            (*wgPipe).U8 = 1;
-            (*wgPipe).U8 = 1;
-
-            (*wgPipe).S8 = 10;
-            (*wgPipe).S8 = 10;
-            (*wgPipe).S8 = 10;
-            (*wgPipe).U8 = 0;
-            (*wgPipe).U8 = 1;
-        }
-
-        // Draw all visible clusters.
-
         GX_ClearVtxDesc();
         GX_SetVtxDesc(GX_VA_POS as u8, GX_INDEX16 as u8);
         GX_SetVtxDesc(GX_VA_NRM as u8, GX_INDEX16 as u8);
-        GX_SetVtxDesc(GX_VA_TEX0 as u8, GX_INDEX16 as u8);
+        GX_SetVtxDesc(GX_VA_TEX0 as u8, GX_DIRECT as u8);
         GX_SetVtxDesc(GX_VA_TEX1 as u8, GX_INDEX16 as u8);
         GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
         GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_NRM, GX_NRM_XYZ, GX_S8, 0);
@@ -927,7 +766,6 @@ fn do_main_draw(
         GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX1, GX_TEX_ST, GX_S16, 8);
         GX_SetArray(GX_VA_POS, POSITION_DATA.as_ptr() as *mut _, 12);
         GX_SetArray(GX_VA_NRM, NORMAL_DATA.as_ptr() as *mut _, 3);
-        GX_SetArray(GX_VA_TEX0, LIGHTMAP_COORD_DATA.as_ptr() as *mut _, 4);
         GX_SetArray(GX_VA_TEX1, TEXTURE_COORD_DATA.as_ptr() as *mut _, 4);
         GX_InvVtxCache();
 
@@ -1068,6 +906,184 @@ fn do_main_draw(
         GX_DrawDone();
 
         view_cluster
+    }
+}
+
+fn draw_skybox(game_state: &GameState, map_texobjs: &[GXTexObj]) {
+    unsafe {
+        GX_ClearVtxDesc();
+        GX_SetVtxDesc(GX_VA_POS as u8, GX_DIRECT as u8);
+        GX_SetVtxDesc(GX_VA_TEX0 as u8, GX_DIRECT as u8);
+        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_POS, GX_POS_XYZ, GX_S8, 0);
+        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX0, GX_TEX_ST, GX_U8, 0);
+        GX_InvVtxCache();
+
+        load_skybox_view_matrix(game_state);
+
+        GX_SetZMode(GX_FALSE as u8, GX_ALWAYS as u8, GX_FALSE as u8);
+        GX_SetColorUpdate(GX_TRUE as u8);
+
+        FLAT_TEXTURED_SHADER.apply();
+
+        // +X face.
+        GX_LoadTexObj(
+            &map_texobjs[0] as *const GXTexObj as *mut GXTexObj,
+            GX_TEXMAP0 as u8,
+        );
+        GX_Begin(GX_QUADS as u8, GX_VTXFMT0 as u8, 4);
+        {
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).U8 = 0;
+            (*wgPipe).U8 = 0;
+
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).U8 = 1;
+            (*wgPipe).U8 = 0;
+
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).U8 = 1;
+            (*wgPipe).U8 = 1;
+
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).U8 = 0;
+            (*wgPipe).U8 = 1;
+        }
+
+        // -X face.
+        GX_LoadTexObj(
+            &map_texobjs[1] as *const GXTexObj as *mut GXTexObj,
+            GX_TEXMAP0 as u8,
+        );
+        GX_Begin(GX_QUADS as u8, GX_VTXFMT0 as u8, 4);
+        {
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).U8 = 0;
+            (*wgPipe).U8 = 0;
+
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).U8 = 1;
+            (*wgPipe).U8 = 0;
+
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).U8 = 1;
+            (*wgPipe).U8 = 1;
+
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).U8 = 0;
+            (*wgPipe).U8 = 1;
+        }
+
+        // +Y face.
+        GX_LoadTexObj(
+            &map_texobjs[2] as *const GXTexObj as *mut GXTexObj,
+            GX_TEXMAP0 as u8,
+        );
+        GX_Begin(GX_QUADS as u8, GX_VTXFMT0 as u8, 4);
+        {
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).U8 = 0;
+            (*wgPipe).U8 = 0;
+
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).U8 = 1;
+            (*wgPipe).U8 = 0;
+
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).U8 = 1;
+            (*wgPipe).U8 = 1;
+
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).U8 = 0;
+            (*wgPipe).U8 = 1;
+        }
+
+        // -Y face.
+        GX_LoadTexObj(
+            &map_texobjs[3] as *const GXTexObj as *mut GXTexObj,
+            GX_TEXMAP0 as u8,
+        );
+        GX_Begin(GX_QUADS as u8, GX_VTXFMT0 as u8, 4);
+        {
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).U8 = 0;
+            (*wgPipe).U8 = 0;
+
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).U8 = 1;
+            (*wgPipe).U8 = 0;
+
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).U8 = 1;
+            (*wgPipe).U8 = 1;
+
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).U8 = 0;
+            (*wgPipe).U8 = 1;
+        }
+
+        // +Z face.
+        GX_LoadTexObj(
+            &map_texobjs[4] as *const GXTexObj as *mut GXTexObj,
+            GX_TEXMAP0 as u8,
+        );
+        GX_Begin(GX_QUADS as u8, GX_VTXFMT0 as u8, 4);
+        {
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).U8 = 0;
+            (*wgPipe).U8 = 0;
+
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).U8 = 1;
+            (*wgPipe).U8 = 0;
+
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = -10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).U8 = 1;
+            (*wgPipe).U8 = 1;
+
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).S8 = 10;
+            (*wgPipe).U8 = 0;
+            (*wgPipe).U8 = 1;
+        }
     }
 }
 

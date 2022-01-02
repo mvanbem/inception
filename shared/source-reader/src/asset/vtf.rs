@@ -131,6 +131,7 @@ impl Asset for Vtf {
                     13 => TextureFormat::Dxt1,
                     15 => TextureFormat::Dxt5,
                     16 => TextureFormat::Bgrx8,
+                    24 => TextureFormat::Rgba16f,
                     _ => bail!(
                         "unexpected high res image format: {}",
                         high_res_image_format

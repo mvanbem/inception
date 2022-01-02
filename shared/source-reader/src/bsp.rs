@@ -61,17 +61,40 @@ impl<'a> Bsp<'a> {
     }
 
     pub fn faces(&self) -> &'a [Face] {
-        extract_slice(self.header().lumps[7].data(self.0))
+        let ldr_lighting_lump = &self.header().lumps[8];
+        extract_slice(if ldr_lighting_lump.filelen == 0 {
+            // No LDR lighting, so fall back to HDR lighting and faces.
+            self.header().lumps[58].data(self.0)
+        } else {
+            // Otherwise use the LDR faces.
+            self.header().lumps[7].data(self.0)
+        })
     }
 
     pub fn lighting(&self) -> Lighting<'a> {
+        let ldr_lighting_lump = &self.header().lumps[8];
+        let hdr_lighting_lump = &self.header().lumps[53];
+
         Lighting {
-            data: self.header().lumps[8].data(self.0),
+            data: if ldr_lighting_lump.filelen == 0 {
+                hdr_lighting_lump.data(self.0)
+            } else {
+                ldr_lighting_lump.data(self.0)
+            },
         }
     }
 
-    pub fn leaves(&self) -> &'a [Leaf] {
-        extract_slice(self.header().lumps[10].data(self.0))
+    pub fn leaves(&self) -> LeafSlice<'a> {
+        let leaf_data = self.header().lumps[10].data(self.0);
+        match self.header().version {
+            20 => LeafSlice::Short(extract_slice(leaf_data)),
+            19 => LeafSlice::Long(extract_slice(leaf_data)),
+            version => panic!(
+                "Unknown BSP version {} with leaf lump size: {}",
+                version,
+                leaf_data.len(),
+            ),
+        }
     }
 
     pub fn edges(&self) -> &'a [Edge] {
@@ -96,11 +119,11 @@ impl<'a> Bsp<'a> {
         TexDataStrings { table, data }
     }
 
-    pub fn iter_worldspawn_leaves(&self) -> impl Iterator<Item = &'a Leaf> {
+    pub fn iter_worldspawn_leaves(&self) -> impl Iterator<Item = &'a dyn Leaf> {
         self.enumerate_leaves_from_node(&self.nodes()[0])
     }
 
-    pub fn enumerate_leaves_from_node(&self, node: &'a Node) -> impl Iterator<Item = &'a Leaf> {
+    pub fn enumerate_leaves_from_node(&self, node: &'a Node) -> impl Iterator<Item = &'a dyn Leaf> {
         RecursiveIter::new(
             *self,
             LeavesIterFrame {
@@ -110,13 +133,13 @@ impl<'a> Bsp<'a> {
         )
     }
 
-    pub fn iter_faces_from_leaf(&self, leaf: &'a Leaf) -> impl Iterator<Item = &'a Face> {
-        let leaf_face_index = leaf.first_leaf_face as usize;
+    pub fn iter_faces_from_leaf(&self, leaf: &'a dyn Leaf) -> impl Iterator<Item = &'a Face> {
+        let leaf_face_index = leaf.first_leaf_face() as usize;
         LeafFacesIter {
             bsp: *self,
             leaf_face_index,
             end: NonZeroUsize::new(leaf_face_index)
-                .map(|start| start.get() + leaf.num_leaf_faces as usize + 1)
+                .map(|start| start.get() + leaf.num_leaf_faces() as usize + 1)
                 .unwrap_or(0),
         }
     }
@@ -142,7 +165,7 @@ struct LeavesIterFrame<'a> {
 }
 
 impl<'a> Frame for LeavesIterFrame<'a> {
-    type Item = &'a Leaf;
+    type Item = &'a dyn Leaf;
     type Context = Bsp<'a>;
 
     fn eval(&mut self, bsp: &mut Bsp<'a>) -> EvalResult<Self> {
@@ -156,7 +179,7 @@ impl<'a> Frame for LeavesIterFrame<'a> {
             .with_return(self.child_index == 2)
         } else {
             self.child_index += 1;
-            Yield(&bsp.leaves()[(-child) as usize]).with_return(self.child_index == 2)
+            Yield(bsp.leaves().get((-child) as usize)).with_return(self.child_index == 2)
         }
     }
 }
@@ -242,7 +265,7 @@ pub struct Header {
 unsafe impl FullyOccupied for Header {}
 
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Lump {
     pub fileofs: i32,
     pub filelen: i32,
@@ -449,14 +472,144 @@ pub struct Lighting<'a> {
 }
 
 impl<'a> Lighting<'a> {
+    pub fn data(&self) -> &'a [u8] {
+        self.data
+    }
+
     pub fn at_offset(&self, offset: usize, count: usize) -> &'a [ColorRgbExp32] {
         extract_slice(&(&self.data[offset..])[..count * size_of::<ColorRgbExp32>()])
     }
 }
 
+pub trait Leaf {
+    fn contents(&self) -> i32;
+    fn cluster(&self) -> i16;
+    fn area_and_flags(&self) -> i16;
+    fn mins(&self) -> [i16; 3];
+    fn maxs(&self) -> [i16; 3];
+    fn first_leaf_face(&self) -> u16;
+    fn num_leaf_faces(&self) -> u16;
+    fn first_leaf_brush(&self) -> u16;
+    fn num_leaf_brushes(&self) -> u16;
+    fn leaf_water_data_id(&self) -> i16;
+}
+
+#[derive(Clone, Copy)]
+pub enum LeafSlice<'a> {
+    Short(&'a [ShortLeaf]),
+    Long(&'a [LongLeaf]),
+}
+
+impl<'a> LeafSlice<'a> {
+    fn get(&self, index: usize) -> &'a dyn Leaf {
+        match self {
+            Self::Short(slice) => &slice[index],
+            Self::Long(slice) => &slice[index],
+        }
+    }
+
+    fn iter(&self) -> LeafSliceIter<'a> {
+        LeafSliceIter(*self)
+    }
+}
+
+impl<'a> IntoIterator for LeafSlice<'a> {
+    type Item = &'a dyn Leaf;
+
+    type IntoIter = LeafSliceIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+pub struct LeafSliceIter<'a>(LeafSlice<'a>);
+
+impl<'a> Iterator for LeafSliceIter<'a> {
+    type Item = &'a dyn Leaf;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.0 {
+            LeafSlice::Short(ref mut slice) => match slice.get(0) {
+                Some(item) => {
+                    *slice = &slice[1..];
+                    Some(item)
+                }
+                None => None,
+            },
+            LeafSlice::Long(ref mut slice) => match slice.get(0) {
+                Some(item) => {
+                    *slice = &slice[1..];
+                    Some(item)
+                }
+                None => None,
+            },
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Debug)]
-pub struct Leaf {
+pub struct ShortLeaf {
+    pub contents: i32,
+    pub cluster: i16,
+    pub area_and_flags: i16,
+    pub mins: [i16; 3],
+    pub maxs: [i16; 3],
+    pub first_leaf_face: u16,
+    pub num_leaf_faces: u16,
+    pub first_leaf_brush: u16,
+    pub num_leaf_brushes: u16,
+    pub leaf_water_data_id: i16,
+}
+
+unsafe impl FullyOccupied for ShortLeaf {}
+
+impl Leaf for ShortLeaf {
+    fn contents(&self) -> i32 {
+        self.contents
+    }
+
+    fn cluster(&self) -> i16 {
+        self.cluster
+    }
+
+    fn area_and_flags(&self) -> i16 {
+        self.area_and_flags
+    }
+
+    fn mins(&self) -> [i16; 3] {
+        self.mins
+    }
+
+    fn maxs(&self) -> [i16; 3] {
+        self.maxs
+    }
+
+    fn first_leaf_face(&self) -> u16 {
+        self.first_leaf_face
+    }
+
+    fn num_leaf_faces(&self) -> u16 {
+        self.num_leaf_faces
+    }
+
+    fn first_leaf_brush(&self) -> u16 {
+        self.first_leaf_brush
+    }
+
+    fn num_leaf_brushes(&self) -> u16 {
+        self.num_leaf_brushes
+    }
+
+    fn leaf_water_data_id(&self) -> i16 {
+        self.leaf_water_data_id
+    }
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct LongLeaf {
     pub contents: i32,
     pub cluster: i16,
     pub area_and_flags: i16,
@@ -471,7 +624,49 @@ pub struct Leaf {
     pub padding: i16,
 }
 
-unsafe impl FullyOccupied for Leaf {}
+unsafe impl FullyOccupied for LongLeaf {}
+
+impl Leaf for LongLeaf {
+    fn contents(&self) -> i32 {
+        self.contents
+    }
+
+    fn cluster(&self) -> i16 {
+        self.cluster
+    }
+
+    fn area_and_flags(&self) -> i16 {
+        self.area_and_flags
+    }
+
+    fn mins(&self) -> [i16; 3] {
+        self.mins
+    }
+
+    fn maxs(&self) -> [i16; 3] {
+        self.maxs
+    }
+
+    fn first_leaf_face(&self) -> u16 {
+        self.first_leaf_face
+    }
+
+    fn num_leaf_faces(&self) -> u16 {
+        self.num_leaf_faces
+    }
+
+    fn first_leaf_brush(&self) -> u16 {
+        self.first_leaf_brush
+    }
+
+    fn num_leaf_brushes(&self) -> u16 {
+        self.num_leaf_brushes
+    }
+
+    fn leaf_water_data_id(&self) -> i16 {
+        self.leaf_water_data_id
+    }
+}
 
 #[repr(C)]
 #[derive(Debug)]
@@ -562,7 +757,7 @@ impl ColorRgbExp32 {
 
 #[cfg(test)]
 mod size_tests {
-    use super::{Face, Leaf, Node, TexInfo};
+    use super::{Face, LongLeaf, Node, ShortLeaf, TexInfo};
 
     #[test]
     fn node_size() {
@@ -576,7 +771,12 @@ mod size_tests {
 
     #[test]
     fn leaf_size() {
-        assert_eq!(std::mem::size_of::<Leaf>(), 56);
+        assert_eq!(std::mem::size_of::<ShortLeaf>(), 32);
+    }
+
+    #[test]
+    fn leaf_size() {
+        assert_eq!(std::mem::size_of::<LongLeaf>(), 56);
     }
 
     #[test]

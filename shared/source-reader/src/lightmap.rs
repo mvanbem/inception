@@ -11,6 +11,7 @@ pub struct LightmapMetadata {
     pub is_flipped: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
 pub struct LightmapPatch {
     pub width: u8,
     pub height: u8,
@@ -61,10 +62,10 @@ pub fn build_lightmaps(bsp: Bsp) -> Result<HashMap<i16, ClusterLightmap>> {
     // Lay out an abstract texture atlas for all of the lightmap patches in the map.
     let mut cluster_lightmap_builders: HashMap<i16, ClusterLightmapBuilder> = HashMap::new();
     for leaf in bsp.iter_worldspawn_leaves() {
-        if leaf.cluster == -1 {
+        if leaf.cluster() == -1 {
             continue;
         }
-        let lightmap_builder = cluster_lightmap_builders.entry(leaf.cluster).or_default();
+        let lightmap_builder = cluster_lightmap_builders.entry(leaf.cluster()).or_default();
 
         for face in bsp.iter_faces_from_leaf(leaf) {
             if face.light_ofs == -1 || face.tex_info == -1 {

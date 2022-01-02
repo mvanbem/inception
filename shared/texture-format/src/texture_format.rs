@@ -8,6 +8,7 @@ use crate::codec::gx_tf_i8::GxTfI8;
 use crate::codec::gx_tf_ia8::GxTfIa8;
 use crate::codec::gx_tf_rgba8::GxTfRgba8;
 use crate::codec::rgb8::Rgb8;
+use crate::codec::rgba16f::Rgba16f;
 use crate::codec::rgba8::Rgba8;
 use crate::codec::DynCodec;
 
@@ -23,6 +24,7 @@ pub enum TextureFormat {
     GxTfIa8,
     GxTfRgba8,
     Rgb8,
+    Rgba16f,
     Rgba8,
 }
 
@@ -70,6 +72,7 @@ impl TextureFormat {
             Self::GxTfIa8 => &GxTfIa8,
             Self::GxTfRgba8 => &GxTfRgba8,
             Self::Rgb8 => &Rgb8,
+            Self::Rgba16f => &Rgba16f,
             Self::Rgba8 => &Rgba8,
         }
     }

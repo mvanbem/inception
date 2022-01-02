@@ -16,7 +16,7 @@ use clap::{clap_app, crate_authors, crate_description, crate_version, ArgMatches
 use memmap::Mmap;
 use nalgebra_glm::{mat3_to_mat4, vec2, vec3, vec4, Mat3, Mat3x4, Mat4, Vec3};
 use num_traits::PrimInt;
-use source_reader::asset::vmt::{LightmappedGeneric, Shader, Vmt};
+use source_reader::asset::vmt::{LightmappedGeneric, Shader, Sky, UnlitGeneric, Vmt};
 use source_reader::asset::vtf::{Vtf, VtfFaceMip};
 use source_reader::asset::AssetLoader;
 use source_reader::bsp::Bsp;
@@ -147,7 +147,6 @@ fn pack_map(hl2_base: &Path, matches: &ArgMatches) -> Result<()> {
     write_textures(dst_path, &asset_loader, &map_geometry)?;
     write_position_data(dst_path, &map_geometry.position_data)?;
     write_normal_data(dst_path, &map_geometry.normal_data)?;
-    write_lightmap_coord_data(dst_path, &map_geometry.lightmap_coord_data)?;
     write_texture_coord_data(dst_path, &map_geometry.texture_coord_data)?;
 
     write_geometry(dst_path, &map_geometry)?;
@@ -162,7 +161,6 @@ fn pack_map(hl2_base: &Path, matches: &ArgMatches) -> Result<()> {
 struct MapGeometry {
     position_data: Vec<u8>,
     normal_data: Vec<u8>,
-    lightmap_coord_data: Vec<u8>,
     texture_coord_data: Vec<u8>,
     clusters: Vec<ClusterGeometry>,
     texture_keys: Vec<OwnedTextureKey>,
@@ -300,7 +298,7 @@ impl Pass {
                     .as_ref()
                     .map(|env_map| PassEnvMap { mask: env_map.mask }),
             },
-            Shader::Unsupported { .. } => panic!(),
+            shader => panic!("unexpected shader {:?}", shader),
         }
     }
 
@@ -482,7 +480,7 @@ impl ShaderParams {
                     },
                 }
             }
-            Shader::Unsupported { .. } => panic!(),
+            shader => panic!("unexpected shader {:?}", shader),
         }
     }
 }
@@ -495,7 +493,7 @@ fn process_geometry(
     // Pre-pass: Collect the set of unique planes for each material.
     let mut material_planes: HashMap<VpkPath, HashSet<Plane>> = HashMap::new();
     for leaf in bsp.iter_worldspawn_leaves() {
-        if leaf.cluster == -1 {
+        if leaf.cluster() == -1 {
             // Leaf is not potentially visible from anywhere.
             continue;
         }
@@ -535,30 +533,45 @@ fn process_geometry(
         let worldspawn = &entities[0];
 
         for face in ["rt", "lf", "bk", "ft", "up"] {
-            let texture_path = VpkPath::new_with_prefix_and_extension(
+            let material = asset_loader.get_material(&VpkPath::new_with_prefix_and_extension(
                 &format!("{}{}", &worldspawn["skyname"], face),
                 "materials/skybox",
-                "vtf",
-            );
-            ids.get(&OwnedTextureKey::EncodeAsIs { texture_path });
+                "vmt",
+            ))?;
+            let texture_path: &VpkPath = match material.shader() {
+                Shader::UnlitGeneric(UnlitGeneric {
+                    base_texture_path, ..
+                }) => base_texture_path,
+
+                Shader::Sky(Sky { base_texture_path }) => base_texture_path,
+
+                shader => panic!(
+                    "Unexpected skybox shader {:?} in {}",
+                    shader,
+                    material.path(),
+                ),
+            };
+            ids.get(&OwnedTextureKey::EncodeAsIs {
+                texture_path: texture_path.to_owned(),
+            });
         }
     }
 
     let mut positions = AttributeBuilder::new();
     let mut normals = AttributeBuilder::new();
-    let mut lightmap_coords = AttributeBuilder::new();
     let mut texture_coords = AttributeBuilder::new();
     let mut clusters: Vec<ClusterGeometryBuilder> = Vec::new();
     for leaf in bsp.iter_worldspawn_leaves() {
-        if leaf.cluster == -1 {
+        let cluster = leaf.cluster();
+        if cluster == -1 {
             // Leaf is not potentially visible from anywhere.
             continue;
         }
-        if clusters.len() < (leaf.cluster as usize + 1) {
-            clusters.resize_with(leaf.cluster as usize + 1, Default::default);
+        if clusters.len() < (cluster as usize + 1) {
+            clusters.resize_with(cluster as usize + 1, Default::default);
         }
-        let cluster_builder = &mut clusters[leaf.cluster as usize];
-        let cluster_lightmap = &cluster_lightmaps[&leaf.cluster];
+        let cluster_builder = &mut clusters[cluster as usize];
+        let cluster_lightmap = &cluster_lightmaps[&cluster];
 
         for face in bsp.iter_faces_from_leaf(leaf) {
             if face.light_ofs == -1 || face.tex_info == -1 {
@@ -624,15 +637,14 @@ fn process_geometry(
 
                 let position_index: u16 = positions.add_vertex(hashable_float(&vertex.position));
                 let normal_index: u16 = normals.add_vertex(quantize_normal(vertex.normal));
-                let lightmap_coord_index: u16 =
-                    lightmap_coords.add_vertex(quantize_lightmap_coord(vertex.lightmap_coord));
+                let lightmap_coord = quantize_lightmap_coord(vertex.lightmap_coord);
                 let texture_coord_index: u16 =
                     texture_coords.add_vertex(quantize_texture_coord(vertex.texture_coord));
 
                 polygon_builder.add_vertex((
                     position_index,
                     normal_index,
-                    lightmap_coord_index,
+                    lightmap_coord,
                     texture_coord_index,
                 ))?;
             }
@@ -642,7 +654,6 @@ fn process_geometry(
     Ok(MapGeometry {
         position_data: positions.build(),
         normal_data: normals.build(),
-        lightmap_coord_data: lightmap_coords.build(),
         texture_coord_data: texture_coords.build(),
         clusters: clusters
             .into_iter()
@@ -758,8 +769,12 @@ fn write_textures(
 ) -> Result<()> {
     fn get_dst_format(src_format: TextureFormat) -> Result<TextureFormat> {
         Ok(match src_format {
-            TextureFormat::Dxt1 | TextureFormat::Dxt5 => TextureFormat::GxTfCmpr,
-            TextureFormat::Bgr8 | TextureFormat::Bgrx8 => TextureFormat::GxTfRgba8,
+            TextureFormat::Dxt1 | TextureFormat::Dxt5 | TextureFormat::Rgba16f => {
+                TextureFormat::GxTfCmpr
+            }
+            TextureFormat::Bgr8 | TextureFormat::Bgra8 | TextureFormat::Bgrx8 => {
+                TextureFormat::GxTfRgba8
+            }
             format => {
                 panic!("unexpected texture format: {:?}", format)
             }
@@ -831,15 +846,19 @@ fn write_textures(
                 } => {
                     let intensity_texture = asset_loader.get_texture(intensity_texture_path)?;
                     let alpha_texture = asset_loader.get_texture(alpha_texture_path)?;
-                    assert_eq!(intensity_texture.width(), alpha_texture.width());
-                    assert_eq!(intensity_texture.height(), alpha_texture.height());
-                    assert_eq!(intensity_texture.mips().len(), alpha_texture.mips().len());
+                    if intensity_texture.width() == alpha_texture.width()
+                        && intensity_texture.height() == alpha_texture.height()
+                    {
+                        assert_eq!(intensity_texture.mips().len(), alpha_texture.mips().len());
 
-                    let dst_format = TextureFormat::GxTfIa8;
-                    for face_mip in limit_face_mips(&intensity_texture, dimension_divisor) {
-                        total_size += dst_format
-                            .metrics()
-                            .encoded_size(face_mip.texture.width(), face_mip.texture.height());
+                        let dst_format = TextureFormat::GxTfIa8;
+                        for face_mip in limit_face_mips(&intensity_texture, dimension_divisor) {
+                            total_size += dst_format
+                                .metrics()
+                                .encoded_size(face_mip.texture.width(), face_mip.texture.height());
+                        }
+                    } else {
+                        total_size += 32;
                     }
                 }
 
@@ -999,85 +1018,98 @@ fn write_textures(
                 } => {
                     let intensity_texture = asset_loader.get_texture(intensity_texture_path)?;
                     let alpha_texture = asset_loader.get_texture(alpha_texture_path)?;
-                    assert_eq!(intensity_texture.width(), alpha_texture.width());
-                    assert_eq!(intensity_texture.height(), alpha_texture.height());
-                    assert_eq!(intensity_texture.flags() & 0xc, alpha_texture.flags() & 0xc);
-                    assert_eq!(intensity_texture.mips().len(), alpha_texture.mips().len());
-                    assert_eq!(intensity_texture.face_count(), 1);
-                    assert_eq!(alpha_texture.face_count(), 1);
-                    let dst_format = TextureFormat::GxTfIa8;
+                    if intensity_texture.width() == alpha_texture.width()
+                        && intensity_texture.height() == alpha_texture.height()
+                    {
+                        assert_eq!(intensity_texture.flags() & 0xc, alpha_texture.flags() & 0xc);
+                        assert_eq!(intensity_texture.mips().len(), alpha_texture.mips().len());
+                        assert_eq!(intensity_texture.face_count(), 1);
+                        assert_eq!(alpha_texture.face_count(), 1);
+                        let dst_format = TextureFormat::GxTfIa8;
 
-                    let mut base_mip_size = None;
-                    let mut mip_count = 0;
-                    let intensity_face_mips =
-                        limit_face_mips(&intensity_texture, dimension_divisor);
-                    let alpha_face_mips = limit_face_mips(&alpha_texture, dimension_divisor);
-                    assert_eq!(intensity_face_mips.len(), alpha_face_mips.len());
-                    for index in 0..intensity_face_mips.len() {
-                        let intensity_face_mip = intensity_face_mips[index];
-                        let alpha_face_mip = alpha_face_mips[index];
-                        assert_eq!(intensity_face_mip.face, 0);
-                        assert_eq!(alpha_face_mip.face, 0);
-                        assert_eq!(intensity_face_mip.mip_level, alpha_face_mip.mip_level);
-                        let width = intensity_face_mip.texture.width();
-                        let height = intensity_face_mip.texture.height();
+                        let mut base_mip_size = None;
+                        let mut mip_count = 0;
+                        let intensity_face_mips =
+                            limit_face_mips(&intensity_texture, dimension_divisor);
+                        let alpha_face_mips = limit_face_mips(&alpha_texture, dimension_divisor);
+                        assert_eq!(intensity_face_mips.len(), alpha_face_mips.len());
+                        for index in 0..intensity_face_mips.len() {
+                            let intensity_face_mip = intensity_face_mips[index];
+                            let alpha_face_mip = alpha_face_mips[index];
+                            assert_eq!(intensity_face_mip.face, 0);
+                            assert_eq!(alpha_face_mip.face, 0);
+                            assert_eq!(intensity_face_mip.mip_level, alpha_face_mip.mip_level);
+                            let width = intensity_face_mip.texture.width();
+                            let height = intensity_face_mip.texture.height();
 
-                        if base_mip_size.is_none() {
-                            base_mip_size = Some((
-                                intensity_face_mip.texture.width(),
-                                intensity_face_mip.texture.height(),
-                            ));
-                        }
+                            if base_mip_size.is_none() {
+                                base_mip_size = Some((
+                                    intensity_face_mip.texture.width(),
+                                    intensity_face_mip.texture.height(),
+                                ));
+                            }
 
-                        // Combine the intensity and alpha textures by channel into a new
-                        // texture.
-                        let intensity_data = TextureBuf::transcode(
-                            intensity_face_mip.texture.as_slice(),
-                            TextureFormat::Rgba8,
-                        )
-                        .into_data();
-                        let alpha_data = TextureBuf::transcode(
-                            alpha_face_mip.texture.as_slice(),
-                            TextureFormat::Rgba8,
-                        )
-                        .into_data();
-                        let mut texels = Vec::with_capacity(4 * width * height);
-                        for texel_index in 0..width * height {
-                            let offset = 4 * texel_index;
-                            texels.extend_from_slice(&if *intensity_from_alpha {
-                                [
-                                    intensity_data[offset + 3],
-                                    intensity_data[offset + 3],
-                                    intensity_data[offset + 3],
-                                    alpha_data[offset + 3],
-                                ]
-                            } else {
-                                [
-                                    intensity_data[offset],
-                                    intensity_data[offset + 1],
-                                    intensity_data[offset + 2],
-                                    alpha_data[offset + 3],
-                                ]
-                            });
-                        }
-
-                        texture_data.write_all(
-                            TextureBuf::transcode(
-                                TextureBuf::new(TextureFormat::Rgba8, width, height, texels)
-                                    .as_slice(),
-                                dst_format,
+                            // Combine the intensity and alpha textures by channel into a new
+                            // texture.
+                            let intensity_data = TextureBuf::transcode(
+                                intensity_face_mip.texture.as_slice(),
+                                TextureFormat::Rgba8,
                             )
-                            .data(),
-                        )?;
-                        mip_count += 1;
-                    }
+                            .into_data();
+                            let alpha_data = TextureBuf::transcode(
+                                alpha_face_mip.texture.as_slice(),
+                                TextureFormat::Rgba8,
+                            )
+                            .into_data();
+                            let mut texels = Vec::with_capacity(4 * width * height);
+                            for texel_index in 0..width * height {
+                                let offset = 4 * texel_index;
+                                texels.extend_from_slice(&if *intensity_from_alpha {
+                                    [
+                                        intensity_data[offset + 3],
+                                        intensity_data[offset + 3],
+                                        intensity_data[offset + 3],
+                                        alpha_data[offset + 3],
+                                    ]
+                                } else {
+                                    [
+                                        intensity_data[offset],
+                                        intensity_data[offset + 1],
+                                        intensity_data[offset + 2],
+                                        alpha_data[offset + 3],
+                                    ]
+                                });
+                            }
 
-                    TextureMetadata {
-                        width: base_mip_size.unwrap().0,
-                        height: base_mip_size.unwrap().1,
-                        mip_count,
-                        gx_flags: gx_texture_flags(intensity_texture.flags()),
-                        gx_format: gx_texture_format(dst_format),
+                            texture_data.write_all(
+                                TextureBuf::transcode(
+                                    TextureBuf::new(TextureFormat::Rgba8, width, height, texels)
+                                        .as_slice(),
+                                    dst_format,
+                                )
+                                .data(),
+                            )?;
+                            mip_count += 1;
+                        }
+
+                        TextureMetadata {
+                            width: base_mip_size.unwrap().0,
+                            height: base_mip_size.unwrap().1,
+                            mip_count,
+                            gx_flags: gx_texture_flags(intensity_texture.flags()),
+                            gx_format: gx_texture_format(dst_format),
+                        }
+                    } else {
+                        // Skip for now.
+                        // TODO: Scale to the maximum dimension.
+                        texture_data.write_all(&[0; 32])?;
+                        TextureMetadata {
+                            width: 8,
+                            height: 8,
+                            mip_count: 1,
+                            gx_flags: 0,
+                            gx_format: gx_texture_format(TextureFormat::GxTfCmpr),
+                        }
                     }
                 }
 
@@ -1275,13 +1307,6 @@ fn write_position_data(dst_path: &Path, position_data: &[u8]) -> Result<()> {
 fn write_normal_data(dst_path: &Path, normal_data: &[u8]) -> Result<()> {
     let mut f = BufWriter::new(File::create(dst_path.join("normal_data.dat"))?);
     f.write_all(&normal_data)?;
-    f.flush()?;
-    Ok(())
-}
-
-fn write_lightmap_coord_data(dst_path: &Path, lightmap_coord_data: &[u8]) -> Result<()> {
-    let mut f = BufWriter::new(File::create(dst_path.join("lightmap_coord_data.dat"))?);
-    f.write_all(&lightmap_coord_data)?;
     f.flush()?;
     Ok(())
 }
@@ -1522,7 +1547,7 @@ fn write_bsp_nodes(dst_path: &Path, bsp: Bsp) -> Result<()> {
 fn write_bsp_leaves(dst_path: &Path, bsp: Bsp) -> Result<()> {
     let mut data = Vec::new();
     for leaf in bsp.leaves() {
-        data.write_i16::<BigEndian>(leaf.cluster).unwrap();
+        data.write_i16::<BigEndian>(leaf.cluster()).unwrap();
     }
     let mut f = BufWriter::new(File::create(dst_path.join("bsp_leaves.dat"))?);
     f.write_all(&data)?;
@@ -1575,7 +1600,7 @@ fn write_lightmaps(
 
         let patch_table_start_index = patch_table_file.index()? as u32;
         for leaf in bsp.iter_worldspawn_leaves() {
-            if leaf.cluster != cluster {
+            if leaf.cluster() != cluster {
                 continue;
             }
 

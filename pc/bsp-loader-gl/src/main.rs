@@ -170,15 +170,16 @@ fn load_graphics_data(
     let mut vertices = Vec::new();
     let mut indices_by_cluster_material: HashMap<i16, HashMap<VpkPath, Vec<u16>>> = HashMap::new();
     for leaf in bsp.iter_worldspawn_leaves() {
-        if leaf.cluster == -1 {
+        let cluster = leaf.cluster();
+        if cluster == -1 {
             // Leaf is not potentially visible from anywhere.
             continue;
         }
-        let cluster_lightmap = &cluster_lightmaps[&leaf.cluster];
+        let cluster_lightmap = &cluster_lightmaps[&cluster];
         let lightmap_texture_data = cluster_lightmap_texture_data
-            .entry(leaf.cluster)
+            .entry(cluster)
             .or_insert_with(|| vec![0u8; 3 * cluster_lightmap.width * cluster_lightmap.height]);
-        let indices_by_material = indices_by_cluster_material.entry(leaf.cluster).or_default();
+        let indices_by_material = indices_by_cluster_material.entry(cluster).or_default();
         let mut emitted_vertices_by_source = HashMap::new();
 
         for face in bsp.iter_faces_from_leaf(leaf) {
