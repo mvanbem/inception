@@ -2,7 +2,7 @@ WARNING: Unimplemented $envmapcontrast None
 WARNING: Unimplemented $envmapcontrast Some(0.3)
 WARNING: Unimplemented $envmapcontrast Some(0.6)
 WARNING: Unimplemented LightmappedGeneric key $additive
-WARNING: Unimplemented LightmappedGeneric key $AllowAlphaToCoverage
+WARNING: Unimplemented LightmappedGeneric key $allowalphatocoverage
 WARNING: Unimplemented LightmappedGeneric key $basetexturetransform
 WARNING: Unimplemented LightmappedGeneric key $basetexturetransform2
 WARNING: Unimplemented LightmappedGeneric key $bottommaterial
@@ -15,7 +15,6 @@ WARNING: Unimplemented LightmappedGeneric key $fogenable
 WARNING: Unimplemented LightmappedGeneric key $fogend
 WARNING: Unimplemented LightmappedGeneric key $fogstart
 WARNING: Unimplemented LightmappedGeneric key $fresnelreflection
-WARNING: Unimplemented LightmappedGeneric key $FRESNELREFLECTION
 WARNING: Unimplemented LightmappedGeneric key $multipass
 WARNING: Unimplemented LightmappedGeneric key $nocull
 WARNING: Unimplemented LightmappedGeneric key $nodecal

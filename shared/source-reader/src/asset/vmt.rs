@@ -233,7 +233,7 @@ impl<'a> ShaderBuilder<'a> for LightmappedGenericBuilder {
                 "$translucent" => self.translucent = parse_bool(value).context("$translucent")?,
                 "$parallaxmap" | "$parallaxmapscale" | "$reflectivity" | "$surfaceprop" => (),
                 x if x.starts_with("%") => (),
-                _ => eprintln!(
+                key => eprintln!(
                     "WARNING: Unimplemented LightmappedGeneric key {} in {}",
                     key, material_path,
                 ),
@@ -300,7 +300,7 @@ impl<'a> ShaderBuilder<'a> for LightmappedGenericBuilder {
                         _ => unreachable!(),
                     }
                 }
-                _ => eprintln!(
+                name => eprintln!(
                     "WARNING: Unexpected LightmappedGeneric object {} in {}",
                     name, material_path,
                 ),
@@ -364,14 +364,14 @@ impl<'a> ShaderBuilder<'a> for UnlitGenericBuilder {
                     self.base_texture_path = parse_vtf_path(value).context("$basetexture")?
                 }
                 x if x.starts_with("%") => (),
-                _ => eprintln!(
+                key => eprintln!(
                     "WARNING: Unimplemented UnlitGeneric key {} in {}",
                     key, material_path,
                 ),
             },
             Entry::Object(Object { name, entries: _ }) => {
                 match name.to_ascii_lowercase().as_str() {
-                    _ => eprintln!(
+                    name => eprintln!(
                         "WARNING: Unexpected UnlitGeneric object {} in {}",
                         name, material_path,
                     ),
