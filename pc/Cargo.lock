@@ -782,6 +782,7 @@ dependencies = [
  "anyhow",
  "byteorder",
  "clap",
+ "inception-render-common",
  "memmap",
  "nalgebra-glm",
  "num-traits",
@@ -794,6 +795,10 @@ dependencies = [
  "texture-format",
  "try-insert-ext",
 ]
+
+[[package]]
+name = "inception-render-common"
+version = "0.1.0"
 
 [[package]]
 name = "instant"

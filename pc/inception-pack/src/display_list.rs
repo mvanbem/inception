@@ -6,6 +6,7 @@ pub struct DisplayListBuilder {
 }
 
 impl DisplayListBuilder {
+    pub const QUADS: u8 = 0x80;
     pub const TRIANGLES: u8 = 0x90;
 
     pub fn new(primitive: u8) -> Self {

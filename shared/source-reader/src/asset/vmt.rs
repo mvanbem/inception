@@ -97,8 +97,21 @@ impl Asset for Vmt {
 pub enum Shader {
     LightmappedGeneric(LightmappedGeneric),
     UnlitGeneric(UnlitGeneric),
+    WorldVertexTransition(WorldVertexTransition),
     Sky(Sky),
     Unsupported { shader: String },
+}
+
+impl Shader {
+    pub fn name(&self) -> &str {
+        match self {
+            Shader::LightmappedGeneric(_) => "LightmappedGeneric",
+            Shader::UnlitGeneric(_) => "UnlitGeneric",
+            Shader::WorldVertexTransition(_) => "WorldVertexTransition",
+            Shader::Sky(_) => "Sky",
+            Shader::Unsupported { shader } => shader,
+        }
+    }
 }
 
 trait ShaderBuilder<'a> {
@@ -116,6 +129,7 @@ fn create_shader_builder<'a>(
     {
         "lightmappedgeneric" => Box::new(LightmappedGenericBuilder::default()),
         "unlitgeneric" => Box::new(UnlitGenericBuilder::default()),
+        "worldvertextransition" => Box::new(WorldVertexTransitionBuilder::default()),
         "sky" => Box::new(SkyBuilder::default()),
         "patch" => Box::new(PatchBuilder::default()),
         shader => {
@@ -394,6 +408,68 @@ impl<'a> ShaderBuilder<'a> for UnlitGenericBuilder {
 #[derive(Debug)]
 pub struct UnlitGeneric {
     pub base_texture_path: VpkPath,
+}
+
+struct WorldVertexTransitionBuilder {
+    base_texture_path: Option<VpkPath>,
+    base_texture2_path: Option<VpkPath>,
+}
+
+impl Default for WorldVertexTransitionBuilder {
+    fn default() -> Self {
+        Self {
+            base_texture_path: None,
+            base_texture2_path: None,
+        }
+    }
+}
+
+impl<'a> ShaderBuilder<'a> for WorldVertexTransitionBuilder {
+    fn parse(&mut self, material_path: &VpkPath, entry: Entry<'a>) -> Result<()> {
+        match entry {
+            Entry::KeyValue(KeyValue { key, value }) => match key.to_ascii_lowercase().as_str() {
+                "$basetexture" => {
+                    self.base_texture_path = parse_vtf_path(value).context("$basetexture")?
+                }
+                "$basetexture2" => {
+                    self.base_texture2_path = parse_vtf_path(value).context("$basetexture2")?
+                }
+                x if x.starts_with("%") => (),
+                key => eprintln!(
+                    "WARNING: Unimplemented WorldVertexTransition key {} in {}",
+                    key, material_path,
+                ),
+            },
+            Entry::Object(Object { name, entries: _ }) => {
+                match name.to_ascii_lowercase().as_str() {
+                    name => eprintln!(
+                        "WARNING: Unexpected WorldVertexTransition object {} in {}",
+                        name, material_path,
+                    ),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn build(self: Box<Self>, _loader: &AssetLoader, _material_path: &VpkPath) -> Result<Shader> {
+        Ok(Shader::WorldVertexTransition(WorldVertexTransition {
+            base_texture_path: match self.base_texture_path {
+                Some(x) => x,
+                None => bail!("WorldVertexTransition $basetexture was unset"),
+            },
+            base_texture2_path: match self.base_texture2_path {
+                Some(x) => x,
+                None => bail!("WorldVertexTransition $basetexture2 was unset"),
+            },
+        }))
+    }
+}
+
+#[derive(Debug)]
+pub struct WorldVertexTransition {
+    pub base_texture_path: VpkPath,
+    pub base_texture2_path: VpkPath,
 }
 
 struct SkyBuilder {

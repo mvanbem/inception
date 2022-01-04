@@ -13,13 +13,16 @@ use std::rc::Rc;
 use anyhow::{bail, Context, Result};
 use byteorder::{BigEndian, WriteBytesExt};
 use clap::{clap_app, crate_authors, crate_description, crate_version, ArgMatches};
+use inception_render_common::bytecode;
 use memmap::Mmap;
-use nalgebra_glm::{mat3_to_mat4, vec2, vec3, vec4, Mat3, Mat3x4, Mat4, Vec3};
+use nalgebra_glm::{lerp, mat3_to_mat4, vec2, vec3, vec4, Mat3, Mat3x4, Mat4, Vec3};
 use num_traits::PrimInt;
-use source_reader::asset::vmt::{LightmappedGeneric, Shader, Sky, UnlitGeneric, Vmt};
+use source_reader::asset::vmt::{
+    LightmappedGeneric, Shader, Sky, UnlitGeneric, WorldVertexTransition,
+};
 use source_reader::asset::vtf::{Vtf, VtfFaceMip};
 use source_reader::asset::AssetLoader;
-use source_reader::bsp::Bsp;
+use source_reader::bsp::{Bsp, DispInfo, Face};
 use source_reader::file::zip::ZipArchiveLoader;
 use source_reader::file::{FallbackFileLoader, FileLoader};
 use source_reader::geometry::convert_vertex;
@@ -33,13 +36,15 @@ use quickcheck::Arbitrary;
 
 use crate::counter::Counter;
 use crate::display_list::DisplayListBuilder;
-use crate::packed_material::{PackedMaterial, PackedMaterialBaseAlpha, PackedMaterialEnvMapMask};
+use crate::legacy_pass_params::{Pass, ShaderParams, ShaderParamsAlpha};
+use crate::packed_material::PackedMaterial;
 use crate::record_writer::RecordWriter;
 use crate::texture_key::{OwnedTextureKey, TextureIdAllocator};
 use crate::write_big_endian::WriteBigEndian;
 
 mod counter;
 mod display_list;
+mod legacy_pass_params;
 mod packed_material;
 mod record_writer;
 mod texture_key;
@@ -57,6 +62,11 @@ fn main() -> Result<()> {
             (@arg MAP: "Map name (default: d1_trainstation_01)")
             (@arg dst: --dst [PATH] "Path to write packed outputs (default: .)")
         )
+        (@subcommand cat_lump =>
+            (about: "dumps an arbitrary BSP lump to stdout")
+            (@arg MAP: "Map name (example: d1_trainstation_01)")
+            (@arg LUMP: "Lump index (example: 40)")
+        )
         (@subcommand cat_material =>
             (about: "prints a material definition to stdout")
             (@arg NAME: ... "Material name (example: tile/tilefloor013a)")
@@ -71,10 +81,33 @@ fn main() -> Result<()> {
     let hl2_base = Path::new(matches.value_of("hl2_base").unwrap());
     match matches.subcommand() {
         ("pack_map", Some(matches)) => pack_map(hl2_base, matches)?,
+        ("cat_lump", Some(matches)) => cat_lump(hl2_base, matches)?,
         ("cat_material", Some(matches)) => cat_material(hl2_base, matches)?,
         ("describe_texture", Some(matches)) => describe_texture(hl2_base, matches)?,
         (name, _) => bail!("unknown subcommand: {:?}", name),
     }
+    Ok(())
+}
+
+fn cat_lump(hl2_base: &Path, matches: &ArgMatches) -> Result<()> {
+    let map_path = {
+        let mut path = hl2_base.join("maps");
+        path.push(format!("{}.bsp", matches.value_of("MAP").unwrap(),));
+        path
+    };
+    let bsp_file =
+        File::open(&map_path).with_context(|| format!("Opening map file {:?}", map_path))?;
+    let bsp_data = unsafe { Mmap::map(&bsp_file) }?;
+    let bsp = Bsp::new(&bsp_data);
+
+    let lump_index = matches.value_of("LUMP").unwrap().parse().unwrap();
+    let lump_data = bsp.lump_data(lump_index);
+
+    let stdout = stdout();
+    let mut stdout = stdout.lock();
+    stdout.write_all(lump_data)?;
+    stdout.flush()?;
+
     Ok(())
 }
 
@@ -148,8 +181,15 @@ fn pack_map(hl2_base: &Path, matches: &ArgMatches) -> Result<()> {
     write_position_data(dst_path, &map_geometry.position_data)?;
     write_normal_data(dst_path, &map_geometry.normal_data)?;
     write_texture_coord_data(dst_path, &map_geometry.texture_coord_data)?;
+    write_displacement_position_data(dst_path, &map_geometry.displacement_position_data)?;
+    write_displacement_vertex_color_data(dst_path, &map_geometry.displacement_vertex_color_data)?;
+    write_displacement_texture_coordinate_data(
+        dst_path,
+        &map_geometry.displacement_texture_coordinate_data,
+    )?;
 
     write_geometry(dst_path, &map_geometry)?;
+    write_displacement_geometry(dst_path, &map_geometry)?;
     write_bsp_nodes(dst_path, bsp)?;
     write_bsp_leaves(dst_path, bsp)?;
     write_vis(dst_path, bsp)?;
@@ -163,6 +203,10 @@ struct MapGeometry {
     normal_data: Vec<u8>,
     texture_coord_data: Vec<u8>,
     clusters: Vec<ClusterGeometry>,
+    displacement_position_data: Vec<u8>,
+    displacement_vertex_color_data: Vec<u8>,
+    displacement_texture_coordinate_data: Vec<u8>,
+    displacement_display_lists_by_pass_material: BTreeMap<(bool, PackedMaterial), Vec<u8>>,
     texture_keys: Vec<OwnedTextureKey>,
 }
 
@@ -259,232 +303,6 @@ impl ClusterGeometryBuilder {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-enum Pass {
-    LightmappedGeneric {
-        alpha: PassAlpha,
-        base_alpha: PackedMaterialBaseAlpha,
-        env_map: Option<PassEnvMap>,
-    },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-enum PassAlpha {
-    OpaqueOrAlphaTest,
-    AlphaBlend,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-struct PassEnvMap {
-    mask: PackedMaterialEnvMapMask,
-}
-
-impl Pass {
-    fn from_material(material: &Vmt, packed_material: &PackedMaterial) -> Self {
-        match material.shader() {
-            Shader::LightmappedGeneric(LightmappedGeneric {
-                alpha_test,
-                translucent,
-                ..
-            }) => Self::LightmappedGeneric {
-                alpha: match (*alpha_test, *translucent) {
-                    (_, false) => PassAlpha::OpaqueOrAlphaTest,
-                    (false, true) => PassAlpha::AlphaBlend,
-                    (true, true) => panic!("material is both alpha-tested and alpha-blended"),
-                },
-                base_alpha: packed_material.base_alpha,
-                env_map: packed_material
-                    .env_map
-                    .as_ref()
-                    .map(|env_map| PassEnvMap { mask: env_map.mask }),
-            },
-            shader => panic!("unexpected shader {:?}", shader),
-        }
-    }
-
-    fn as_mode(self) -> u8 {
-        match self {
-            // Disallowed combinations.
-            Pass::LightmappedGeneric {
-                alpha: _,
-                base_alpha: PackedMaterialBaseAlpha::AuxTextureAlpha,
-                env_map:
-                    Some(PassEnvMap {
-                        mask: PackedMaterialEnvMapMask::BaseTextureAlpha,
-                    }),
-            } => unreachable!(
-                "sampling base alpha for an env map mask, \
-                but base alpha is packed in the aux texture"
-            ),
-
-            // # Opaque pass
-            // ## Base texture alpha
-            Pass::LightmappedGeneric {
-                alpha: PassAlpha::OpaqueOrAlphaTest,
-                base_alpha: PackedMaterialBaseAlpha::BaseTextureAlpha,
-                env_map: None,
-            } => 0,
-            Pass::LightmappedGeneric {
-                alpha: PassAlpha::OpaqueOrAlphaTest,
-                base_alpha: PackedMaterialBaseAlpha::BaseTextureAlpha,
-                env_map:
-                    Some(PassEnvMap {
-                        mask: PackedMaterialEnvMapMask::None,
-                    }),
-            } => 1,
-            // Pass::LightmappedGeneric {
-            //     alpha: PassAlpha::OpaqueOrAlphaTest,
-            //     base_alpha: PackedMaterialBaseAlpha::BaseTextureAlpha,
-            //     env_map:
-            //         Some(PassEnvMap {
-            //             mask: PackedMaterialEnvMapMask::BaseTextureAlpha,
-            //         }),
-            // } => 2,
-            Pass::LightmappedGeneric {
-                alpha: PassAlpha::OpaqueOrAlphaTest,
-                base_alpha: PackedMaterialBaseAlpha::BaseTextureAlpha,
-                env_map:
-                    Some(PassEnvMap {
-                        mask: PackedMaterialEnvMapMask::AuxTextureIntensity,
-                    }),
-            } => 3,
-
-            // # Opaque pass (cont.)
-            // ## Aux texture alpha
-            Pass::LightmappedGeneric {
-                alpha: PassAlpha::OpaqueOrAlphaTest,
-                base_alpha: PackedMaterialBaseAlpha::AuxTextureAlpha,
-                env_map: None,
-            } => 4,
-            // Pass::LightmappedGeneric {
-            //     alpha: PassAlpha::OpaqueOrAlphaTest,
-            //     base_alpha: PackedMaterialBaseAlpha::AuxTextureAlpha,
-            //     env_map:
-            //         Some(PassEnvMap {
-            //             mask: PackedMaterialEnvMapMask::None,
-            //         }),
-            // } => 5,
-            // (disallowed) => 6,
-            Pass::LightmappedGeneric {
-                alpha: PassAlpha::OpaqueOrAlphaTest,
-                base_alpha: PackedMaterialBaseAlpha::AuxTextureAlpha,
-                env_map:
-                    Some(PassEnvMap {
-                        mask: PackedMaterialEnvMapMask::AuxTextureIntensity,
-                    }),
-            } => 7,
-
-            // # Blended pass
-            // ## Base texture alpha
-            // Pass::LightmappedGeneric {
-            //     alpha: PassAlpha::AlphaBlend,
-            //     base_alpha: PackedMaterialBaseAlpha::BaseTextureAlpha,
-            //     env_map: None,
-            // } => 8,
-            // Pass::LightmappedGeneric {
-            //     alpha: PassAlpha::AlphaBlend,
-            //     base_alpha: PackedMaterialBaseAlpha::BaseTextureAlpha,
-            //     env_map:
-            //         Some(PassEnvMap {
-            //             mask: PackedMaterialEnvMapMask::None,
-            //         }),
-            // } => 9,
-            // Pass::LightmappedGeneric {
-            //     alpha: PassAlpha::AlphaBlend,
-            //     base_alpha: PackedMaterialBaseAlpha::BaseTextureAlpha,
-            //     env_map:
-            //         Some(PassEnvMap {
-            //             mask: PackedMaterialEnvMapMask::BaseTextureAlpha,
-            //         }),
-            // } => 10,
-            // Pass::LightmappedGeneric {
-            //     alpha: PassAlpha::AlphaBlend,
-            //     base_alpha: PackedMaterialBaseAlpha::BaseTextureAlpha,
-            //     env_map:
-            //         Some(PassEnvMap {
-            //             mask: PackedMaterialEnvMapMask::AuxTextureIntensity,
-            //         }),
-            // } => 11,
-
-            // # Blended pass
-            // ## Aux texture alpha
-            Pass::LightmappedGeneric {
-                alpha: PassAlpha::AlphaBlend,
-                base_alpha: PackedMaterialBaseAlpha::AuxTextureAlpha,
-                env_map: None,
-            } => 12,
-            Pass::LightmappedGeneric {
-                alpha: PassAlpha::AlphaBlend,
-                base_alpha: PackedMaterialBaseAlpha::AuxTextureAlpha,
-                env_map:
-                    Some(PassEnvMap {
-                        mask: PackedMaterialEnvMapMask::None,
-                    }),
-            } => 13,
-            // (disallowed) => 14,
-            Pass::LightmappedGeneric {
-                alpha: PassAlpha::AlphaBlend,
-                base_alpha: PackedMaterialBaseAlpha::AuxTextureAlpha,
-                env_map:
-                    Some(PassEnvMap {
-                        mask: PackedMaterialEnvMapMask::AuxTextureIntensity,
-                    }),
-            } => 15,
-            _ => panic!("unexpected pass: {:?}", self),
-        }
-    }
-}
-
-#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-struct ShaderParams {
-    // Order matters here! `plane` is the first field to minimize plane changes in the display byte
-    // code.
-    plane: Plane,
-    env_map_tint: [u8; 3],
-    alpha: ShaderParamsAlpha,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum ShaderParamsAlpha {
-    Opaque,
-    AlphaTest { threshold: u8 },
-    AlphaBlend,
-}
-
-impl ShaderParams {
-    fn from_material_plane(material: &Vmt, plane: Plane) -> Self {
-        match material.shader() {
-            Shader::LightmappedGeneric(LightmappedGeneric {
-                alpha_test,
-                alpha_test_reference,
-                env_map_tint,
-                translucent,
-                ..
-            }) => {
-                let env_map_tint = env_map_tint.unwrap_or(vec3(1.0, 1.0, 1.0));
-                Self {
-                    plane,
-                    env_map_tint: [
-                        ((env_map_tint[0] * 255.0).clamp(0.0, 255.0) + 0.5) as u8,
-                        ((env_map_tint[1] * 255.0).clamp(0.0, 255.0) + 0.5) as u8,
-                        ((env_map_tint[2] * 255.0).clamp(0.0, 255.0) + 0.5) as u8,
-                    ],
-                    alpha: match (*alpha_test, *translucent) {
-                        (false, false) => ShaderParamsAlpha::Opaque,
-                        (false, true) => ShaderParamsAlpha::AlphaBlend,
-                        (true, false) => ShaderParamsAlpha::AlphaTest {
-                            threshold: ((alpha_test_reference * 255.0).clamp(0.0, 255.0) + 0.5)
-                                as u8,
-                        },
-                        (true, true) => panic!("material is both alpha-tested and alpha-blended"),
-                    },
-                }
-            }
-            shader => panic!("unexpected shader {:?}", shader),
-        }
-    }
-}
-
 fn process_geometry(
     bsp: Bsp,
     cluster_lightmaps: &HashMap<i16, ClusterLightmap>,
@@ -528,34 +346,7 @@ fn process_geometry(
 
     let mut ids = TextureIdAllocator::new();
     // The first five texture IDs are reserved for the 2D skybox.
-    {
-        let entities = bsp.entities();
-        let worldspawn = &entities[0];
-
-        for face in ["rt", "lf", "bk", "ft", "up"] {
-            let material = asset_loader.get_material(&VpkPath::new_with_prefix_and_extension(
-                &format!("{}{}", &worldspawn["skyname"], face),
-                "materials/skybox",
-                "vmt",
-            ))?;
-            let texture_path: &VpkPath = match material.shader() {
-                Shader::UnlitGeneric(UnlitGeneric {
-                    base_texture_path, ..
-                }) => base_texture_path,
-
-                Shader::Sky(Sky { base_texture_path }) => base_texture_path,
-
-                shader => panic!(
-                    "Unexpected skybox shader {:?} in {}",
-                    shader,
-                    material.path(),
-                ),
-            };
-            ids.get(&OwnedTextureKey::EncodeAsIs {
-                texture_path: texture_path.to_owned(),
-            });
-        }
-    }
+    allocate_skybox_textures(bsp, asset_loader, &mut ids)?;
 
     let mut positions = AttributeBuilder::new();
     let mut normals = AttributeBuilder::new();
@@ -574,82 +365,44 @@ fn process_geometry(
         let cluster_lightmap = &cluster_lightmaps[&cluster];
 
         for face in bsp.iter_faces_from_leaf(leaf) {
-            if face.light_ofs == -1 || face.tex_info == -1 {
-                // Not a textured lightmapped surface.
-                continue;
-            }
-
-            let lightmap_metadata = &cluster_lightmap.metadata_by_data_offset[&face.light_ofs];
-            let tex_info = &bsp.tex_infos()[face.tex_info as usize];
-            if tex_info.tex_data == -1 {
-                // Not textured.
-                // TODO: Determine whether any such faces need to be drawn.
-                continue;
-            }
-
-            // This is a textured face.
-            let tex_data = &bsp.tex_datas()[tex_info.tex_data as usize];
-            let material_path = VpkPath::new_with_prefix_and_extension(
-                bsp.tex_data_strings()
-                    .get(tex_data.name_string_table_id as usize),
-                "materials",
-                "vmt",
-            );
-            let plane = Plane::from(bsp.planes()[face.plane_num as usize].normal);
-            let material = asset_loader.get_material(&material_path)?;
-            let base_texture_size = match material.shader() {
-                Shader::LightmappedGeneric(LightmappedGeneric {
-                    base_texture_path, ..
-                }) => {
-                    let base_texture = asset_loader.get_texture(base_texture_path)?;
-                    [base_texture.width() as f32, base_texture.height() as f32]
-                }
-                _ => continue,
-            };
-            let packed_material = match PackedMaterial::from_material_and_all_planes(
-                asset_loader,
-                &mut ids,
-                &material,
-                &material_planes[&material_path],
-            )? {
-                Some(packed_material) => packed_material,
-                None => continue, // Skip any face with a material we can't load.
-            };
-            let mut polygon_builder = PolygonBuilder::new(cluster_builder.display_list_builder(
-                Pass::from_material(&material, &packed_material),
-                packed_material,
-                ShaderParams::from_material_plane(&material, plane),
-            ));
-
-            for vertex_index in bsp.iter_vertex_indices_from_face(face) {
-                let mut vertex = convert_vertex(
+            if face.light_ofs != -1 && face.tex_info != -1 {
+                process_lit_textured_face(
                     bsp,
-                    (cluster_lightmap.width, cluster_lightmap.height),
-                    lightmap_metadata,
+                    asset_loader,
+                    &material_planes,
+                    &mut ids,
+                    &mut positions,
+                    &mut normals,
+                    &mut texture_coords,
+                    cluster_builder,
+                    cluster_lightmap,
                     face,
-                    tex_info,
-                    vertex_index,
-                );
-                vertex.texture_coord = [
-                    vertex.texture_coord[0] / base_texture_size[0],
-                    vertex.texture_coord[1] / base_texture_size[1],
-                ];
-
-                let position_index: u16 = positions.add_vertex(hashable_float(&vertex.position));
-                let normal_index: u16 = normals.add_vertex(quantize_normal(vertex.normal));
-                let lightmap_coord = quantize_lightmap_coord(vertex.lightmap_coord);
-                let texture_coord_index: u16 =
-                    texture_coords.add_vertex(quantize_texture_coord(vertex.texture_coord));
-
-                polygon_builder.add_vertex((
-                    position_index,
-                    normal_index,
-                    lightmap_coord,
-                    texture_coord_index,
-                ))?;
+                )?;
             }
         }
     }
+
+    let mut displacement_positions = AttributeBuilder::new();
+    let mut displacement_vertex_colors = AttributeBuilder::new();
+    let mut displacement_texture_coordinates = AttributeBuilder::new();
+    let mut displacement_display_list_builders_by_pass_material = BTreeMap::new();
+    for disp_info in bsp.disp_infos() {
+        process_displacement(
+            bsp,
+            asset_loader,
+            &mut ids,
+            &mut displacement_positions,
+            &mut displacement_vertex_colors,
+            &mut displacement_texture_coordinates,
+            &mut displacement_display_list_builders_by_pass_material,
+            disp_info,
+        )?;
+    }
+    let displacement_display_lists_by_pass_material =
+        displacement_display_list_builders_by_pass_material
+            .into_iter()
+            .map(|(key, builder)| (key, builder.build()))
+            .collect();
 
     Ok(MapGeometry {
         position_data: positions.build(),
@@ -659,8 +412,305 @@ fn process_geometry(
             .into_iter()
             .map(ClusterGeometryBuilder::build)
             .collect(),
+        displacement_position_data: displacement_positions.build(),
+        displacement_vertex_color_data: displacement_vertex_colors.build(),
+        displacement_texture_coordinate_data: displacement_texture_coordinates.build(),
+        displacement_display_lists_by_pass_material,
         texture_keys: ids.into_keys(),
     })
+}
+
+fn allocate_skybox_textures(
+    bsp: Bsp,
+    asset_loader: &AssetLoader,
+    ids: &mut TextureIdAllocator,
+) -> Result<()> {
+    let entities = bsp.entities();
+    let worldspawn = &entities[0];
+
+    for face in ["rt", "lf", "bk", "ft", "up"] {
+        let material = asset_loader.get_material(&VpkPath::new_with_prefix_and_extension(
+            &format!("{}{}", &worldspawn["skyname"], face),
+            "materials/skybox",
+            "vmt",
+        ))?;
+        let texture_path: &VpkPath = match material.shader() {
+            Shader::UnlitGeneric(UnlitGeneric {
+                base_texture_path, ..
+            }) => base_texture_path,
+
+            Shader::Sky(Sky { base_texture_path }) => base_texture_path,
+
+            shader => panic!(
+                "Unexpected skybox shader {:?} in {}",
+                shader.name(),
+                material.path(),
+            ),
+        };
+        ids.get(&OwnedTextureKey::EncodeAsIs {
+            texture_path: texture_path.to_owned(),
+        });
+    }
+
+    Ok(())
+}
+
+fn process_displacement(
+    bsp: Bsp,
+    asset_loader: &AssetLoader,
+    ids: &mut TextureIdAllocator,
+    positions: &mut AttributeBuilder<[FloatByBits; 3], u16>,
+    vertex_colors: &mut AttributeBuilder<[u8; 3], u16>,
+    texture_coordinates: &mut AttributeBuilder<[FloatByBits; 2], u16>,
+    display_list_builders_by_pass_material: &mut BTreeMap<
+        (bool, PackedMaterial),
+        DisplayListBuilder,
+    >,
+    disp_info: &DispInfo,
+) -> Result<()> {
+    let verts_per_side = (1 << disp_info.power) + 1;
+    let vert_count = verts_per_side * verts_per_side;
+    let vert_index = disp_info.disp_vert_start as usize;
+    let verts = &bsp.disp_verts()[vert_index..vert_index + vert_count];
+
+    let quads_per_side = 1 << disp_info.power;
+    let tri_count = 2 * quads_per_side * quads_per_side;
+    let tri_index = disp_info.disp_tri_start as usize;
+    let _tris = &bsp.disp_tris()[tri_index..tri_index + tri_count];
+
+    let face = &bsp.faces()[disp_info.map_face as usize];
+    assert_eq!(face.num_edges, 4);
+    assert_ne!(face.tex_info, -1);
+    println!(
+        "* Displacement face lightmap: width={} height={} light_ofs={}",
+        face.lightmap_texture_size_in_luxels[0] + 1,
+        face.lightmap_texture_size_in_luxels[1] + 1,
+        face.light_ofs,
+    );
+    let mut corners = [Vec3::zeros(); 4];
+    let mut closest_distance = f32::INFINITY;
+    let mut closest_corner = 0;
+    for i in 0..4 {
+        let mut edge_index = bsp.surf_edges()[face.first_edge as usize + i];
+        let was_negative = edge_index < 0;
+        if was_negative {
+            edge_index *= -1;
+        }
+        let edge = &bsp.edges()[edge_index as usize];
+        corners[i] = bsp.vertices()[edge.v[was_negative as usize] as usize];
+
+        let distance = (disp_info.start_position_vec() - corners[i]).magnitude();
+        if closest_distance > distance {
+            closest_distance = distance;
+            closest_corner = i;
+        }
+    }
+
+    let tex_info = &bsp.tex_infos()[face.tex_info as usize];
+    assert_ne!(tex_info.tex_data, -1);
+    let tex_data = &bsp.tex_datas()[tex_info.tex_data as usize];
+    let material_path = VpkPath::new_with_prefix_and_extension(
+        bsp.tex_data_strings()
+            .get(tex_data.name_string_table_id as usize),
+        "materials",
+        "vmt",
+    );
+    let material = asset_loader.get_material(&material_path)?;
+    let packed_material =
+        match PackedMaterial::from_material_and_all_planes(asset_loader, ids, &material, [])? {
+            Some(packed_material) => packed_material,
+            None => return Ok(()),
+        };
+    let (pass, base_texture) = match material.shader() {
+        Shader::LightmappedGeneric(LightmappedGeneric {
+            base_texture_path, ..
+        }) => (false, asset_loader.get_texture(base_texture_path)?),
+        Shader::WorldVertexTransition(WorldVertexTransition {
+            base_texture_path, ..
+        }) => (true, asset_loader.get_texture(base_texture_path)?),
+        shader => panic!("Unexpected shader: {:?}", shader.name()),
+    };
+    let display_list_builder = display_list_builders_by_pass_material
+        .entry((pass, packed_material))
+        .or_insert_with(|| DisplayListBuilder::new(DisplayListBuilder::QUADS));
+
+    let mut position_indices = Vec::new();
+    let mut vertex_color_indices = Vec::new();
+    let mut texture_coordinate_indices = Vec::new();
+    for y in 0..verts_per_side {
+        for x in 0..verts_per_side {
+            let xf = x as f32 / (verts_per_side - 1) as f32;
+            let yf = y as f32 / (verts_per_side - 1) as f32;
+            let vert = &verts[y * verts_per_side + x];
+            let offset = vec3(vert.vec[0], vert.vec[1], vert.vec[2]) * vert.dist;
+            let base_position = lerp(
+                &lerp(
+                    &corners[(closest_corner + 0) % 4],
+                    &corners[(closest_corner + 3) % 4],
+                    xf,
+                ),
+                &lerp(
+                    &corners[(closest_corner + 1) % 4],
+                    &corners[(closest_corner + 2) % 4],
+                    xf,
+                ),
+                yf,
+            );
+            let displaced_position = base_position + offset;
+
+            let texture_s = tex_info.texture_vecs[0][0] * base_position.x
+                + tex_info.texture_vecs[0][1] * base_position.y
+                + tex_info.texture_vecs[0][2] * base_position.z
+                + tex_info.texture_vecs[0][3];
+            let texture_t = tex_info.texture_vecs[1][0] * base_position.x
+                + tex_info.texture_vecs[1][1] * base_position.y
+                + tex_info.texture_vecs[1][2] * base_position.z
+                + tex_info.texture_vecs[1][3];
+
+            let texture_s = texture_s / base_texture.width() as f32;
+            let texture_t = texture_t / base_texture.height() as f32;
+
+            position_indices
+                .push(positions.add_vertex(hashable_float(&displaced_position.data.0[0])));
+            vertex_color_indices.push(vertex_colors.add_vertex([
+                // (xf * 255.0).clamp(0.0, 255.0).round() as u8,
+                // (yf * 255.0).clamp(0.0, 255.0).round() as u8,
+                vert.alpha.clamp(0.0, 255.0).round() as u8,
+                vert.alpha.clamp(0.0, 255.0).round() as u8,
+                vert.alpha.clamp(0.0, 255.0).round() as u8,
+            ]));
+            texture_coordinate_indices
+                .push(texture_coordinates.add_vertex(hashable_float(&[texture_s, texture_t])));
+        }
+    }
+
+    for y in 0..quads_per_side {
+        for x in 0..quads_per_side {
+            let mut data: Vec<u8> = Vec::new();
+            let mut emit = |i| {
+                data.write_u16::<BigEndian>(position_indices[i]).unwrap();
+                data.write_u16::<BigEndian>(vertex_color_indices[i])
+                    .unwrap();
+                data.write_u16::<BigEndian>(texture_coordinate_indices[i])
+                    .unwrap();
+            };
+            if (x ^ y) & 1 == 0 {
+                emit(y * verts_per_side + x);
+                emit((y + 1) * verts_per_side + x);
+                emit((y + 1) * verts_per_side + x + 1);
+                emit(y * verts_per_side + x + 1);
+            } else {
+                emit((y + 1) * verts_per_side + x);
+                emit((y + 1) * verts_per_side + x + 1);
+                emit(y * verts_per_side + x + 1);
+                emit(y * verts_per_side + x);
+            }
+            display_list_builder.emit_vertices(4, &data);
+        }
+    }
+
+    Ok(())
+}
+
+fn process_lit_textured_face(
+    bsp: Bsp,
+    asset_loader: &AssetLoader,
+    material_planes: &HashMap<VpkPath, HashSet<Plane>>,
+    ids: &mut TextureIdAllocator,
+    positions: &mut AttributeBuilder<[FloatByBits; 3], u16>,
+    normals: &mut AttributeBuilder<[u8; 3], u16>,
+    texture_coords: &mut AttributeBuilder<[i16; 2], u16>,
+    cluster_builder: &mut ClusterGeometryBuilder,
+    cluster_lightmap: &ClusterLightmap,
+    face: &Face,
+) -> Result<()> {
+    let lightmap_metadata = &cluster_lightmap.metadata_by_data_offset[&face.light_ofs];
+    let tex_info = &bsp.tex_infos()[face.tex_info as usize];
+    if tex_info.tex_data == -1 {
+        // Not textured.
+        // TODO: Determine whether any such faces need to be drawn.
+        return Ok(());
+    }
+
+    // This is a textured face.
+    let tex_data = &bsp.tex_datas()[tex_info.tex_data as usize];
+    let material_path = VpkPath::new_with_prefix_and_extension(
+        bsp.tex_data_strings()
+            .get(tex_data.name_string_table_id as usize),
+        "materials",
+        "vmt",
+    );
+    let plane = Plane::from(bsp.planes()[face.plane_num as usize].normal);
+    let material = asset_loader.get_material(&material_path)?;
+    let base_texture_size = match material.shader() {
+        Shader::LightmappedGeneric(LightmappedGeneric {
+            base_texture_path, ..
+        }) => {
+            let base_texture = asset_loader.get_texture(base_texture_path)?;
+            [base_texture.width() as f32, base_texture.height() as f32]
+        }
+        Shader::UnlitGeneric(UnlitGeneric { base_texture_path }) => {
+            let base_texture = asset_loader.get_texture(base_texture_path)?;
+            [base_texture.width() as f32, base_texture.height() as f32]
+        }
+        Shader::WorldVertexTransition(WorldVertexTransition {
+            base_texture_path, ..
+        }) => {
+            let base_texture = asset_loader.get_texture(base_texture_path)?;
+            [base_texture.width() as f32, base_texture.height() as f32]
+        }
+        shader => {
+            eprintln!(
+                "WARNING: Skipping shader in process_lit_textured_face: {}",
+                shader.name(),
+            );
+            return Ok(());
+        }
+    };
+    let packed_material = match PackedMaterial::from_material_and_all_planes(
+        asset_loader,
+        ids,
+        &material,
+        &material_planes[&material_path],
+    )? {
+        Some(packed_material) => packed_material,
+        None => return Ok(()), // Skip any face with a material we can't load.
+    };
+    let mut polygon_builder = PolygonBuilder::new(cluster_builder.display_list_builder(
+        Pass::from_material(&material, &packed_material),
+        packed_material,
+        ShaderParams::from_material_plane(&material, plane),
+    ));
+
+    for vertex_index in bsp.iter_vertex_indices_from_face(face) {
+        let mut vertex = convert_vertex(
+            bsp,
+            (cluster_lightmap.width, cluster_lightmap.height),
+            lightmap_metadata,
+            face,
+            tex_info,
+            vertex_index,
+        );
+        vertex.texture_coord = [
+            vertex.texture_coord[0] / base_texture_size[0],
+            vertex.texture_coord[1] / base_texture_size[1],
+        ];
+
+        let position_index: u16 = positions.add_vertex(hashable_float(&vertex.position));
+        let normal_index: u16 = normals.add_vertex(quantize_normal(vertex.normal));
+        let lightmap_coord = quantize_lightmap_coord(vertex.lightmap_coord);
+        let texture_coord_index: u16 =
+            texture_coords.add_vertex(quantize_texture_coord(vertex.texture_coord));
+
+        polygon_builder.add_vertex((
+            position_index,
+            normal_index,
+            lightmap_coord,
+            texture_coord_index,
+        ))?;
+    }
+
+    Ok(())
 }
 
 fn quantize_normal(normal: [f32; 3]) -> [u8; 3] {
@@ -1318,68 +1368,31 @@ fn write_texture_coord_data(dst_path: &Path, texture_coord_data: &[u8]) -> Resul
     Ok(())
 }
 
-mod byte_code {
-    use std::ops::Index;
+fn write_displacement_position_data(dst_path: &Path, data: &[u8]) -> Result<()> {
+    let mut f = BufWriter::new(File::create(
+        dst_path.join("displacement_position_data.dat"),
+    )?);
+    f.write_all(&data)?;
+    f.flush()?;
+    Ok(())
+}
 
-    use crate::ShaderParamsAlpha;
+fn write_displacement_vertex_color_data(dst_path: &Path, data: &[u8]) -> Result<()> {
+    let mut f = BufWriter::new(File::create(
+        dst_path.join("displacement_vertex_color_data.dat"),
+    )?);
+    f.write_all(&data)?;
+    f.flush()?;
+    Ok(())
+}
 
-    pub fn draw(display_list_start_offset: u32, display_list_end_offset: u32) -> [u32; 2] {
-        assert_eq!(display_list_start_offset >> 24, 0);
-        [display_list_start_offset, display_list_end_offset]
-    }
-
-    pub fn set_plane(texture_matrix: impl Index<(usize, usize), Output = f32>) -> [u32; 13] {
-        [
-            0x01000000,
-            texture_matrix[(0, 0)].to_bits(),
-            texture_matrix[(0, 1)].to_bits(),
-            texture_matrix[(0, 2)].to_bits(),
-            texture_matrix[(0, 3)].to_bits(),
-            texture_matrix[(1, 0)].to_bits(),
-            texture_matrix[(1, 1)].to_bits(),
-            texture_matrix[(1, 2)].to_bits(),
-            texture_matrix[(1, 3)].to_bits(),
-            texture_matrix[(2, 0)].to_bits(),
-            texture_matrix[(2, 1)].to_bits(),
-            texture_matrix[(2, 2)].to_bits(),
-            texture_matrix[(2, 3)].to_bits(),
-        ]
-    }
-
-    pub fn set_base_texture(base_texture_index: u16) -> [u32; 1] {
-        [0x02000000 | base_texture_index as u32]
-    }
-
-    pub fn set_env_map_texture(env_map_texture_index: u16) -> [u32; 1] {
-        [0x03000000 | env_map_texture_index as u32]
-    }
-
-    pub fn set_env_map_tint(env_map_tint: [u8; 3]) -> [u32; 1] {
-        [0x04000000
-            | ((env_map_tint[0] as u32) << 16)
-            | ((env_map_tint[1] as u32) << 8)
-            | env_map_tint[2] as u32]
-    }
-
-    pub fn set_alpha(alpha: ShaderParamsAlpha) -> [u32; 1] {
-        let test: u32 = match alpha {
-            ShaderParamsAlpha::AlphaTest { .. } => 1,
-            _ => 0,
-        };
-        let threshold: u32 = match alpha {
-            ShaderParamsAlpha::AlphaTest { threshold } => threshold as u32,
-            _ => 0,
-        };
-        let blend: u32 = match alpha {
-            ShaderParamsAlpha::AlphaBlend => 1,
-            _ => 0,
-        };
-        [0x05000000 | (test << 16) | (threshold << 8) | blend]
-    }
-
-    pub fn set_aux_texture(aux_texture_index: u16) -> [u32; 1] {
-        [0x06000000 | aux_texture_index as u32]
-    }
+fn write_displacement_texture_coordinate_data(dst_path: &Path, data: &[u8]) -> Result<()> {
+    let mut f = BufWriter::new(File::create(
+        dst_path.join("displacement_texture_coordinate_data.dat"),
+    )?);
+    f.write_all(&data)?;
+    f.flush()?;
+    Ok(())
 }
 
 fn build_local_space(normal: &Vec3) -> (Vec3, Vec3) {
@@ -1403,7 +1416,7 @@ fn write_geometry(dst_path: &Path, map_geometry: &MapGeometry) -> Result<()> {
     // TODO: Transpose this table for potential cache friendliness.
 
     // struct ClusterGeometry {
-    //     pass_index_ranges: [[u32; 2]; 16],
+    //     pass_index_ranges: [[u32; 2]; 18],
     // }
 
     let mut table_file = BufWriter::new(File::create(dst_path.join("cluster_geometry_table.dat"))?);
@@ -1418,7 +1431,7 @@ fn write_geometry(dst_path: &Path, map_geometry: &MapGeometry) -> Result<()> {
     for cluster in &map_geometry.clusters {
         let table_start_offset = table_file.stream_position()?;
 
-        for mode in 0..16 {
+        for mode in 0..18 {
             // Write ClusterGeometry.pass_index_ranges[mode][0].
             table_file.write_u32::<BigEndian>(byte_code_file.index()? as u32)?;
 
@@ -1435,7 +1448,7 @@ fn write_geometry(dst_path: &Path, map_geometry: &MapGeometry) -> Result<()> {
                     if prev_base_id != Some(material.base_id) {
                         prev_base_id = Some(material.base_id);
 
-                        byte_code::set_base_texture(material.base_id)
+                        bytecode::set_base_texture(material.base_id)
                             .write_big_endian_to(&mut *byte_code_file)?;
                     }
 
@@ -1443,7 +1456,7 @@ fn write_geometry(dst_path: &Path, map_geometry: &MapGeometry) -> Result<()> {
                         if prev_aux_id != Some(material.aux_id) {
                             prev_aux_id = Some(material.aux_id);
 
-                            byte_code::set_aux_texture(aux_id)
+                            bytecode::set_aux_texture(aux_id)
                                 .write_big_endian_to(&mut *byte_code_file)?;
                         }
                     }
@@ -1475,7 +1488,7 @@ fn write_geometry(dst_path: &Path, map_geometry: &MapGeometry) -> Result<()> {
                             let texture_matrix: Mat3x4 =
                                 local_to_texture * local_reflect * world_to_local;
 
-                            byte_code::set_plane(texture_matrix)
+                            bytecode::set_plane(texture_matrix)
                                 .write_big_endian_to(&mut *byte_code_file)?;
                         }
 
@@ -1483,14 +1496,14 @@ fn write_geometry(dst_path: &Path, map_geometry: &MapGeometry) -> Result<()> {
                         if prev_env_map_id != Some(env_map_id) {
                             prev_env_map_id = Some(env_map_id);
 
-                            byte_code::set_env_map_texture(env_map_id)
+                            bytecode::set_env_map_texture(env_map_id)
                                 .write_big_endian_to(&mut *byte_code_file)?;
                         }
 
                         if prev_env_map_tint != Some(params.env_map_tint) {
                             prev_env_map_tint = Some(params.env_map_tint);
 
-                            byte_code::set_env_map_tint(params.env_map_tint)
+                            bytecode::set_env_map_tint(params.env_map_tint)
                                 .write_big_endian_to(&mut *byte_code_file)?;
                         }
                     }
@@ -1498,7 +1511,19 @@ fn write_geometry(dst_path: &Path, map_geometry: &MapGeometry) -> Result<()> {
                     if prev_alpha != Some(params.alpha) {
                         prev_alpha = Some(params.alpha);
 
-                        byte_code::set_alpha(params.alpha)
+                        let test = match params.alpha {
+                            ShaderParamsAlpha::AlphaTest { .. } => 1,
+                            _ => 0,
+                        };
+                        let threshold = match params.alpha {
+                            ShaderParamsAlpha::AlphaTest { threshold } => threshold,
+                            _ => 0,
+                        };
+                        let blend = match params.alpha {
+                            ShaderParamsAlpha::AlphaBlend => 1,
+                            _ => 0,
+                        };
+                        bytecode::set_alpha(test, threshold, blend)
                             .write_big_endian_to(&mut *byte_code_file)?;
                     }
 
@@ -1508,7 +1533,7 @@ fn write_geometry(dst_path: &Path, map_geometry: &MapGeometry) -> Result<()> {
                     let display_list_end_offset = display_lists_file.stream_position()? as u32;
                     assert_eq!(display_list_end_offset & 31, 0);
 
-                    byte_code::draw(display_list_start_offset, display_list_end_offset)
+                    bytecode::draw(display_list_start_offset, display_list_end_offset)
                         .write_big_endian_to(&mut *byte_code_file)?;
                 }
             }
@@ -1518,7 +1543,49 @@ fn write_geometry(dst_path: &Path, map_geometry: &MapGeometry) -> Result<()> {
         }
 
         let table_end_offset = table_file.stream_position()?;
-        assert_eq!(table_end_offset - table_start_offset, 128);
+        assert_eq!(table_end_offset - table_start_offset, 144);
+    }
+
+    table_file.flush()?;
+    byte_code_file.flush()?;
+    display_lists_file.flush()?;
+    Ok(())
+}
+
+fn write_displacement_geometry(dst_path: &Path, map_geometry: &MapGeometry) -> Result<()> {
+    let mut table_file = BufWriter::new(File::create(dst_path.join("displacement_table.dat"))?);
+    let mut byte_code_file =
+        BufWriter::new(File::create(dst_path.join("displacement_byte_code.dat"))?);
+    let mut display_lists_file = BufWriter::new(File::create(
+        dst_path.join("displacement_display_lists.dat"),
+    )?);
+
+    for mode in [false, true] {
+        let byte_code_start_offset = byte_code_file.stream_position()? as u32;
+        for ((pass, packed_material), display_list) in
+            &map_geometry.displacement_display_lists_by_pass_material
+        {
+            if *pass != mode {
+                continue;
+            }
+
+            let display_list_start_offset = display_lists_file.stream_position()? as u32;
+            display_lists_file.write_all(display_list)?;
+            let display_list_end_offset = display_lists_file.stream_position()? as u32;
+
+            bytecode::set_base_texture(packed_material.base_id)
+                .write_big_endian_to(&mut byte_code_file)?;
+            if mode {
+                bytecode::set_aux_texture(packed_material.aux_id.unwrap())
+                    .write_big_endian_to(&mut byte_code_file)?;
+            }
+            bytecode::draw(display_list_start_offset, display_list_end_offset)
+                .write_big_endian_to(&mut byte_code_file)?;
+        }
+        let byte_code_end_offset = byte_code_file.stream_position()? as u32;
+
+        table_file.write_u32::<BigEndian>(byte_code_start_offset)?;
+        table_file.write_u32::<BigEndian>(byte_code_end_offset)?;
     }
 
     table_file.flush()?;

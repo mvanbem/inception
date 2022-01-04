@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 
 use anyhow::{bail, Result};
-use source_reader::asset::vmt::{LightmappedGeneric, Shader, Vmt};
+use source_reader::asset::vmt::{
+    LightmappedGeneric, Shader, UnlitGeneric, Vmt, WorldVertexTransition,
+};
 use source_reader::asset::AssetLoader;
 use texture_format::TextureFormat;
 
@@ -203,7 +205,45 @@ impl PackedMaterial {
                 })
             }
 
-            _ => None,
+            Shader::UnlitGeneric(UnlitGeneric { base_texture_path }) => {
+                let base_id = ids.get(&BorrowedTextureKey::EncodeAsIs {
+                    texture_path: base_texture_path,
+                });
+
+                Some(Self {
+                    base_id,
+                    aux_id: None,
+                    base_alpha: PackedMaterialBaseAlpha::BaseTextureAlpha,
+                    env_map: None,
+                })
+            }
+
+            Shader::WorldVertexTransition(WorldVertexTransition {
+                base_texture_path,
+                base_texture2_path,
+            }) => {
+                let base_id = ids.get(&BorrowedTextureKey::EncodeAsIs {
+                    texture_path: base_texture_path,
+                });
+                let aux_id = Some(ids.get(&BorrowedTextureKey::EncodeAsIs {
+                    texture_path: base_texture2_path,
+                }));
+
+                Some(Self {
+                    base_id,
+                    aux_id,
+                    base_alpha: PackedMaterialBaseAlpha::BaseTextureAlpha,
+                    env_map: None,
+                })
+            }
+
+            shader => {
+                eprintln!(
+                    "WARNING: Skipping shader for PackedMaterial: {}",
+                    shader.name(),
+                );
+                None
+            }
         })
     }
 }

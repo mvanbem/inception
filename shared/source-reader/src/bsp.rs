@@ -6,7 +6,7 @@ use std::num::NonZeroUsize;
 use std::str;
 
 use byteorder::{LittleEndian, ReadBytesExt};
-use nalgebra_glm::Vec3;
+use nalgebra_glm::{vec3, Vec3};
 use recursive_iter::*;
 use zip::ZipArchive;
 
@@ -22,45 +22,49 @@ impl<'a> Bsp<'a> {
         Self(data)
     }
 
-    pub fn header(&self) -> &'a Header {
+    pub fn header(self) -> &'a Header {
         extract(self.0)
     }
 
-    pub fn entities(&self) -> Vec<HashMap<String, String>> {
+    pub fn lump_data(&self, index: usize) -> &'a [u8] {
+        self.header().lumps[index].data(self.0)
+    }
+
+    pub fn entities(self) -> Vec<HashMap<String, String>> {
         let bytes = self.header().lumps[0].data(self.0);
         assert_eq!(bytes[bytes.len() - 1], 0);
         let bytes = &bytes[..bytes.len() - 1];
         properties::flat_objects(str::from_utf8(bytes).unwrap()).unwrap()
     }
 
-    pub fn planes(&self) -> &'a [Plane] {
+    pub fn planes(self) -> &'a [Plane] {
         extract_slice(self.header().lumps[1].data(self.0))
     }
 
-    pub fn tex_datas(&self) -> &'a [TexData] {
+    pub fn tex_datas(self) -> &'a [TexData] {
         extract_slice(self.header().lumps[2].data(self.0))
     }
 
-    pub fn vertices(&self) -> &'a [Vec3] {
+    pub fn vertices(self) -> &'a [Vec3] {
         // SAFETY: All bit patterns are valid for Vec3.
         unsafe { extract_slice_unchecked(self.header().lumps[3].data(self.0)) }
     }
 
-    pub fn visibility(&self) -> Visibility<'a> {
+    pub fn visibility(self) -> Visibility<'a> {
         Visibility {
             data: self.header().lumps[4].data(self.0),
         }
     }
 
-    pub fn nodes(&self) -> &'a [Node] {
+    pub fn nodes(self) -> &'a [Node] {
         extract_slice(self.header().lumps[5].data(self.0))
     }
 
-    pub fn tex_infos(&self) -> &'a [TexInfo] {
+    pub fn tex_infos(self) -> &'a [TexInfo] {
         extract_slice(self.header().lumps[6].data(self.0))
     }
 
-    pub fn faces(&self) -> &'a [Face] {
+    pub fn faces(self) -> &'a [Face] {
         let ldr_lighting_lump = &self.header().lumps[8];
         extract_slice(if ldr_lighting_lump.filelen == 0 {
             // No LDR lighting, so fall back to HDR lighting and faces.
@@ -71,7 +75,7 @@ impl<'a> Bsp<'a> {
         })
     }
 
-    pub fn lighting(&self) -> Lighting<'a> {
+    pub fn lighting(self) -> Lighting<'a> {
         let ldr_lighting_lump = &self.header().lumps[8];
         let hdr_lighting_lump = &self.header().lumps[53];
 
@@ -84,7 +88,7 @@ impl<'a> Bsp<'a> {
         }
     }
 
-    pub fn leaves(&self) -> LeafSlice<'a> {
+    pub fn leaves(self) -> LeafSlice<'a> {
         let leaf_data = self.header().lumps[10].data(self.0);
         match self.header().version {
             20 => LeafSlice::Short(extract_slice(leaf_data)),
@@ -97,35 +101,47 @@ impl<'a> Bsp<'a> {
         }
     }
 
-    pub fn edges(&self) -> &'a [Edge] {
+    pub fn edges(self) -> &'a [Edge] {
         extract_slice(self.header().lumps[12].data(self.0))
     }
 
-    pub fn surf_edges(&self) -> &'a [i32] {
+    pub fn surf_edges(self) -> &'a [i32] {
         extract_slice(self.header().lumps[13].data(self.0))
     }
 
-    pub fn leaf_faces(&self) -> &'a [u16] {
+    pub fn leaf_faces(self) -> &'a [u16] {
         extract_slice(self.header().lumps[16].data(self.0))
     }
 
-    pub fn pak_file(&self) -> ZipArchive<Cursor<&'a [u8]>> {
+    pub fn disp_infos(self) -> &'a [DispInfo] {
+        extract_slice(self.header().lumps[26].data(self.0))
+    }
+
+    pub fn disp_verts(self) -> &'a [DispVert] {
+        extract_slice(self.header().lumps[33].data(self.0))
+    }
+
+    pub fn pak_file(self) -> ZipArchive<Cursor<&'a [u8]>> {
         ZipArchive::new(Cursor::new(self.header().lumps[40].data(self.0))).unwrap()
     }
 
-    pub fn tex_data_strings(&self) -> TexDataStrings<'a> {
+    pub fn tex_data_strings(self) -> TexDataStrings<'a> {
         let table: &[i32] = extract_slice(self.header().lumps[44].data(self.0));
         let data = self.header().lumps[43].data(self.0);
         TexDataStrings { table, data }
     }
 
-    pub fn iter_worldspawn_leaves(&self) -> impl Iterator<Item = &'a dyn Leaf> {
+    pub fn disp_tris(self) -> &'a [DispTri] {
+        extract_slice(self.header().lumps[48].data(self.0))
+    }
+
+    pub fn iter_worldspawn_leaves(self) -> impl Iterator<Item = &'a dyn Leaf> {
         self.enumerate_leaves_from_node(&self.nodes()[0])
     }
 
-    pub fn enumerate_leaves_from_node(&self, node: &'a Node) -> impl Iterator<Item = &'a dyn Leaf> {
+    pub fn enumerate_leaves_from_node(self, node: &'a Node) -> impl Iterator<Item = &'a dyn Leaf> {
         RecursiveIter::new(
-            *self,
+            self,
             LeavesIterFrame {
                 node: node,
                 child_index: 0,
@@ -133,10 +149,10 @@ impl<'a> Bsp<'a> {
         )
     }
 
-    pub fn iter_faces_from_leaf(&self, leaf: &'a dyn Leaf) -> impl Iterator<Item = &'a Face> {
+    pub fn iter_faces_from_leaf(self, leaf: &'a dyn Leaf) -> impl Iterator<Item = &'a Face> {
         let leaf_face_index = leaf.first_leaf_face() as usize;
         LeafFacesIter {
-            bsp: *self,
+            bsp: self,
             leaf_face_index,
             end: NonZeroUsize::new(leaf_face_index)
                 .map(|start| start.get() + leaf.num_leaf_faces() as usize + 1)
@@ -144,13 +160,10 @@ impl<'a> Bsp<'a> {
         }
     }
 
-    pub fn iter_vertex_indices_from_face(
-        &self,
-        face: &'a Face,
-    ) -> impl Iterator<Item = usize> + 'a {
+    pub fn iter_vertex_indices_from_face(self, face: &'a Face) -> impl Iterator<Item = usize> + 'a {
         let surf_edge_index = face.first_edge as usize;
         FaceVertexIndicesIter {
-            bsp: *self,
+            bsp: self,
             surf_edge_index,
             end: surf_edge_index + face.num_edges as usize,
             first_edge_trailing_vertex_index: None,
@@ -676,6 +689,103 @@ pub struct Edge {
 
 unsafe impl FullyOccupied for Edge {}
 
+#[repr(C)]
+#[derive(Debug)]
+pub struct DispInfo {
+    pub start_position: [f32; 3],
+    pub disp_vert_start: i32,
+    pub disp_tri_start: i32,
+    pub power: i32,
+    pub min_tess: i32,
+    pub smoothing_angle: f32,
+    pub contents: i32,
+    pub map_face: u16,
+    pub lightmap_alpha_start: i32,
+    pub lightmap_sample_position_start: i32,
+    pub edge_neighbors: [DispNeighbor; 4],
+    pub corner_neighbors: [DispCornerNeighbors; 4],
+    pub allowed_verts: [i32; 10],
+}
+
+impl DispInfo {
+    pub fn start_position_vec(&self) -> Vec3 {
+        vec3(
+            self.start_position[0],
+            self.start_position[1],
+            self.start_position[2],
+        )
+    }
+}
+
+unsafe impl FullyOccupied for DispInfo {}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct DispNeighbor {
+    pub sub_neighbors: [DispSubNeighbor; 2],
+}
+
+unsafe impl FullyOccupied for DispNeighbor {}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct DispSubNeighbor {
+    pub i_neighbor: u16,
+    pub neighbor_orientation: NeighborOrientation,
+    pub span: NeighborSpan,
+    pub neighbor_span: NeighborSpan,
+}
+
+unsafe impl FullyOccupied for DispSubNeighbor {}
+
+#[repr(transparent)]
+#[derive(Debug)]
+pub struct NeighborOrientation(u8);
+
+impl NeighborOrientation {
+    pub const ORIENTATION_CCW_0: Self = Self(0);
+    pub const ORIENTATION_CCW_90: Self = Self(1);
+    pub const ORIENTATION_CCW_180: Self = Self(2);
+    pub const ORIENTATION_CCW_270: Self = Self(3);
+}
+
+#[repr(transparent)]
+#[derive(Debug)]
+pub struct NeighborSpan(u8);
+
+impl NeighborSpan {
+    pub const CORNER_TO_CORNER: Self = Self(0);
+    pub const CORNER_TO_MIDPOINT: Self = Self(1);
+    pub const MIDPOINT_TO_CORNER: Self = Self(2);
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct DispCornerNeighbors {
+    pub neighbors: [u16; 4],
+    pub neighbor_count: u8,
+}
+
+unsafe impl FullyOccupied for DispCornerNeighbors {}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct DispVert {
+    pub vec: [f32; 3],
+    pub dist: f32,
+    pub alpha: f32,
+}
+
+unsafe impl FullyOccupied for DispVert {}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct DispTri {
+    pub tags: u16,
+}
+
+unsafe impl FullyOccupied for DispTri {}
+
 #[derive(Clone, Copy)]
 pub struct TexDataStrings<'a> {
     table: &'a [i32],
@@ -757,30 +867,55 @@ impl ColorRgbExp32 {
 
 #[cfg(test)]
 mod size_tests {
-    use super::{Face, LongLeaf, Node, ShortLeaf, TexInfo};
+    use std::mem::size_of;
+
+    use crate::bsp::{DispTri, DispVert};
+
+    use super::{
+        DispCornerNeighbors, DispInfo, DispNeighbor, DispSubNeighbor, Face, LongLeaf, Node,
+        ShortLeaf, TexInfo,
+    };
 
     #[test]
     fn node_size() {
-        assert_eq!(std::mem::size_of::<Node>(), 32);
+        assert_eq!(size_of::<Node>(), 32);
     }
 
     #[test]
     fn texinfo_size() {
-        assert_eq!(std::mem::size_of::<TexInfo>(), 72);
+        assert_eq!(size_of::<TexInfo>(), 72);
     }
 
     #[test]
-    fn leaf_size() {
-        assert_eq!(std::mem::size_of::<ShortLeaf>(), 32);
+    fn short_leaf_size() {
+        assert_eq!(size_of::<ShortLeaf>(), 32);
     }
 
     #[test]
-    fn leaf_size() {
-        assert_eq!(std::mem::size_of::<LongLeaf>(), 56);
+    fn long_leaf_size() {
+        assert_eq!(size_of::<LongLeaf>(), 56);
     }
 
     #[test]
     fn face_size() {
-        assert_eq!(std::mem::size_of::<Face>(), 56);
+        assert_eq!(size_of::<Face>(), 56);
+    }
+
+    #[test]
+    fn disp_info_size() {
+        assert_eq!(size_of::<DispInfo>(), 176);
+        assert_eq!(size_of::<DispNeighbor>(), 12);
+        assert_eq!(size_of::<DispSubNeighbor>(), 6);
+        assert_eq!(size_of::<DispCornerNeighbors>(), 10);
+    }
+
+    #[test]
+    fn disp_vert_size() {
+        assert_eq!(size_of::<DispVert>(), 20);
+    }
+
+    #[test]
+    fn disp_tri_size() {
+        assert_eq!(size_of::<DispTri>(), 2);
     }
 }

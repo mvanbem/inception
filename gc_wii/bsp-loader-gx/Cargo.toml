@@ -18,6 +18,7 @@ wii = ["ogc-sys/wii"]
 [dependencies]
 derive_more = "0.99"
 fully-occupied = { path = "../../shared/fully-occupied" }
+inception-render-common = { path = "../../shared/inception-render-common" }
 libc = "0.2"
 libm = "0.2"
 ogc-sys = { path = "../ogc-sys", default-features = false }

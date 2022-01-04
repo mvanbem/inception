@@ -26,6 +26,8 @@ use crate::shaders::lightmapped_baaa_env::LIGHTMAPPED_BAAA_ENV_SHADER;
 use crate::shaders::lightmapped_baaa_env_emai::LIGHTMAPPED_BAAA_ENV_EMAI_SHADER;
 use crate::shaders::lightmapped_env::LIGHTMAPPED_ENV_SHADER;
 use crate::shaders::lightmapped_env_emai::LIGHTMAPPED_ENV_EMAI_SHADER;
+use crate::shaders::unlit_generic::UNLIT_GENERIC_SHADER;
+use crate::shaders::world_vertex_transition::WORLD_VERTEX_TRANSITION_SHADER;
 use crate::visibility::{ClusterIndex, Visibility};
 
 #[macro_use]
@@ -51,6 +53,20 @@ static LIGHTMAP_CLUSTER_TABLE_DATA: &[u8] =
 static LIGHTMAP_PATCH_TABLE_DATA: &[u8] =
     include_bytes_align!(4, "../../../build/lightmap_patch_table.dat");
 static LIGHTMAP_DATA: &[u8] = include_bytes_align!(4, "../../../build/lightmap_data.dat");
+static DISPLACEMENT_POSITION_DATA: &[u8] =
+    include_bytes_align!(32, "../../../build/displacement_position_data.dat");
+static DISPLACEMENT_VERTEX_COLOR_DATA: &[u8] =
+    include_bytes_align!(32, "../../../build/displacement_vertex_color_data.dat");
+static DISPLACEMENT_TEXTURE_COORDINATE_DATA: &[u8] = include_bytes_align!(
+    32,
+    "../../../build/displacement_texture_coordinate_data.dat",
+);
+static DISPLACEMENT_TABLE: &[u8] =
+    include_bytes_align!(32, "../../../build/displacement_table.dat");
+static DISPLACEMENT_BYTE_CODE: &[u8] =
+    include_bytes_align!(32, "../../../build/displacement_byte_code.dat");
+static DISPLACEMENT_DISPLAY_LISTS: &[u8] =
+    include_bytes_align!(32, "../../../build/displacement_display_lists.dat");
 
 static XFB: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 static DO_COPY: AtomicBool = AtomicBool::new(false);
@@ -745,7 +761,10 @@ fn do_main_draw(
     cluster_lightmaps: &[Lightmap],
 ) -> i16 {
     draw_skybox(game_state, map_texobjs);
-    draw_visible_clusters(game_state, cluster_lightmaps, map_texobjs, visibility)
+    draw_displacements(game_state, map_texobjs);
+    let view_cluster =
+        draw_visible_clusters(game_state, cluster_lightmaps, map_texobjs, visibility);
+    view_cluster
 }
 
 fn draw_visible_clusters(
@@ -768,8 +787,6 @@ fn draw_visible_clusters(
         GX_SetArray(GX_VA_NRM, NORMAL_DATA.as_ptr() as *mut _, 3);
         GX_SetArray(GX_VA_TEX1, TEXTURE_COORD_DATA.as_ptr() as *mut _, 4);
         GX_InvVtxCache();
-
-        load_camera_view_matrix(game_state);
 
         GX_SetZMode(GX_TRUE as u8, GX_LEQUAL as u8, GX_TRUE as u8);
 
@@ -855,33 +872,37 @@ fn draw_visible_clusters(
             }
         };
 
-        for pass in 0..16 {
-            match pass & 0x7 {
-                0 => LIGHTMAPPED_SHADER.apply(),
-                1 | 2 => LIGHTMAPPED_ENV_SHADER.apply(),
-                3 => LIGHTMAPPED_ENV_EMAI_SHADER.apply(),
-                4 => LIGHTMAPPED_BAAA_SHADER.apply(),
-                5 | 6 => LIGHTMAPPED_BAAA_ENV_SHADER.apply(),
-                7 => LIGHTMAPPED_BAAA_ENV_EMAI_SHADER.apply(),
-                _ => unreachable!(),
+        for pass in 0..18 {
+            if pass < 16 {
+                match pass & 0x7 {
+                    0 => LIGHTMAPPED_SHADER.apply(),
+                    1 | 2 => LIGHTMAPPED_ENV_SHADER.apply(),
+                    3 => LIGHTMAPPED_ENV_EMAI_SHADER.apply(),
+                    4 => LIGHTMAPPED_BAAA_SHADER.apply(),
+                    5 | 6 => LIGHTMAPPED_BAAA_ENV_SHADER.apply(),
+                    7 => LIGHTMAPPED_BAAA_ENV_EMAI_SHADER.apply(),
+                    _ => unreachable!(),
+                }
+            } else if pass == 16 {
+                UNLIT_GENERIC_SHADER.apply();
+            } else if pass == 17 {
+                WORLD_VERTEX_TRANSITION_SHADER.apply();
             }
-            match pass & 8 {
-                0 => {
-                    // Blending off.
-                    GX_SetBlendMode(GX_BM_NONE as u8, 0, 0, 0);
-                    GX_SetZMode(GX_TRUE as u8, GX_LEQUAL as u8, GX_TRUE as u8);
-                }
-                8 => {
-                    // Alpha blending.
-                    GX_SetBlendMode(
-                        GX_BM_BLEND as u8,
-                        GX_BL_SRCALPHA as u8,
-                        GX_BL_INVSRCALPHA as u8,
-                        0,
-                    );
-                    GX_SetZMode(GX_TRUE as u8, GX_LEQUAL as u8, GX_FALSE as u8);
-                }
-                _ => unreachable!(),
+
+            let blend = pass < 16 && (pass & 8) == 8;
+            if blend {
+                // Alpha blending.
+                GX_SetBlendMode(
+                    GX_BM_BLEND as u8,
+                    GX_BL_SRCALPHA as u8,
+                    GX_BL_INVSRCALPHA as u8,
+                    0,
+                );
+                GX_SetZMode(GX_TRUE as u8, GX_LEQUAL as u8, GX_FALSE as u8);
+            } else {
+                // Blending off.
+                GX_SetBlendMode(GX_BM_NONE as u8, 0, 0, 0);
+                GX_SetZMode(GX_TRUE as u8, GX_LEQUAL as u8, GX_TRUE as u8);
             }
 
             if view_cluster != -1 {
@@ -1084,6 +1105,94 @@ fn draw_skybox(game_state: &GameState, map_texobjs: &[GXTexObj]) {
             (*wgPipe).U8 = 0;
             (*wgPipe).U8 = 1;
         }
+    }
+}
+
+fn draw_displacements(game_state: &GameState, map_texobjs: &[GXTexObj]) {
+    #[repr(C)]
+    struct DisplacementTableEntry {
+        byte_code_start_offset: usize,
+        byte_code_end_offset: usize,
+    }
+
+    unsafe impl FullyOccupied for DisplacementTableEntry {}
+
+    unsafe {
+        GX_ClearVtxDesc();
+        GX_SetVtxDesc(GX_VA_POS as u8, GX_INDEX16 as u8);
+        GX_SetVtxDesc(GX_VA_CLR0 as u8, GX_INDEX16 as u8);
+        GX_SetVtxDesc(GX_VA_TEX0 as u8, GX_INDEX16 as u8);
+        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_CLR0, GX_CLR_RGB, GX_RGB8, 0);
+        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
+        GX_SetArray(GX_VA_POS, DISPLACEMENT_POSITION_DATA.as_ptr() as *mut _, 12);
+        GX_SetArray(
+            GX_VA_CLR0,
+            DISPLACEMENT_VERTEX_COLOR_DATA.as_ptr() as *mut _,
+            3,
+        );
+        GX_SetArray(
+            GX_VA_TEX0,
+            DISPLACEMENT_TEXTURE_COORDINATE_DATA.as_ptr() as *mut _,
+            8,
+        );
+        GX_InvVtxCache();
+
+        load_camera_view_matrix(game_state);
+
+        GX_SetBlendMode(GX_BM_NONE as u8, 0, 0, 0);
+        GX_SetZMode(GX_TRUE as u8, GX_LEQUAL as u8, GX_TRUE as u8);
+
+        let displacement_table: &[DisplacementTableEntry] = extract_slice(DISPLACEMENT_TABLE);
+        for (mode, entry) in displacement_table.iter().enumerate() {
+            match mode {
+                0 => UNLIT_GENERIC_SHADER.apply(),
+                1 => WORLD_VERTEX_TRANSITION_SHADER.apply(),
+                _ => unreachable!(),
+            }
+
+            let mut byte_code: &[u32] = extract_slice(
+                &DISPLACEMENT_BYTE_CODE[entry.byte_code_start_offset..entry.byte_code_end_offset],
+            );
+
+            while !byte_code.is_empty() {
+                let op = byte_code[0] >> 24;
+                match op {
+                    0x00 => {
+                        // Draw.
+                        let start_offset = (byte_code[0] & 0x00ffffff) as usize;
+                        let end_offset = byte_code[1] as usize;
+                        byte_code = &byte_code[2..];
+                        GX_CallDispList(
+                            DISPLACEMENT_DISPLAY_LISTS[start_offset..end_offset].as_ptr()
+                                as *const c_void as *mut c_void,
+                            (end_offset - start_offset) as u32,
+                        );
+                    }
+                    0x02 => {
+                        let base_texture_index = byte_code[0] as u16;
+                        byte_code = &byte_code[1..];
+                        GX_LoadTexObj(
+                            &map_texobjs[base_texture_index as usize] as *const GXTexObj
+                                as *mut GXTexObj,
+                            GX_TEXMAP1 as u8,
+                        );
+                    }
+                    0x06 => {
+                        let aux_texture_index = byte_code[0] as u16;
+                        byte_code = &byte_code[1..];
+                        GX_LoadTexObj(
+                            &map_texobjs[aux_texture_index as usize] as *const GXTexObj
+                                as *mut GXTexObj,
+                            GX_TEXMAP3 as u8,
+                        );
+                    }
+                    _ => panic!("unexpected geometry op: 0x{:02x}", op),
+                }
+            }
+        }
+
+        GX_Flush();
     }
 }
 

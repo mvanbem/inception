@@ -20,7 +20,7 @@ static DISPLAY_LISTS_DATA: &[u8] = include_bytes_align!(32, "../../../build/disp
 
 #[repr(C)]
 pub struct ClusterGeometry {
-    byte_code_index_ranges: [[usize; 2]; 16],
+    byte_code_index_ranges: [[usize; 2]; 18],
 }
 
 unsafe impl FullyOccupied for ClusterGeometry {}

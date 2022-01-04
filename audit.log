@@ -1,3 +1,7 @@
+WARNING: Skipping shader in process_lit_textured_face: decalbasetimeslightmapalphablendselfillum
+WARNING: Skipping shader in process_lit_textured_face: water
+WARNING: Unexpected WorldVertexTransition object lightmappedgeneric_dx9
+WARNING: Unexpected WorldVertexTransition object worldvertextransition_dx9
 WARNING: Unimplemented $envmapcontrast None
 WARNING: Unimplemented $envmapcontrast Some(0.3)
 WARNING: Unimplemented $envmapcontrast Some(0.6)
@@ -25,7 +29,6 @@ WARNING: Unimplemented LightmappedGeneric key $vertexcolor
 WARNING: Unimplemented material proxies
 WARNING: Unimplemented shader decalbasetimeslightmapalphablendselfillum
 WARNING: Unimplemented shader water
-WARNING: Unimplemented shader worldvertextransition
 WARNING: Unimplemented Sky key $basetexturetransform
 WARNING: Unimplemented Sky key $hdrbaseTexture
 WARNING: Unimplemented Sky key $hdrcompressedTexture
@@ -38,3 +41,17 @@ WARNING: Unimplemented UnlitGeneric key $nofog
 WARNING: Unimplemented UnlitGeneric key $reflectivity
 WARNING: Unimplemented UnlitGeneric key $selfillum
 WARNING: Unimplemented UnlitGeneric key $surfaceprop
+WARNING: Unimplemented WorldVertexTransition key $basetexturetransform
+WARNING: Unimplemented WorldVertexTransition key $basetexturetransform2
+WARNING: Unimplemented WorldVertexTransition key $bumpbasetexture2withbumpmap
+WARNING: Unimplemented WorldVertexTransition key $bumpmap
+WARNING: Unimplemented WorldVertexTransition key $bumpmap2
+WARNING: Unimplemented WorldVertexTransition key $detail
+WARNING: Unimplemented WorldVertexTransition key $detailscale
+WARNING: Unimplemented WorldVertexTransition key $envmap
+WARNING: Unimplemented WorldVertexTransition key $envmapcontrast
+WARNING: Unimplemented WorldVertexTransition key $envmapsaturation
+WARNING: Unimplemented WorldVertexTransition key $envmaptint
+WARNING: Unimplemented WorldVertexTransition key $normalmapalphaenvmapmask
+WARNING: Unimplemented WorldVertexTransition key $surfaceprop
+WARNING: Unimplemented WorldVertexTransition key $surfaceprop2

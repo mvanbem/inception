@@ -6,4 +6,6 @@ pub mod lightmapped_baaa_env;
 pub mod lightmapped_baaa_env_emai;
 pub mod lightmapped_env;
 pub mod lightmapped_env_emai;
+pub mod unlit_generic;
 pub mod vertex_color;
+pub mod world_vertex_transition;

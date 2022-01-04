@@ -5,7 +5,7 @@ pub struct AlignedAs<Align, Bytes: ?Sized> {
 }
 
 macro_rules! include_bytes_align_as {
-    ($align_ty:ty, $path:literal) => {{
+    ($align_ty:ty, $path:literal $(,)?) => {{
         use $crate::include_bytes_align::AlignedAs;
 
         static ALIGNED: &AlignedAs<$align_ty, [u8]> = &AlignedAs {
@@ -18,7 +18,7 @@ macro_rules! include_bytes_align_as {
 }
 
 macro_rules! include_bytes_align {
-    ($align_bytes:expr, $path:literal) => {{
+    ($align_bytes:expr, $path:literal $(,)?) => {{
         use $crate::include_bytes_align::AlignedAs;
 
         #[repr(align($align_bytes))]
