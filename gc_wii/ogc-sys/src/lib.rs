@@ -1,16 +1,19 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
+#![feature(allocator_api)]
 #![feature(panic_info_message)]
 #![no_std]
 
 extern crate alloc;
 
-use core::alloc::{GlobalAlloc, Layout};
+use core::alloc::{AllocError, Allocator, GlobalAlloc, Layout};
 use core::ffi::c_void;
 use core::intrinsics::copy_nonoverlapping;
 use core::panic::PanicInfo;
+use core::ptr::NonNull;
 
+use alloc::alloc::Global;
 use alloc::format;
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
@@ -48,6 +51,24 @@ unsafe impl GlobalAlloc for LibogcAllocator {
     }
 }
 
+pub struct GlobalAlign32;
+
+impl GlobalAlign32 {
+    fn adjust(layout: Layout) -> Layout {
+        unsafe { Layout::from_size_align_unchecked(layout.size(), layout.align().max(32)) }
+    }
+}
+
+unsafe impl Allocator for GlobalAlign32 {
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        Global.allocate(Self::adjust(layout))
+    }
+
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        Global.deallocate(ptr, Self::adjust(layout))
+    }
+}
+
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     unsafe {
@@ -59,6 +80,7 @@ fn panic(info: &PanicInfo) -> ! {
             (*rmode).fbWidth as i32 - 32,
             (*rmode).xfbHeight as i32 - 32,
         );
+
         if let Some(location) = info.location() {
             let buf = format!("{}\0", location);
             libc::printf(b"Panic at %s:\n\0".as_ptr(), buf.as_ptr());
@@ -73,12 +95,16 @@ fn panic(info: &PanicInfo) -> ! {
             libc::printf(b"(no message)\n\0".as_ptr());
         }
 
-        libc::printf(b"Press Start to exit to the loader.\0".as_ptr());
+        await_start_press_and_exit();
+    }
+}
 
-        // Wait for the player to press Start.
+pub fn await_start_press_and_exit() -> ! {
+    unsafe {
+        libc::printf(b"Press Start to exit to the loader.\0".as_ptr());
         loop {
             PAD_ScanPads();
-            if (PAD_ButtonsHeld(0) & PAD_BUTTON_START as u16) != 0 {
+            if (PAD_ButtonsDown(0) & PAD_BUTTON_START as u16) != 0 {
                 libc::exit(0);
             }
 

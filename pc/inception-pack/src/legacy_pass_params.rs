@@ -29,7 +29,11 @@ pub struct PassEnvMap {
 }
 
 impl Pass {
-    pub fn from_material(material: &Vmt, packed_material: &PackedMaterial) -> Self {
+    pub fn from_material(
+        material: &Vmt,
+        packed_material: &PackedMaterial,
+        for_displacement: bool,
+    ) -> Self {
         match material.shader() {
             Shader::LightmappedGeneric(LightmappedGeneric {
                 alpha_test,
@@ -48,8 +52,18 @@ impl Pass {
                     .map(|env_map| PassEnvMap { mask: env_map.mask }),
             },
             Shader::UnlitGeneric(UnlitGeneric { .. }) => Self::UnlitGeneric,
-            Shader::WorldVertexTransition(WorldVertexTransition { .. }) => {
+            Shader::WorldVertexTransition(WorldVertexTransition { .. }) if for_displacement => {
                 Self::WorldVertexTransition
+            }
+            Shader::WorldVertexTransition(WorldVertexTransition { .. }) if !for_displacement => {
+                Self::LightmappedGeneric {
+                    alpha: PassAlpha::OpaqueOrAlphaTest,
+                    base_alpha: packed_material.base_alpha,
+                    env_map: packed_material
+                        .env_map
+                        .as_ref()
+                        .map(|env_map| PassEnvMap { mask: env_map.mask }),
+                }
             }
             shader => panic!("unexpected shader for Pass: {:?}", shader.name()),
         }

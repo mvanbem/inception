@@ -25,7 +25,7 @@ pub static LIGHTMAPPED_BAAA_SHADER: Shader = Shader {
                 TevStageColor::just(TevColorIn::PrevColor),
                 TevStageAlpha::just(TevAlphaIn::TexAlpha),
             )
-            .with_tex(TevTexCoord::TexCoord1, TevTexMap::TEXMAP3),
+            .with_tex(TevTexCoord::TexCoord1, TevTexMap::TEXMAP2),
         )
         .build(),
     ind_tex_stages: [None, None, None, None],

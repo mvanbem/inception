@@ -1,37 +1,43 @@
 #!/bin/bash
 set -e
 
-function subcommand_build {
+function subcommand_clean {
     rm -rf build/*
+}
 
+function subcommand_pack_all_maps {
     echo === Running inception-pack ===
     pushd pc >/dev/null
 
     cargo run -p inception-pack $release_flag -- \
         --hl2-base ~/.steam/steam/steamapps/common/Half-Life\ 2/hl2 \
-        pack_map \
+        pack_all_maps \
         --dst ../build \
         "$@"
 
     popd >/dev/null
 
+    (cd build && ls -1 *.dat | sed -e 's/^\(.*\)\.dat$/\1/g' > ../ftp/index.txt)
+    cp build/*.dat ftp/
+}
 
-    echo
+function subcommand_build {
     echo === Building bsp-loader-gx ===
     pushd gc_wii >/dev/null
 
-    cargo build -p bsp-loader-gx $release_flag --no-default-features --features=gamecube
+    cargo build -p bsp-loader-gx $release_flag --no-default-features --features=gamecube,ftp_loader
     elf2dol \
         target/powerpc-none-eabi/release/bsp-loader-gx \
         ../build/bsp-loader-gx_gamecube.dol
 
-    cargo build -p bsp-loader-gx $release_flag --no-default-features --features=wii
+    cargo build -p bsp-loader-gx $release_flag --no-default-features --features=wii,ftp_loader
     elf2dol \
         target/powerpc-none-eabi/release/bsp-loader-gx \
         ../build/bsp-loader-gx_wii.dol
 
     popd >/dev/null
 
+    cp build/bsp-loader-gx_gamecube.dol ftp/bsp-loader-gx.dol
 
     echo === SUCCESS ===
 }
@@ -99,17 +105,20 @@ while true; do
             release_flag=
             shift
             ;;
-        "")
+        ""|build)
             subcommand_build
-            exit 0
-            ;;
-        build)
-            shift;
-            subcommand_build "$@"
             exit 0
             ;;
         audit)
             subcommand_audit
+            exit 0
+            ;;
+        clean)
+            subcommand_clean
+            exit 0
+            ;;
+        pack_all_maps)
+            subcommand_pack_all_maps
             exit 0
             ;;
         *)

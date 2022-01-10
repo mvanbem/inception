@@ -9,9 +9,10 @@ license = "MIT"
 
 [dependencies]
 anyhow = "1"
+bytemuck = { version = "1", features = ["extern_crate_alloc"] }
 byteorder = "1"
 clap = "2"
-inception-render-common = { path = "../../shared/inception-render-common" }
+inception-render-common = { path = "../../shared/inception-render-common", features = ["std"] }
 memmap = "0.7"
 nalgebra-glm = "0.15"
 num-traits = "0.2"

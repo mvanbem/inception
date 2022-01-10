@@ -11,16 +11,25 @@ name = "bsp-loader-gx"
 test = false
 
 [features]
-default = ["gamecube"]
+default = ["gamecube", "embedded_loader"]
+
+# One platform feature must be enabled. This means turning off default features to change it.
 gamecube = ["ogc-sys/gamecube"]
 wii = ["ogc-sys/wii"]
 
+# One loader feature must be enabled. This means turning off default features to change it.
+embedded_loader = [] # No dependencies, but has a runtime size penalty.
+ftp_loader = [] # More complex, but unlimited.
+
+
 [dependencies]
+bytemuck = "1"
 derive_more = "0.99"
-fully-occupied = { path = "../../shared/fully-occupied" }
 inception-render-common = { path = "../../shared/inception-render-common" }
 libc = "0.2"
 libm = "0.2"
+no-std-ftp = { path = "../../shared/no-std-ftp" }
+no-std-io = { path = "../../shared/no-std-io" }
 ogc-sys = { path = "../ogc-sys", default-features = false }
 paste = "1"
 seq-macro = "0.2"

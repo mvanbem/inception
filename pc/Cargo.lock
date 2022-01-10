@@ -133,7 +133,7 @@ dependencies = [
  "byteorder",
  "glium",
  "memmap",
- "nalgebra-glm",
+ "nalgebra-glm 0.15.0",
  "nom",
  "png",
  "recursive-iter",
@@ -149,6 +149,20 @@ name = "bytemuck"
 version = "1.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72957246c41db82b8ef88a5486143830adeb8227ef9837740bdec67724cf2c5b"
+dependencies = [
+ "bytemuck_derive",
+]
+
+[[package]]
+name = "bytemuck_derive"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e215f8c2f9f79cb53c8335e687ffd07d5bfcb6fe5fc80723762d0be46e7cc54"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "byteorder"
@@ -780,11 +794,12 @@ name = "inception-pack"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytemuck",
  "byteorder",
  "clap",
  "inception-render-common",
  "memmap",
- "nalgebra-glm",
+ "nalgebra-glm 0.15.0",
  "num-traits",
  "paste",
  "quickcheck",
@@ -799,6 +814,11 @@ dependencies = [
 [[package]]
 name = "inception-render-common"
 version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "byteorder",
+ "nalgebra-glm 0.16.0",
+]
 
 [[package]]
 name = "instant"
@@ -990,7 +1010,21 @@ dependencies = [
  "num-complex",
  "num-rational",
  "num-traits",
- "simba",
+ "simba 0.6.0",
+ "typenum",
+]
+
+[[package]]
+name = "nalgebra"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bae4b7e567aad33abc8fff4910473a24b1172586f9a4bd58cc80291de7189356"
+dependencies = [
+ "approx",
+ "num-complex",
+ "num-rational",
+ "num-traits",
+ "simba 0.7.0",
  "typenum",
 ]
 
@@ -1001,9 +1035,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9cec137f377549720ff9fbbcd1413a12bbb03b4feea3192cee987e8493158748"
 dependencies = [
  "approx",
- "nalgebra",
+ "nalgebra 0.29.0",
  "num-traits",
- "simba",
+ "simba 0.6.0",
+]
+
+[[package]]
+name = "nalgebra-glm"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "de5ec1e116731f6a4e86ee76162ea1e33a30d793820942b08849aa7e4fed0d91"
+dependencies = [
+ "approx",
+ "nalgebra 0.30.0",
+ "num-traits",
+ "simba 0.7.0",
 ]
 
 [[package]]
@@ -1469,6 +1515,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "simba"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6fa406d0a270fc91831a28f705ba803ad05b971486af492317f1607390245b99"
+dependencies = [
+ "approx",
+ "num-complex",
+ "num-traits",
+ "paste",
+]
+
+[[package]]
 name = "smallvec"
 version = "1.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1501,7 +1559,7 @@ dependencies = [
  "byteorder",
  "fully-occupied",
  "memmap",
- "nalgebra-glm",
+ "nalgebra-glm 0.15.0",
  "nom",
  "quickcheck",
  "recursive-iter",

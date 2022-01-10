@@ -5,6 +5,7 @@ use anyhow::{bail, Result};
 use crate::vpk::path::VpkPath;
 
 pub mod canonical_path;
+pub mod directory;
 pub mod zip;
 
 pub trait FileLoader {

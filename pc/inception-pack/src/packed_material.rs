@@ -56,6 +56,7 @@ impl PackedMaterial {
         ids: &mut TextureIdAllocator,
         material: &Vmt,
         planes: I,
+        for_displacement: bool,
     ) -> Result<Option<Self>>
     where
         I: IntoIterator,
@@ -78,7 +79,7 @@ impl PackedMaterial {
                 let base_alpha = match base_texture.format() {
                     TextureFormat::Dxt5 => PackedMaterialBaseAlpha::AuxTextureAlpha,
                     TextureFormat::Dxt1 => PackedMaterialBaseAlpha::BaseTextureAlpha,
-                    format => bail!("unexpected base texture format: {:?}", format),
+                    format => panic!("unexpected base texture format: {:?}", format),
                 };
 
                 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -221,7 +222,7 @@ impl PackedMaterial {
             Shader::WorldVertexTransition(WorldVertexTransition {
                 base_texture_path,
                 base_texture2_path,
-            }) => {
+            }) if for_displacement => {
                 let base_id = ids.get(&BorrowedTextureKey::EncodeAsIs {
                     texture_path: base_texture_path,
                 });
@@ -232,6 +233,22 @@ impl PackedMaterial {
                 Some(Self {
                     base_id,
                     aux_id,
+                    base_alpha: PackedMaterialBaseAlpha::BaseTextureAlpha,
+                    env_map: None,
+                })
+            }
+
+            Shader::WorldVertexTransition(WorldVertexTransition {
+                base_texture_path,
+                base_texture2_path,
+            }) if !for_displacement => {
+                let base_id = ids.get(&BorrowedTextureKey::EncodeAsIs {
+                    texture_path: base_texture_path,
+                });
+
+                Some(Self {
+                    base_id,
+                    aux_id: None,
                     base_alpha: PackedMaterialBaseAlpha::BaseTextureAlpha,
                     env_map: None,
                 })

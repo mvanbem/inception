@@ -7,7 +7,7 @@ pub static LIGHTMAPPED_ENV_EMAI_SHADER: Shader = Shader {
         // Sample the env map.
         .add_stage(
             TevStage::color_only(TevStageColor::just(TevColorIn::TexColor))
-                .with_tex(TevTexCoord::TexCoord2, TevTexMap::TEXMAP2),
+                .with_tex(TevTexCoord::TexCoord2, TevTexMap::TEXMAP3),
         )
         // Sample the aux map to mask the env map.
         .add_stage(
@@ -15,7 +15,7 @@ pub static LIGHTMAPPED_ENV_EMAI_SHADER: Shader = Shader {
                 TevStageColor::mul(TevColorIn::PrevColor, TevColorIn::TexColor)
                     .with_dst(TevReg::Reg0),
             )
-            .with_tex(TevTexCoord::TexCoord1, TevTexMap::TEXMAP3),
+            .with_tex(TevTexCoord::TexCoord1, TevTexMap::TEXMAP2),
         )
         // Square the env map value for `$envmapcontrast 1`.
         .add_stage(TevStage::color_only(

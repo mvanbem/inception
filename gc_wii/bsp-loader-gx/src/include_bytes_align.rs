@@ -16,19 +16,3 @@ macro_rules! include_bytes_align_as {
         &ALIGNED.bytes
     }};
 }
-
-macro_rules! include_bytes_align {
-    ($align_bytes:expr, $path:literal $(,)?) => {{
-        use $crate::include_bytes_align::AlignedAs;
-
-        #[repr(align($align_bytes))]
-        struct Aligned;
-
-        static ALIGNED: &AlignedAs<Aligned, [u8]> = &AlignedAs {
-            _align: [],
-            bytes: *include_bytes!($path),
-        };
-
-        &ALIGNED.bytes
-    }};
-}

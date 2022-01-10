@@ -203,6 +203,14 @@ impl TextureIdAllocator {
         }
     }
 
+    // TODO: Remove this after skybox textures aren't a hack anymore.
+    pub fn get_force_unique(&mut self, key: &dyn TextureKey) -> u16 {
+        let id = self.keys_by_id.len() as u16;
+        self.keys_by_id.push(key.to_owned());
+        self.ids_by_key.insert(key.to_owned(), id);
+        id
+    }
+
     pub fn into_keys(self) -> Vec<OwnedTextureKey> {
         self.keys_by_id
     }

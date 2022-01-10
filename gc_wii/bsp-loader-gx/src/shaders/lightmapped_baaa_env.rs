@@ -7,7 +7,7 @@ pub static LIGHTMAPPED_BAAA_ENV_SHADER: Shader = Shader {
         // Sample the env map.
         .add_stage(
             TevStage::color_only(TevStageColor::just(TevColorIn::TexColor).with_dst(TevReg::Reg0))
-                .with_tex(TevTexCoord::TexCoord2, TevTexMap::TEXMAP2),
+                .with_tex(TevTexCoord::TexCoord2, TevTexMap::TEXMAP3),
         )
         // Square the env map value for `$envmapcontrast 1`.
         .add_stage(TevStage::color_only(
@@ -39,7 +39,7 @@ pub static LIGHTMAPPED_BAAA_ENV_SHADER: Shader = Shader {
                 .with_konst_sel(Some(TevColorKonst::K0Rgb)),
                 TevStageAlpha::just(TevAlphaIn::TexAlpha),
             )
-            .with_tex(TevTexCoord::TexCoord1, TevTexMap::TEXMAP3),
+            .with_tex(TevTexCoord::TexCoord1, TevTexMap::TEXMAP2),
         )
         .build(),
     ind_tex_stages: [None; 4],

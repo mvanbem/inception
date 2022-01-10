@@ -3,17 +3,24 @@
 extern crate quickcheck_macros;
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs::{create_dir_all, File};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::fs::{create_dir_all, read_dir, File};
 use std::hash::{Hash, Hasher};
-use std::io::{stdout, BufWriter, Seek, Write};
+use std::io::{stdout, Write};
+use std::panic::resume_unwind;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+use std::thread::spawn;
 
 use anyhow::{bail, Context, Result};
 use byteorder::{BigEndian, WriteBytesExt};
 use clap::{clap_app, crate_authors, crate_description, crate_version, ArgMatches};
-use inception_render_common::bytecode;
+use inception_render_common::bytecode::BytecodeOp;
+use inception_render_common::map_data::{
+    BspLeaf, BspNode, ClusterGeometryTableEntry, DisplacementTableEntry, LightmapClusterTableEntry,
+    LightmapPatchTableEntry, OwnedMapData, TextureTableEntry, WriteTo,
+};
 use memmap::Mmap;
 use nalgebra_glm::{lerp, mat3_to_mat4, vec2, vec3, vec4, Mat3, Mat3x4, Mat4, Vec3};
 use num_traits::PrimInt;
@@ -38,7 +45,6 @@ use crate::counter::Counter;
 use crate::display_list::DisplayListBuilder;
 use crate::legacy_pass_params::{Pass, ShaderParams, ShaderParamsAlpha};
 use crate::packed_material::PackedMaterial;
-use crate::record_writer::RecordWriter;
 use crate::texture_key::{OwnedTextureKey, TextureIdAllocator};
 use crate::write_big_endian::WriteBigEndian;
 
@@ -46,7 +52,6 @@ mod counter;
 mod display_list;
 mod legacy_pass_params;
 mod packed_material;
-mod record_writer;
 mod texture_key;
 mod write_big_endian;
 
@@ -59,7 +64,11 @@ fn main() -> Result<()> {
         (@arg hl2_base: --("hl2-base") <PATH> "Path to a Half-Life 2 installation")
         (@subcommand pack_map =>
             (about: "packs a single map for use on GC/Wii")
-            (@arg MAP: "Map name (default: d1_trainstation_01)")
+            (@arg MAP: "Map name or path to map file if ending with \".bsp\" (default: d1_trainstation_01)")
+            (@arg dst: --dst [PATH] "Path to write packed outputs (default: .)")
+        )
+        (@subcommand pack_all_maps =>
+            (about: "packs maps for use on GC/Wii")
             (@arg dst: --dst [PATH] "Path to write packed outputs (default: .)")
         )
         (@subcommand cat_lump =>
@@ -80,7 +89,10 @@ fn main() -> Result<()> {
 
     let hl2_base = Path::new(matches.value_of("hl2_base").unwrap());
     match matches.subcommand() {
-        ("pack_map", Some(matches)) => pack_map(hl2_base, matches)?,
+        ("pack_map", Some(matches)) => {
+            pack_map(hl2_base, matches.value_of("dst"), matches.value_of("MAP"))?
+        }
+        ("pack_all_maps", Some(matches)) => pack_all_maps(hl2_base, matches.value_of("dst"))?,
         ("cat_lump", Some(matches)) => cat_lump(hl2_base, matches)?,
         ("cat_material", Some(matches)) => cat_material(hl2_base, matches)?,
         ("describe_texture", Some(matches)) => describe_texture(hl2_base, matches)?,
@@ -146,13 +158,60 @@ fn describe_texture(hl2_base: &Path, matches: &ArgMatches) -> Result<()> {
     Ok(())
 }
 
-fn pack_map(hl2_base: &Path, matches: &ArgMatches) -> Result<()> {
-    let map_path = {
+fn pack_all_maps(hl2_base: &Path, dst: Option<&str>) -> Result<()> {
+    let map_queue = Arc::new(Mutex::new(VecDeque::new()));
+    let mut locked_queue = map_queue.lock().unwrap();
+    for entry in read_dir(&hl2_base.join("maps"))? {
+        let entry = entry?;
+        if let Some(file_name) = entry.file_name().to_str() {
+            if file_name.ends_with(".bsp")
+                && entry.metadata()?.len() > 0
+                && !file_name.ends_with("intro.bsp")
+                && !file_name.ends_with("credits.bsp")
+            {
+                locked_queue.push_back(entry.path().to_str().unwrap().to_string());
+            }
+        }
+    }
+    drop(locked_queue);
+
+    let mut threads = Vec::new();
+    for _ in 0..8 {
+        threads.push(spawn({
+            let hl2_base = hl2_base.to_path_buf();
+            let dst = dst.map(ToString::to_string);
+            let map_queue = Arc::clone(&map_queue);
+            move || -> Result<()> {
+                loop {
+                    let map_path = match map_queue.lock().unwrap().pop_front() {
+                        Some(map_path) => map_path,
+                        None => break,
+                    };
+                    println!("Pulled {} from the queue", map_path);
+                    pack_map(&hl2_base, dst.as_ref().map(String::as_str), Some(&map_path))
+                        .with_context(|| format!("Packing map {}", map_path))?;
+                }
+                Ok(())
+            }
+        }));
+    }
+    for thread in threads {
+        match thread.join() {
+            Ok(result) => result?,
+            Err(panic_payload) => resume_unwind(panic_payload),
+        }
+    }
+
+    Ok(())
+}
+
+fn pack_map(hl2_base: &Path, dst: Option<&str>, map_name_or_path: Option<&str>) -> Result<()> {
+    let map_name_or_path = map_name_or_path.unwrap_or("d1_trainstation_01");
+    let map_path = if map_name_or_path.ends_with(".bsp") {
+        map_name_or_path.into()
+    } else {
         let mut path = hl2_base.join("maps");
-        path.push(format!(
-            "{}.bsp",
-            matches.value_of("MAP").unwrap_or("d1_trainstation_01"),
-        ));
+        path.push(format!("{}.bsp", map_name_or_path));
         path
     };
     let bsp_file =
@@ -174,26 +233,46 @@ fn pack_map(hl2_base: &Path, matches: &ArgMatches) -> Result<()> {
     let cluster_lightmaps = build_lightmaps(bsp)?;
     let map_geometry = process_geometry(bsp, &cluster_lightmaps, &asset_loader)?;
 
-    let dst_path = Path::new(matches.value_of("dst").unwrap_or("."));
+    let (cluster_geometry_table, cluster_geometry_byte_code, cluster_geometry_display_lists) =
+        pack_brush_geometry(&map_geometry);
+    let bsp_nodes = pack_bsp_nodes(bsp);
+    let bsp_leaves = pack_bsp_leaves(bsp);
+    let visibility = pack_visibility(bsp);
+    let (texture_table, texture_data) = pack_textures(&asset_loader, &map_geometry)?;
+    let (lightmap_cluster_table, lightmap_patch_table, lightmap_data) =
+        pack_lightmaps(bsp, &cluster_lightmaps);
+    let (displacement_table, displacement_byte_code, displacement_display_lists) =
+        pack_displacement_geometry(&map_geometry);
+
+    let dst_path = Path::new(dst.unwrap_or("."));
     create_dir_all(dst_path)?;
 
-    write_textures(dst_path, &asset_loader, &map_geometry)?;
-    write_position_data(dst_path, &map_geometry.position_data)?;
-    write_normal_data(dst_path, &map_geometry.normal_data)?;
-    write_texture_coord_data(dst_path, &map_geometry.texture_coord_data)?;
-    write_displacement_position_data(dst_path, &map_geometry.displacement_position_data)?;
-    write_displacement_vertex_color_data(dst_path, &map_geometry.displacement_vertex_color_data)?;
-    write_displacement_texture_coordinate_data(
-        dst_path,
-        &map_geometry.displacement_texture_coordinate_data,
-    )?;
-
-    write_geometry(dst_path, &map_geometry)?;
-    write_displacement_geometry(dst_path, &map_geometry)?;
-    write_bsp_nodes(dst_path, bsp)?;
-    write_bsp_leaves(dst_path, bsp)?;
-    write_vis(dst_path, bsp)?;
-    write_lightmaps(dst_path, bsp, &cluster_lightmaps)?;
+    let dst_file_name = format!("{}.dat", map_path.file_stem().unwrap().to_str().unwrap());
+    let mut file = File::create(&dst_path.join(dst_file_name))?;
+    OwnedMapData {
+        position_data: map_geometry.position_data,
+        normal_data: map_geometry.normal_data,
+        texture_coord_data: map_geometry.texture_coord_data,
+        cluster_geometry_table,
+        cluster_geometry_byte_code,
+        cluster_geometry_display_lists,
+        bsp_nodes,
+        bsp_leaves,
+        visibility,
+        texture_table,
+        texture_data,
+        lightmap_cluster_table,
+        lightmap_patch_table,
+        lightmap_data,
+        displacement_position_data: map_geometry.displacement_position_data,
+        displacement_vertex_color_data: map_geometry.displacement_vertex_color_data,
+        displacement_texture_coordinate_data: map_geometry.displacement_texture_coordinate_data,
+        displacement_table,
+        displacement_byte_code,
+        displacement_display_lists,
+    }
+    .write_to(&mut file)?;
+    file.flush()?;
 
     Ok(())
 }
@@ -447,7 +526,7 @@ fn allocate_skybox_textures(
                 material.path(),
             ),
         };
-        ids.get(&OwnedTextureKey::EncodeAsIs {
+        ids.get_force_unique(&OwnedTextureKey::EncodeAsIs {
             texture_path: texture_path.to_owned(),
         });
     }
@@ -517,7 +596,8 @@ fn process_displacement(
     );
     let material = asset_loader.get_material(&material_path)?;
     let packed_material =
-        match PackedMaterial::from_material_and_all_planes(asset_loader, ids, &material, [])? {
+        match PackedMaterial::from_material_and_all_planes(asset_loader, ids, &material, [], true)?
+        {
             Some(packed_material) => packed_material,
             None => return Ok(()),
         };
@@ -672,12 +752,13 @@ fn process_lit_textured_face(
         ids,
         &material,
         &material_planes[&material_path],
+        false,
     )? {
         Some(packed_material) => packed_material,
         None => return Ok(()), // Skip any face with a material we can't load.
     };
     let mut polygon_builder = PolygonBuilder::new(cluster_builder.display_list_builder(
-        Pass::from_material(&material, &packed_material),
+        Pass::from_material(&material, &packed_material, false),
         packed_material,
         ShaderParams::from_material_plane(&material, plane),
     ));
@@ -812,11 +893,10 @@ impl From<[f32; 3]> for Plane {
     }
 }
 
-fn write_textures(
-    dst_path: &Path,
+fn pack_textures(
     asset_loader: &AssetLoader,
     map_geometry: &MapGeometry,
-) -> Result<()> {
+) -> Result<(Vec<TextureTableEntry>, Vec<u8>)> {
     fn get_dst_format(src_format: TextureFormat) -> Result<TextureFormat> {
         Ok(match src_format {
             TextureFormat::Dxt1 | TextureFormat::Dxt5 | TextureFormat::Rgba16f => {
@@ -936,8 +1016,8 @@ fn write_textures(
             continue;
         }
 
-        let mut texture_table = BufWriter::new(File::create(dst_path.join("texture_table.dat"))?);
-        let mut texture_data = BufWriter::new(File::create(dst_path.join("texture_data.dat"))?);
+        let mut texture_table = Vec::new();
+        let mut texture_data = Vec::new();
 
         let budgeted_size = total_size;
         total_size = 0;
@@ -950,7 +1030,7 @@ fn write_textures(
                 gx_format: u8,
             }
 
-            let start_offset = texture_data.stream_position()? as u32;
+            let start_offset = u32::try_from(texture_data.len()).unwrap();
             let metadata = match key {
                 OwnedTextureKey::EncodeAsIs { texture_path } => {
                     let texture = asset_loader.get_texture(texture_path)?;
@@ -965,9 +1045,9 @@ fn write_textures(
                             base_mip_size =
                                 Some((face_mip.texture.width(), face_mip.texture.height()));
                         }
-                        texture_data.write_all(
+                        texture_data.extend_from_slice(
                             TextureBuf::transcode(face_mip.texture.as_slice(), dst_format).data(),
-                        )?;
+                        );
                         mip_count += 1;
                     }
 
@@ -993,9 +1073,9 @@ fn write_textures(
                             base_mip_size =
                                 Some((face_mip.texture.width(), face_mip.texture.height()));
                         }
-                        texture_data.write_all(
+                        texture_data.extend_from_slice(
                             TextureBuf::transcode(face_mip.texture.as_slice(), dst_format).data(),
-                        )?;
+                        );
                         mip_count += 1;
                     }
 
@@ -1035,7 +1115,7 @@ fn write_textures(
                             texel_data[offset + 2] = texel_data[offset + 3];
                         }
 
-                        texture_data.write_all(
+                        texture_data.extend_from_slice(
                             TextureBuf::transcode(
                                 TextureBuf::new(
                                     TextureFormat::Rgba8,
@@ -1047,7 +1127,7 @@ fn write_textures(
                                 dst_format,
                             )
                             .data(),
-                        )?;
+                        );
 
                         mip_count += 1;
                     }
@@ -1131,14 +1211,14 @@ fn write_textures(
                                 });
                             }
 
-                            texture_data.write_all(
+                            texture_data.extend_from_slice(
                                 TextureBuf::transcode(
                                     TextureBuf::new(TextureFormat::Rgba8, width, height, texels)
                                         .as_slice(),
                                     dst_format,
                                 )
                                 .data(),
-                            )?;
+                            );
                             mip_count += 1;
                         }
 
@@ -1152,7 +1232,12 @@ fn write_textures(
                     } else {
                         // Skip for now.
                         // TODO: Scale to the maximum dimension.
-                        texture_data.write_all(&[0; 32])?;
+                        eprintln!("WARNING: Skipping ComposeIntensityAlpha for textures with different dimensions: {}, {}",
+                            intensity_texture_path,
+                            alpha_texture_path,
+                        );
+
+                        texture_data.extend_from_slice(&[0; 32]);
                         TextureMetadata {
                             width: 8,
                             height: 8,
@@ -1281,7 +1366,7 @@ fn write_textures(
                         }
                     }
 
-                    texture_data.write_all(
+                    texture_data.extend_from_slice(
                         TextureBuf::transcode(
                             TextureBuf::new(
                                 TextureFormat::Rgba8,
@@ -1294,7 +1379,7 @@ fn write_textures(
                             TextureFormat::GxTfRgba8,
                         )
                         .data(),
-                    )?;
+                    );
 
                     TextureMetadata {
                         width: sphere_width,
@@ -1306,27 +1391,25 @@ fn write_textures(
                 }
             };
 
-            let end_offset = texture_data.stream_position()? as u32;
-            assert_eq!(texture_data.stream_position()? % 32, 0);
+            let end_offset = u32::try_from(texture_data.len()).unwrap();
 
             // Write a texture table entry.
-            texture_table.write_u16::<BigEndian>(metadata.width as u16)?;
-            texture_table.write_u16::<BigEndian>(metadata.height as u16)?;
-            texture_table.write_u8(metadata.mip_count as u8)?;
-            texture_table.write_u8(metadata.gx_flags)?;
-            texture_table.write_u8(metadata.gx_format)?;
-            texture_table.write_u8(0)?;
-            texture_table.write_u32::<BigEndian>(start_offset)?;
-            texture_table.write_u32::<BigEndian>(end_offset)?;
+            texture_table.push(TextureTableEntry {
+                width: metadata.width as u16,
+                height: metadata.height as u16,
+                mip_count: metadata.mip_count as u8,
+                flags: metadata.gx_flags,
+                format: metadata.gx_format,
+                _padding: 0,
+                start_offset,
+                end_offset,
+            });
             total_size += (end_offset - start_offset) as usize;
         }
 
         assert_eq!(total_size, budgeted_size);
 
-        texture_table.flush()?;
-        texture_data.flush()?;
-
-        return Ok(());
+        return Ok((texture_table, texture_data));
     }
     bail!("Unable to fit textures within the memory budget.");
 }
@@ -1347,54 +1430,6 @@ fn gx_texture_format(format: TextureFormat) -> u8 {
     }
 }
 
-fn write_position_data(dst_path: &Path, position_data: &[u8]) -> Result<()> {
-    let mut f = BufWriter::new(File::create(dst_path.join("position_data.dat"))?);
-    f.write_all(&position_data)?;
-    f.flush()?;
-    Ok(())
-}
-
-fn write_normal_data(dst_path: &Path, normal_data: &[u8]) -> Result<()> {
-    let mut f = BufWriter::new(File::create(dst_path.join("normal_data.dat"))?);
-    f.write_all(&normal_data)?;
-    f.flush()?;
-    Ok(())
-}
-
-fn write_texture_coord_data(dst_path: &Path, texture_coord_data: &[u8]) -> Result<()> {
-    let mut f = BufWriter::new(File::create(dst_path.join("texture_coord_data.dat"))?);
-    f.write_all(&texture_coord_data)?;
-    f.flush()?;
-    Ok(())
-}
-
-fn write_displacement_position_data(dst_path: &Path, data: &[u8]) -> Result<()> {
-    let mut f = BufWriter::new(File::create(
-        dst_path.join("displacement_position_data.dat"),
-    )?);
-    f.write_all(&data)?;
-    f.flush()?;
-    Ok(())
-}
-
-fn write_displacement_vertex_color_data(dst_path: &Path, data: &[u8]) -> Result<()> {
-    let mut f = BufWriter::new(File::create(
-        dst_path.join("displacement_vertex_color_data.dat"),
-    )?);
-    f.write_all(&data)?;
-    f.flush()?;
-    Ok(())
-}
-
-fn write_displacement_texture_coordinate_data(dst_path: &Path, data: &[u8]) -> Result<()> {
-    let mut f = BufWriter::new(File::create(
-        dst_path.join("displacement_texture_coordinate_data.dat"),
-    )?);
-    f.write_all(&data)?;
-    f.flush()?;
-    Ok(())
-}
-
 fn build_local_space(normal: &Vec3) -> (Vec3, Vec3) {
     // Choose a reference vector that is not nearly aligned with the normal. This is fairly
     // arbitrary and is done only to establish a local coordinate space. Use the Y axis if the
@@ -1412,28 +1447,23 @@ fn build_local_space(normal: &Vec3) -> (Vec3, Vec3) {
     (s, t)
 }
 
-fn write_geometry(dst_path: &Path, map_geometry: &MapGeometry) -> Result<()> {
-    // TODO: Transpose this table for potential cache friendliness.
+fn pack_brush_geometry(
+    map_geometry: &MapGeometry,
+) -> (Vec<ClusterGeometryTableEntry>, Vec<u32>, Vec<u8>) {
+    // TODO: Transpose this table for potential cache friendliness?
 
-    // struct ClusterGeometry {
-    //     pass_index_ranges: [[u32; 2]; 18],
-    // }
-
-    let mut table_file = BufWriter::new(File::create(dst_path.join("cluster_geometry_table.dat"))?);
-    let mut byte_code_file = RecordWriter::new(
-        BufWriter::new(File::create(
-            dst_path.join("cluster_geometry_byte_code.dat"),
-        )?),
-        4,
-    );
-    let mut display_lists_file = BufWriter::new(File::create(dst_path.join("display_lists.dat"))?);
+    let mut cluster_geometry_table = Vec::new();
+    let mut cluster_geometry_byte_code = Vec::new();
+    let mut cluster_geometry_display_lists = Vec::new();
 
     for cluster in &map_geometry.clusters {
-        let table_start_offset = table_file.stream_position()?;
-
+        let mut cluster_geometry_table_entry = ClusterGeometryTableEntry {
+            byte_code_index_ranges: [[0, 0]; 18],
+        };
+        let mut display_list_offset = u32::try_from(cluster_geometry_display_lists.len()).unwrap();
         for mode in 0..18 {
-            // Write ClusterGeometry.pass_index_ranges[mode][0].
-            table_file.write_u32::<BigEndian>(byte_code_file.index()? as u32)?;
+            cluster_geometry_table_entry.byte_code_index_ranges[mode as usize][0] =
+                u32::try_from(cluster_geometry_byte_code.len()).unwrap();
 
             let mut prev_base_id = None;
             let mut prev_aux_id = None;
@@ -1448,16 +1478,20 @@ fn write_geometry(dst_path: &Path, map_geometry: &MapGeometry) -> Result<()> {
                     if prev_base_id != Some(material.base_id) {
                         prev_base_id = Some(material.base_id);
 
-                        bytecode::set_base_texture(material.base_id)
-                            .write_big_endian_to(&mut *byte_code_file)?;
+                        BytecodeOp::SetBaseTexture {
+                            base_texture_id: material.base_id,
+                        }
+                        .append_to(&mut cluster_geometry_byte_code);
                     }
 
                     if let Some(aux_id) = material.aux_id {
                         if prev_aux_id != Some(material.aux_id) {
                             prev_aux_id = Some(material.aux_id);
 
-                            bytecode::set_aux_texture(aux_id)
-                                .write_big_endian_to(&mut *byte_code_file)?;
+                            BytecodeOp::SetAuxTexture {
+                                aux_texture_id: aux_id,
+                            }
+                            .append_to(&mut cluster_geometry_byte_code);
                         }
                     }
 
@@ -1488,80 +1522,112 @@ fn write_geometry(dst_path: &Path, map_geometry: &MapGeometry) -> Result<()> {
                             let texture_matrix: Mat3x4 =
                                 local_to_texture * local_reflect * world_to_local;
 
-                            bytecode::set_plane(texture_matrix)
-                                .write_big_endian_to(&mut *byte_code_file)?;
+                            // This is a load-immediate into GX_DTTMTX0 as GX_MTX3x4.
+                            let addr = 0x0500;
+                            let count = 12;
+                            cluster_geometry_display_lists.push(0x10);
+                            cluster_geometry_display_lists
+                                .write_u32::<BigEndian>((count - 1) << 16 | addr)
+                                .unwrap();
+                            for r in 0..3 {
+                                for c in 0..4 {
+                                    cluster_geometry_display_lists
+                                        .write_u32::<BigEndian>(texture_matrix[(r, c)].to_bits())
+                                        .unwrap();
+                                }
+                            }
+                            // Pad with nops. Ideally this would happen only after a run of display
+                            // lists, not between them.
+                            while cluster_geometry_display_lists.len() & 31 != 0 {
+                                cluster_geometry_display_lists.push(0);
+                            }
                         }
 
                         let env_map_id = env_map.ids_by_plane[&params.plane];
                         if prev_env_map_id != Some(env_map_id) {
                             prev_env_map_id = Some(env_map_id);
 
-                            bytecode::set_env_map_texture(env_map_id)
-                                .write_big_endian_to(&mut *byte_code_file)?;
+                            BytecodeOp::SetEnvTexture {
+                                env_texture_id: env_map_id,
+                            }
+                            .append_to(&mut cluster_geometry_byte_code);
                         }
 
                         if prev_env_map_tint != Some(params.env_map_tint) {
                             prev_env_map_tint = Some(params.env_map_tint);
 
-                            bytecode::set_env_map_tint(params.env_map_tint)
-                                .write_big_endian_to(&mut *byte_code_file)?;
+                            BytecodeOp::SetEnvMapTint {
+                                rgb: params.env_map_tint,
+                            }
+                            .append_to(&mut cluster_geometry_byte_code);
                         }
                     }
 
                     if prev_alpha != Some(params.alpha) {
                         prev_alpha = Some(params.alpha);
 
-                        let test = match params.alpha {
-                            ShaderParamsAlpha::AlphaTest { .. } => 1,
-                            _ => 0,
+                        let z_comp_before_tex = match params.alpha {
+                            ShaderParamsAlpha::AlphaTest { .. } => 0,
+                            _ => 1,
                         };
-                        let threshold = match params.alpha {
+                        let compare_type = match params.alpha {
+                            ShaderParamsAlpha::AlphaTest { .. } => {
+                                BytecodeOp::ALPHA_COMPARE_TYPE_GEQUAL
+                            }
+                            _ => BytecodeOp::ALPHA_COMPARE_TYPE_ALWAYS,
+                        };
+                        let reference = match params.alpha {
                             ShaderParamsAlpha::AlphaTest { threshold } => threshold,
                             _ => 0,
                         };
-                        let blend = match params.alpha {
-                            ShaderParamsAlpha::AlphaBlend => 1,
-                            _ => 0,
-                        };
-                        bytecode::set_alpha(test, threshold, blend)
-                            .write_big_endian_to(&mut *byte_code_file)?;
+                        BytecodeOp::SetAlphaCompare {
+                            z_comp_before_tex,
+                            compare_type,
+                            reference,
+                        }
+                        .append_to(&mut cluster_geometry_byte_code);
                     }
 
-                    let display_list_start_offset = display_lists_file.stream_position()? as u32;
-                    assert_eq!(display_list_start_offset & 31, 0);
-                    display_lists_file.write_all(display_list)?;
-                    let display_list_end_offset = display_lists_file.stream_position()? as u32;
-                    assert_eq!(display_list_end_offset & 31, 0);
+                    cluster_geometry_display_lists.extend_from_slice(display_list);
+                    let next_display_list_offset =
+                        u32::try_from(cluster_geometry_display_lists.len()).unwrap();
+                    assert_eq!(next_display_list_offset & 31, 0);
+                    let display_list_size = next_display_list_offset - display_list_offset;
+                    assert_eq!(display_list_size & 31, 0);
 
-                    bytecode::draw(display_list_start_offset, display_list_end_offset)
-                        .write_big_endian_to(&mut *byte_code_file)?;
+                    BytecodeOp::Draw {
+                        display_list_offset,
+                        display_list_size,
+                    }
+                    .append_to(&mut cluster_geometry_byte_code);
+
+                    display_list_offset = next_display_list_offset;
                 }
             }
 
-            // Write ClusterGeometry.pass_index_ranges[mode][1].
-            table_file.write_u32::<BigEndian>(byte_code_file.index()? as u32)?;
+            cluster_geometry_table_entry.byte_code_index_ranges[mode as usize][1] =
+                u32::try_from(cluster_geometry_byte_code.len()).unwrap();
         }
-
-        let table_end_offset = table_file.stream_position()?;
-        assert_eq!(table_end_offset - table_start_offset, 144);
+        cluster_geometry_table.push(cluster_geometry_table_entry);
     }
 
-    table_file.flush()?;
-    byte_code_file.flush()?;
-    display_lists_file.flush()?;
-    Ok(())
+    (
+        cluster_geometry_table,
+        cluster_geometry_byte_code,
+        cluster_geometry_display_lists,
+    )
 }
 
-fn write_displacement_geometry(dst_path: &Path, map_geometry: &MapGeometry) -> Result<()> {
-    let mut table_file = BufWriter::new(File::create(dst_path.join("displacement_table.dat"))?);
-    let mut byte_code_file =
-        BufWriter::new(File::create(dst_path.join("displacement_byte_code.dat"))?);
-    let mut display_lists_file = BufWriter::new(File::create(
-        dst_path.join("displacement_display_lists.dat"),
-    )?);
+fn pack_displacement_geometry(
+    map_geometry: &MapGeometry,
+) -> (Vec<DisplacementTableEntry>, Vec<u32>, Vec<u8>) {
+    let mut displacement_table = Vec::new();
+    let mut displacement_byte_code = Vec::new();
+    let mut displacement_display_lists = Vec::new();
 
     for mode in [false, true] {
-        let byte_code_start_offset = byte_code_file.stream_position()? as u32;
+        let byte_code_start_index = u32::try_from(displacement_byte_code.len()).unwrap();
+
         for ((pass, packed_material), display_list) in
             &map_geometry.displacement_display_lists_by_pass_material
         {
@@ -1569,94 +1635,105 @@ fn write_displacement_geometry(dst_path: &Path, map_geometry: &MapGeometry) -> R
                 continue;
             }
 
-            let display_list_start_offset = display_lists_file.stream_position()? as u32;
-            display_lists_file.write_all(display_list)?;
-            let display_list_end_offset = display_lists_file.stream_position()? as u32;
+            let display_list_offset = u32::try_from(displacement_display_lists.len()).unwrap();
+            displacement_display_lists.extend_from_slice(display_list);
+            let display_list_size = u32::try_from(display_list.len()).unwrap();
 
-            bytecode::set_base_texture(packed_material.base_id)
-                .write_big_endian_to(&mut byte_code_file)?;
-            if mode {
-                bytecode::set_aux_texture(packed_material.aux_id.unwrap())
-                    .write_big_endian_to(&mut byte_code_file)?;
+            BytecodeOp::SetBaseTexture {
+                base_texture_id: packed_material.base_id,
             }
-            bytecode::draw(display_list_start_offset, display_list_end_offset)
-                .write_big_endian_to(&mut byte_code_file)?;
+            .append_to(&mut displacement_byte_code);
+            if mode {
+                BytecodeOp::SetAuxTexture {
+                    aux_texture_id: packed_material.aux_id.unwrap(),
+                }
+                .append_to(&mut displacement_byte_code);
+            }
+            BytecodeOp::Draw {
+                display_list_offset,
+                display_list_size,
+            }
+            .append_to(&mut displacement_byte_code);
         }
-        let byte_code_end_offset = byte_code_file.stream_position()? as u32;
 
-        table_file.write_u32::<BigEndian>(byte_code_start_offset)?;
-        table_file.write_u32::<BigEndian>(byte_code_end_offset)?;
+        let byte_code_end_index = u32::try_from(displacement_byte_code.len()).unwrap();
+        displacement_table.push(DisplacementTableEntry {
+            byte_code_start_index,
+            byte_code_end_index,
+        });
     }
 
-    table_file.flush()?;
-    byte_code_file.flush()?;
-    display_lists_file.flush()?;
-    Ok(())
+    (
+        displacement_table,
+        displacement_byte_code,
+        displacement_display_lists,
+    )
 }
 
-fn write_bsp_nodes(dst_path: &Path, bsp: Bsp) -> Result<()> {
-    let mut data = Vec::new();
+fn pack_bsp_nodes(bsp: Bsp) -> Vec<BspNode> {
+    let mut bsp_nodes = Vec::new();
     for node in bsp.nodes() {
         let plane = &bsp.planes()[node.planenum as usize];
-        data.write_f32::<BigEndian>(plane.normal[0]).unwrap();
-        data.write_f32::<BigEndian>(plane.normal[1]).unwrap();
-        data.write_f32::<BigEndian>(plane.normal[2]).unwrap();
-        data.write_f32::<BigEndian>(plane.dist).unwrap();
-        data.write_i32::<BigEndian>(node.children[0]).unwrap();
-        data.write_i32::<BigEndian>(node.children[1]).unwrap();
+        bsp_nodes.push(BspNode {
+            plane: [
+                plane.normal[0],
+                plane.normal[1],
+                plane.normal[2],
+                plane.dist,
+            ],
+            children: node.children,
+        });
     }
-    let mut f = BufWriter::new(File::create(dst_path.join("bsp_nodes.dat"))?);
-    f.write_all(&data)?;
-    f.flush()?;
-    Ok(())
+    bsp_nodes
 }
 
-fn write_bsp_leaves(dst_path: &Path, bsp: Bsp) -> Result<()> {
-    let mut data = Vec::new();
+fn pack_bsp_leaves(bsp: Bsp) -> Vec<BspLeaf> {
+    let mut bsp_leaves = Vec::new();
     for leaf in bsp.leaves() {
-        data.write_i16::<BigEndian>(leaf.cluster()).unwrap();
+        bsp_leaves.push(BspLeaf {
+            cluster: leaf.cluster(),
+        });
     }
-    let mut f = BufWriter::new(File::create(dst_path.join("bsp_leaves.dat"))?);
-    f.write_all(&data)?;
-    f.flush()?;
-    Ok(())
+    bsp_leaves
 }
 
-fn write_vis(dst_path: &Path, bsp: Bsp) -> Result<()> {
+fn pack_visibility(bsp: Bsp) -> Vec<u8> {
+    // Scan each vis chunk to determine its length.
     let mut sized_vis_chunks = Vec::new();
     for cluster in bsp.visibility().iter_clusters() {
         sized_vis_chunks.push(cluster.find_data());
     }
+
+    // Build the index.
     let mut offset = 4 * sized_vis_chunks.len() as u32 + 4;
-    let mut index = Vec::new();
-    index
+    let mut visibility = Vec::new();
+    visibility
         .write_u32::<BigEndian>(sized_vis_chunks.len() as u32)
         .unwrap();
     for &chunk in &sized_vis_chunks {
-        index.write_u32::<BigEndian>(offset).unwrap();
+        visibility.write_u32::<BigEndian>(offset).unwrap();
         offset += chunk.len() as u32;
     }
-    let mut f = BufWriter::new(File::create(dst_path.join("vis.dat"))?);
-    f.write_all(&index)?;
-    for &chunk in &sized_vis_chunks {
-        f.write_all(chunk)?;
+
+    // Append all chunks.
+    for chunk in sized_vis_chunks {
+        visibility.extend_from_slice(chunk);
     }
-    f.flush()?;
-    Ok(())
+
+    visibility
 }
 
-fn write_lightmaps(
-    dst_path: &Path,
+fn pack_lightmaps(
     bsp: Bsp,
     cluster_lightmaps: &HashMap<i16, ClusterLightmap>,
-) -> Result<()> {
-    let mut cluster_table_file =
-        BufWriter::new(File::create(dst_path.join("lightmap_cluster_table.dat"))?);
-    let mut patch_table_file = RecordWriter::new(
-        BufWriter::new(File::create(dst_path.join("lightmap_patch_table.dat"))?),
-        16,
-    );
-    let mut data_file = BufWriter::new(File::create(dst_path.join("lightmap_data.dat"))?);
+) -> (
+    Vec<LightmapClusterTableEntry>,
+    Vec<LightmapPatchTableEntry>,
+    Vec<u8>,
+) {
+    let mut lightmap_cluster_table = Vec::new();
+    let mut lightmap_patch_table = Vec::new();
+    let mut lightmap_data = Vec::new();
 
     let cluster_end_index = cluster_lightmaps.keys().copied().max().unwrap();
     for cluster in 0..cluster_end_index {
@@ -1665,7 +1742,7 @@ fn write_lightmaps(
             None => continue,
         };
 
-        let patch_table_start_index = patch_table_file.index()? as u32;
+        let patch_table_start_index = u32::try_from(lightmap_patch_table.len()).unwrap();
         for leaf in bsp.iter_worldspawn_leaves() {
             if leaf.cluster() != cluster {
                 continue;
@@ -1704,7 +1781,7 @@ fn write_lightmaps(
                 lightmap_patches_by_data_offset.keys().copied().collect();
             data_offsets.sort_unstable();
             for data_offset in data_offsets {
-                let data_start_offset = data_file.stream_position()? as u32;
+                let data_start_offset = u32::try_from(lightmap_data.len()).unwrap();
 
                 let patch = &lightmap_patches_by_data_offset[&data_offset];
                 assert_eq!(patch.luxel_offset[0] % 4, 0);
@@ -1731,7 +1808,7 @@ fn write_lightmaps(
                     // Traverse blocks in texture format order.
                     for coarse_y in 0..blocks_high {
                         for coarse_x in 0..blocks_wide {
-                            data_file.write_all(
+                            lightmap_data.extend_from_slice(
                                 &transcode_lightmap_patch_to_gamecube_cmpr_sub_block(
                                     bsp,
                                     patch,
@@ -1739,35 +1816,36 @@ fn write_lightmaps(
                                     4 * coarse_x,
                                     4 * coarse_y,
                                 ),
-                            )?;
+                            );
                         }
                     }
                 }
-                let data_end_offset = data_file.stream_position()? as u32;
+                let data_end_offset = u32::try_from(lightmap_data.len()).unwrap();
 
-                patch_table_file.write_u8((patch.luxel_offset[0] / 4) as u8)?;
-                patch_table_file.write_u8((patch.luxel_offset[1] / 4) as u8)?;
-                patch_table_file.write_u8(blocks_wide as u8)?;
-                patch_table_file.write_u8(blocks_high as u8)?;
-                patch_table_file.write_u8(patch.style_count)?;
-                patch_table_file.write_u8(0)?; // padding
-                patch_table_file.write_u16::<BigEndian>(0)?; // padding
-                patch_table_file.write_u32::<BigEndian>(data_start_offset)?;
-                patch_table_file.write_u32::<BigEndian>(data_end_offset)?;
+                lightmap_patch_table.push(LightmapPatchTableEntry {
+                    sub_block_x: (patch.luxel_offset[0] / 4) as u8,
+                    sub_block_y: (patch.luxel_offset[1] / 4) as u8,
+                    sub_blocks_wide: blocks_wide as u8,
+                    sub_blocks_high: blocks_high as u8,
+                    style_count: patch.style_count,
+                    _padding1: 0,
+                    _padding2: 0,
+                    data_start_offset,
+                    data_end_offset,
+                });
             }
         }
-        let patch_table_end_index = patch_table_file.index()? as u32;
+        let patch_table_end_index = u32::try_from(lightmap_patch_table.len()).unwrap();
 
-        cluster_table_file.write_u16::<BigEndian>(lightmap.width as u16)?;
-        cluster_table_file.write_u16::<BigEndian>(lightmap.height as u16)?;
-        cluster_table_file.write_u32::<BigEndian>(patch_table_start_index)?;
-        cluster_table_file.write_u32::<BigEndian>(patch_table_end_index)?;
+        lightmap_cluster_table.push(LightmapClusterTableEntry {
+            width: lightmap.width as u16,
+            height: lightmap.height as u16,
+            patch_table_start_index,
+            patch_table_end_index,
+        });
     }
 
-    cluster_table_file.flush()?;
-    patch_table_file.flush()?;
-    data_file.flush()?;
-    Ok(())
+    (lightmap_cluster_table, lightmap_patch_table, lightmap_data)
 }
 
 fn transcode_lightmap_patch_to_gamecube_cmpr_sub_block(

@@ -1,47 +1,146 @@
-use core::ops::Index;
+use alloc::vec::Vec;
 
-pub fn draw(display_list_start_offset: u32, display_list_end_offset: u32) -> [u32; 2] {
-    assert_eq!(display_list_start_offset >> 24, 0);
-    [display_list_start_offset, display_list_end_offset]
+pub enum BytecodeOp {
+    Draw {
+        display_list_offset: u32,
+        display_list_size: u32,
+    },
+    SetVertexDesc {
+        attr_list_offset: u32,
+    },
+    SetBaseTexture {
+        base_texture_id: u16,
+    },
+    SetAuxTexture {
+        aux_texture_id: u16,
+    },
+    SetEnvTexture {
+        env_texture_id: u16,
+    },
+    SetEnvMapTint {
+        rgb: [u8; 3],
+    },
+    SetAlphaCompare {
+        z_comp_before_tex: u8,
+        compare_type: u8,
+        reference: u8,
+    },
 }
 
-pub fn set_plane(texture_matrix: impl Index<(usize, usize), Output = f32>) -> [u32; 13] {
-    [
-        0x01000000,
-        texture_matrix[(0, 0)].to_bits(),
-        texture_matrix[(0, 1)].to_bits(),
-        texture_matrix[(0, 2)].to_bits(),
-        texture_matrix[(0, 3)].to_bits(),
-        texture_matrix[(1, 0)].to_bits(),
-        texture_matrix[(1, 1)].to_bits(),
-        texture_matrix[(1, 2)].to_bits(),
-        texture_matrix[(1, 3)].to_bits(),
-        texture_matrix[(2, 0)].to_bits(),
-        texture_matrix[(2, 1)].to_bits(),
-        texture_matrix[(2, 2)].to_bits(),
-        texture_matrix[(2, 3)].to_bits(),
-    ]
+impl BytecodeOp {
+    pub const ALPHA_COMPARE_TYPE_GEQUAL: u8 = 6;
+    pub const ALPHA_COMPARE_TYPE_ALWAYS: u8 = 7;
+
+    pub fn append_to(&self, bytecode: &mut Vec<u32>) {
+        match self {
+            &Self::Draw {
+                display_list_offset,
+                display_list_size,
+            } => {
+                assert_eq!(display_list_offset & 0xff000000, 0);
+                bytecode.push(display_list_offset);
+                bytecode.push(display_list_size);
+            }
+            &Self::SetVertexDesc { attr_list_offset } => {
+                assert_eq!(attr_list_offset & 0xff000000, 0);
+                bytecode.push(0x01000000 | attr_list_offset);
+            }
+            &Self::SetBaseTexture { base_texture_id } => {
+                bytecode.push(0x02000000 | base_texture_id as u32);
+            }
+            &Self::SetAuxTexture { aux_texture_id } => {
+                bytecode.push(0x03000000 | aux_texture_id as u32);
+            }
+            &Self::SetEnvTexture { env_texture_id } => {
+                bytecode.push(0x04000000 | env_texture_id as u32);
+            }
+            &Self::SetEnvMapTint { rgb: [r, g, b] } => {
+                bytecode.push(0x05000000 | (r as u32) << 16 | (g as u32) << 8 | b as u32);
+            }
+            &Self::SetAlphaCompare {
+                z_comp_before_tex,
+                compare_type,
+                reference,
+            } => {
+                bytecode.push(
+                    0x06000000
+                        | (z_comp_before_tex as u32) << 16
+                        | (compare_type as u32) << 8
+                        | reference as u32,
+                );
+            }
+        }
+    }
 }
 
-pub fn set_base_texture(base_texture_index: u16) -> [u32; 1] {
-    [0x02000000 | base_texture_index as u32]
+pub struct BytecodeReader<'a>(&'a [u32]);
+
+impl<'a> BytecodeReader<'a> {
+    pub fn new(words: &'a [u32]) -> Self {
+        Self(words)
+    }
 }
 
-pub fn set_env_map_texture(env_map_texture_index: u16) -> [u32; 1] {
-    [0x03000000 | env_map_texture_index as u32]
-}
+impl<'a> Iterator for BytecodeReader<'a> {
+    type Item = BytecodeOp;
 
-pub fn set_env_map_tint(env_map_tint: [u8; 3]) -> [u32; 1] {
-    [0x04000000
-        | ((env_map_tint[0] as u32) << 16)
-        | ((env_map_tint[1] as u32) << 8)
-        | env_map_tint[2] as u32]
-}
-
-pub fn set_alpha(test: u8, threshold: u8, blend: u8) -> [u32; 1] {
-    [0x05000000 | ((test as u32) << 16) | ((threshold as u32) << 8) | blend as u32]
-}
-
-pub fn set_aux_texture(aux_texture_index: u16) -> [u32; 1] {
-    [0x06000000 | aux_texture_index as u32]
+    fn next(&mut self) -> Option<BytecodeOp> {
+        let op = self.0.get(0).copied()? >> 24;
+        match op {
+            0x00 => {
+                let display_list_offset = self.0[0] & 0x00ffffff;
+                let display_list_size = self.0[1];
+                self.0 = &self.0[2..];
+                Some(BytecodeOp::Draw {
+                    display_list_offset,
+                    display_list_size,
+                })
+            }
+            0x01 => {
+                let attr_list_offset = self.0[0] & 0x00ffffff;
+                self.0 = &self.0[1..];
+                Some(BytecodeOp::SetVertexDesc { attr_list_offset })
+            }
+            0x02 => {
+                let base_texture_index = self.0[0] as u16;
+                self.0 = &self.0[1..];
+                Some(BytecodeOp::SetBaseTexture {
+                    base_texture_id: base_texture_index,
+                })
+            }
+            0x03 => {
+                let aux_texture_index = self.0[0] as u16;
+                self.0 = &self.0[1..];
+                Some(BytecodeOp::SetAuxTexture {
+                    aux_texture_id: aux_texture_index,
+                })
+            }
+            0x04 => {
+                let env_texture_index = self.0[0] as u16;
+                self.0 = &self.0[1..];
+                Some(BytecodeOp::SetEnvTexture {
+                    env_texture_id: env_texture_index,
+                })
+            }
+            0x05 => {
+                let r = (self.0[0] >> 16) as u8;
+                let g = (self.0[0] >> 8) as u8;
+                let b = self.0[0] as u8;
+                self.0 = &self.0[1..];
+                Some(BytecodeOp::SetEnvMapTint { rgb: [r, g, b] })
+            }
+            0x06 => {
+                let z_comp_before_tex = (self.0[0] >> 16) as u8;
+                let compare_type = (self.0[0] >> 8) as u8;
+                let reference = self.0[0] as u8;
+                self.0 = &self.0[1..];
+                Some(BytecodeOp::SetAlphaCompare {
+                    z_comp_before_tex,
+                    compare_type,
+                    reference,
+                })
+            }
+            _ => panic!("unexpected geometry op: 0x{:02x}", op),
+        }
+    }
 }

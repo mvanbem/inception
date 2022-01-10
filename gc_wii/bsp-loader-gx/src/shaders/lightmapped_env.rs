@@ -6,7 +6,7 @@ pub static LIGHTMAPPED_ENV_SHADER: Shader = Shader {
         // Sample the env map.
         .add_stage(
             TevStage::color_only(TevStageColor::just(TevColorIn::TexColor).with_dst(TevReg::Reg0))
-                .with_tex(TevTexCoord::TexCoord2, TevTexMap::TEXMAP2),
+                .with_tex(TevTexCoord::TexCoord2, TevTexMap::TEXMAP3),
         )
         // Square the env map value for `$envmapcontrast 1`.
         .add_stage(TevStage::color_only(
