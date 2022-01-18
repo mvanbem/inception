@@ -5,6 +5,7 @@
 #![feature(core_intrinsics)]
 #![feature(default_alloc_error_handler)]
 #![feature(start)]
+#![feature(vec_spare_capacity)]
 
 extern crate alloc;
 #[cfg(test)]
@@ -41,6 +42,7 @@ use crate::visibility::{ClusterIndex, Visibility};
 mod gx;
 #[macro_use]
 mod include_bytes_align;
+mod iso9660;
 mod lightmap;
 mod loader;
 mod memalign;
@@ -64,9 +66,9 @@ fn get_widescreen_setting() -> bool {
 }
 
 fn configure_loader() -> impl Loader {
-    #[cfg(feature = "embedded_loader")]
+    #[cfg(feature = "dvd_loader")]
     {
-        return crate::loader::embedded_loader::EmbeddedLoader::new(());
+        return crate::loader::dvd_gcm_loader::DvdGcmLoader::new(());
     }
 
     #[cfg(feature = "ftp_loader")]
@@ -75,6 +77,11 @@ fn configure_loader() -> impl Loader {
             [10, 0, 1, 105],
             21,
         ));
+    }
+
+    #[cfg(feature = "embedded_loader")]
+    {
+        return crate::loader::embedded_loader::EmbeddedLoader::new(());
     }
 
     #[allow(unreachable_code)]
@@ -89,15 +96,20 @@ fn select_map(loader: &mut impl Loader) -> String {
             libc::printf(b"\x1b[2JFetching map list...\n\0".as_ptr());
             let mut maps = loader.maps();
 
+            if maps.is_empty() {
+                libc::printf(b"Map list was empty!\0".as_ptr());
+                loop {}
+            }
+
             libc::printf(
                 b"\nSelect a map:\n\n\x1b[s\n\n\
-            D-Pad: Select\n\
+            D-Pad: Select  \x1a: +1  \x1b: -1  \x18: +10  \x19: -10\n\
             B:     Refresh\n\
             A:     Confirm\n\
             Start: Return to loader\0"
                     .as_ptr(),
             );
-            let mut index = 0;
+            let mut index = 0usize;
             'select: loop {
                 let buf = format!(
                     "\x1b[u\x1b[K    ({}/{}) {}\n\0",
@@ -113,12 +125,36 @@ fn select_map(loader: &mut impl Loader) -> String {
                     if (PAD_ButtonsDown(0) & PAD_BUTTON_START as u16) != 0 {
                         libc::exit(0);
                     }
+                    if (PAD_ButtonsDown(0) & PAD_BUTTON_UP as u16) != 0 {
+                        if index < maps.len() - 1 {
+                            index = (index + 10).min(maps.len() - 1);
+                        } else {
+                            index = 0;
+                        }
+                        break;
+                    }
+                    if (PAD_ButtonsDown(0) & PAD_BUTTON_DOWN as u16) != 0 {
+                        if index > 0 {
+                            index = index.saturating_sub(10);
+                        } else {
+                            index = maps.len() - 1;
+                        }
+                        break;
+                    }
                     if (PAD_ButtonsDown(0) & PAD_BUTTON_LEFT as u16) != 0 {
-                        index = index.saturating_sub(1);
+                        if index > 0 {
+                            index -= 1;
+                        } else {
+                            index = maps.len() - 1;
+                        }
                         break;
                     }
                     if (PAD_ButtonsDown(0) & PAD_BUTTON_RIGHT as u16) != 0 {
-                        index = (index + 1).min(maps.len() - 1);
+                        if index < maps.len() - 1 {
+                            index += 1;
+                        } else {
+                            index = 0;
+                        }
                         break;
                     }
                     if (PAD_ButtonsDown(0) & PAD_BUTTON_A as u16) != 0 {
@@ -136,12 +172,34 @@ fn select_map(loader: &mut impl Loader) -> String {
 #[start]
 fn main(_argc: isize, _argv: *const *const u8) -> isize {
     unsafe {
+        init_for_console();
+
+        loop {
+            libc::printf(b"Resetting the disc drive...\n\0".as_ptr());
+            gamecube_dvd_driver::reset();
+            match gamecube_dvd_driver::read_disc_id() {
+                Ok(disc_id) => {
+                    if &disc_id[..8] == b"GGMEMV\x00\x00" {
+                        break;
+                    }
+                }
+                Err(_) => (),
+            }
+
+            libc::printf(b"Unrecognized disc. Open the disc cover.\n\0".as_ptr());
+            gamecube_dvd_driver::wait_for_cover(true);
+
+            libc::printf(b"Insert the Inception disc and close the cover.\n\0".as_ptr());
+            gamecube_dvd_driver::wait_for_cover(false);
+        }
+
+        let mut loader = configure_loader();
+
         loop {
             PENDING_GAME_STATE_CHANGE.store(GameStateChange::None as u32, Ordering::SeqCst);
 
             let (rmode, width, height) = init_for_console();
 
-            let mut loader = configure_loader();
             let map = select_map(&mut loader);
             libc::printf(b"Loading map...\n\0".as_ptr());
             let map_data = loader.load_map(&map);

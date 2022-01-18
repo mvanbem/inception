@@ -1,0 +1,18 @@
+[package]
+name = "gamecube-dvd-driver"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+gamecube = ["ogc-sys/gamecube"]
+wii = ["ogc-sys/wii"]
+
+[dependencies]
+aligned = "0.4"
+gamecube-peripheral-access = { path = "../gamecube-peripheral-access" }
+libc = "0.2"
+ogc-sys = { path = "../ogc-sys", default-features = false }
+snafu = { version = "0.7", default-features = false }

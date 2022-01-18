@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "bsp-loader-gl",
+    "build-gcm",
     "inception-pack",
 ]
 

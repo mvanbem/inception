@@ -4,9 +4,10 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use inception_render_common::map_data::MapData;
 
+pub mod dvd_gcm_loader;
+pub mod dvd_iso_loader;
 #[cfg(feature = "embedded_loader")]
 pub mod embedded_loader;
-#[cfg(feature = "ftp_loader")]
 pub mod ftp_loader;
 
 pub trait Loader: Sized {

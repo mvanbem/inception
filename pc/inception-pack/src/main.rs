@@ -244,8 +244,8 @@ fn pack_map(hl2_base: &Path, dst: Option<&str>, map_name_or_path: Option<&str>) 
     let (displacement_table, displacement_byte_code, displacement_display_lists) =
         pack_displacement_geometry(&map_geometry);
 
-    let dst_path = Path::new(dst.unwrap_or("."));
-    create_dir_all(dst_path)?;
+    let dst_path = Path::new(dst.unwrap_or(".")).join("maps");
+    create_dir_all(&dst_path)?;
 
     let dst_file_name = format!("{}.dat", map_path.file_stem().unwrap().to_str().unwrap());
     let mut file = File::create(&dst_path.join(dst_file_name))?;

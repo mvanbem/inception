@@ -1,16 +1,18 @@
 use core::ops::Deref;
 use core::slice;
 #[cfg(feature = "std")]
+use std::borrow::Cow;
+#[cfg(feature = "std")]
 use std::io::{self, Seek, Write};
 
 use alloc::vec::Vec;
 use bytemuck::{Pod, Zeroable};
 #[cfg(feature = "std")]
 use byteorder::{BigEndian, WriteBytesExt};
+#[cfg(feature = "std")]
+use relocation::{PointerFormat, RelocationWriter};
 
 use crate::bytecode::{BytecodeOp, BytecodeReader};
-#[cfg(feature = "std")]
-use crate::relocation::{PointerFormat, RelocationWriter};
 
 #[cfg(feature = "std")]
 pub trait WriteTo<W: Seek + Write> {
@@ -105,7 +107,7 @@ impl<W: Seek + Write> WriteTo<W> for OwnedMapData {
             symbol: &'static str,
             slice: &[T],
         ) -> io::Result<()> {
-            w.write_pointer(PointerFormat::BigEndianU32, symbol)?;
+            w.write_pointer(PointerFormat::BigEndianU32, Cow::Borrowed(symbol))?;
             w.write_u32::<BigEndian>(u32::try_from(slice.len()).unwrap())?;
             Ok(())
         }
@@ -147,7 +149,7 @@ impl<W: Seek + Write> WriteTo<W> for OwnedMapData {
             while w.stream_position()? % std::mem::align_of::<T>() as u64 != 0 {
                 w.write_u8(0)?;
             }
-            w.define_symbol(symbol)?;
+            w.define_symbol_here(Cow::Borrowed(symbol))?;
             slice.write_to(&mut *w)?;
             Ok(())
         }
@@ -161,7 +163,7 @@ impl<W: Seek + Write> WriteTo<W> for OwnedMapData {
             while w.stream_position()? % align != 0 {
                 w.write_u8(0)?;
             }
-            w.define_symbol(symbol)?;
+            w.define_symbol_here(Cow::Borrowed(symbol))?;
             w.write_all(slice)?;
             Ok(())
         }

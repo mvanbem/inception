@@ -17,27 +17,61 @@ function subcommand_pack_all_maps {
 
     popd >/dev/null
 
-    (cd build && ls -1 *.dat | sed -e 's/^\(.*\)\.dat$/\1/g' > ../ftp/index.txt)
-    cp build/*.dat ftp/
+    mkdir -p ftp
+    rm -rf ftp/*
+    cp ../maps.txt ftp/
+    cp -r build/maps ftp/
 }
 
 function subcommand_build {
     echo === Building bsp-loader-gx ===
     pushd gc_wii >/dev/null
 
-    cargo build -p bsp-loader-gx $release_flag --no-default-features --features=gamecube,ftp_loader
+    cargo build -p bsp-loader-gx $release_flag --no-default-features --features=gamecube,dvd_loader
     elf2dol \
-        target/powerpc-none-eabi/release/bsp-loader-gx \
+        target/powerpc-none-eabi/$release_path_component/bsp-loader-gx \
         ../build/bsp-loader-gx_gamecube.dol
 
-    cargo build -p bsp-loader-gx $release_flag --no-default-features --features=wii,ftp_loader
-    elf2dol \
-        target/powerpc-none-eabi/release/bsp-loader-gx \
-        ../build/bsp-loader-gx_wii.dol
+    # cargo build -p bsp-loader-gx $release_flag --no-default-features --features=wii,dvd_loader
+    # elf2dol \
+    #     target/powerpc-none-eabi/$release_path_component/bsp-loader-gx \
+    #     ../build/bsp-loader-gx_wii.dol
 
     popd >/dev/null
 
     cp build/bsp-loader-gx_gamecube.dol ftp/bsp-loader-gx.dol
+
+
+    echo === Building apploader ===
+    pushd gc_wii >/dev/null
+
+    cargo build -p apploader --release
+
+    cp target/powerpc-none-eabi/release/apploader ../build/
+
+    popd >/dev/null
+
+
+    echo === Building disc image ===
+    pushd build >/dev/null
+
+    mkdir -p disc_root
+    rm -rf disc_root/*
+    cp ../maps.txt disc_root/
+    mkdir disc_root/maps
+    cp maps/* disc_root/maps/
+
+    popd >/dev/null
+    pushd pc >/dev/null
+
+    cargo run -p build-gcm -- \
+        --apploader ../build/apploader \
+        --dol ../build/bsp-loader-gx_gamecube.dol \
+        --root-directory ../build/disc_root \
+        --output ../build/inception.gcm
+
+    popd >/dev/null
+
 
     echo === SUCCESS ===
 }
@@ -55,17 +89,7 @@ function subcommand_audit {
     # Clear the cumulative error log.
     : > ../build/inception-pack.err
 
-    for map in \
-        d1_trainstation_{01,02,03,04,05,06} \
-        d1_canals_{01,01a,02,03,05,06,07,08,09,10,11,12,13} \
-        d1_eli_{01,02} \
-        d1_town_{01,01a,02,03,02a,04,05} \
-        d2_coast_{01,03,04,05,07,08,09,10,11,12} \
-        d2_prison_{01,02,03,04,05,06,07,08} \
-        d3_c17_{01,02,03,04,05,06a,06b,07,08,09,10a,10b,11,12,12b,13} \
-        d3_citadel_{01,02,03,04,05} \
-        d3_breen_01
-    do
+    cat ../maps.txt | while read map; do
         echo "Checking $map"
 
         exit_code=0
@@ -99,10 +123,12 @@ function subcommand_audit {
 }
 
 release_flag=--release
+release_path_component=release
 while true; do
     case $1 in
         --debug)
             release_flag=
+            release_path_component=debug
             shift
             ;;
         ""|build)

@@ -7,9 +7,10 @@ license = "MIT"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-std = ["byteorder"]
+std = ["byteorder", "relocation"]
 
 [dependencies]
 bytemuck = { version = "1", features = ["derive"] }
 byteorder = { version = "1", optional = true }
 nalgebra-glm = { version = "0.16", default_features = false }
+relocation = { path = "../relocation", optional = true }

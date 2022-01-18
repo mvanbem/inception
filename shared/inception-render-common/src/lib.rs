@@ -8,8 +8,6 @@ pub mod bytecode;
 pub mod hashable_float;
 pub mod map_data;
 pub mod pipeline_state;
-#[cfg(feature = "std")]
-mod relocation;
 pub mod shader;
 pub mod vertex_format;
 

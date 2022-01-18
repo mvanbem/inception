@@ -30,7 +30,7 @@ impl Loader for FtpLoader {
     }
 
     fn maps(&mut self) -> Vec<String> {
-        let data = ftp_get(&self.addr, "index.txt").unwrap();
+        let data = ftp_get(&self.addr, "maps.txt").unwrap();
         let mut maps = Vec::new();
         for line in data.split(|&b| b == b'\n') {
             if line.len() > 0 {
