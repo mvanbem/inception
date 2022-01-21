@@ -4,6 +4,10 @@ use core::mem::MaybeUninit;
 use crate::app_loader::{AppLoader, LoadCommand};
 
 pub type OsReportFn = unsafe extern "C" fn(msg: *const u8, ...);
+pub const OS_BOOT_INFO2: *mut *mut c_void = 0x800000f4usize as _;
+pub const OS_BOOT_INFO2_SIZE: usize = 0x2000;
+pub const OS_FST_ADDRESS: *mut *mut c_void = 0x80000038usize as _;
+pub const OS_FST_SIZE: *mut usize = 0x8000003cusize as _;
 
 type InitFn = unsafe extern "C" fn(os_report: OsReportFn);
 type MainFn = unsafe extern "C" fn(
@@ -28,9 +32,7 @@ pub unsafe extern "C" fn apploader_entry(
 static mut APP_LOADER: MaybeUninit<AppLoader> = MaybeUninit::uninit();
 
 unsafe extern "C" fn init(os_report: OsReportFn) {
-    os_report(b"mvanbem loader is live\0".as_ptr());
     APP_LOADER.write(AppLoader::new(os_report));
-    os_report(b"initialized the AppLoader\0".as_ptr());
 }
 
 unsafe extern "C" fn main(

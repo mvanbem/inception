@@ -5,7 +5,9 @@ use core::mem::size_of;
 use aligned::{Aligned, A32};
 use bytemuck::Zeroable;
 
-use crate::ipl_interface::OsReportFn;
+use crate::ipl_interface::{
+    OsReportFn, OS_BOOT_INFO2, OS_BOOT_INFO2_SIZE, OS_FST_ADDRESS, OS_FST_SIZE,
+};
 
 pub struct AppLoader {
     state: State,
@@ -16,6 +18,8 @@ pub struct AppLoader {
 
 enum State {
     FetchBootHeader,
+    FetchBootInfo,
+    FetchFst,
     FetchDolHeader,
     LoadDolSection { index: usize },
     ClearBss,
@@ -29,6 +33,9 @@ pub struct LoadCommand {
 }
 
 impl AppLoader {
+    const BOOT_INFO_LOAD_ADDR: *mut c_void = 0x81206000usize as _;
+    const FST_LOAD_ADDR: *mut c_void = 0x81208000usize as _;
+
     pub fn new(os_report: OsReportFn) -> Self {
         Self {
             state: State::FetchBootHeader,
@@ -42,11 +49,32 @@ impl AppLoader {
         loop {
             match self.state {
                 State::FetchBootHeader => {
-                    self.state = State::FetchDolHeader;
+                    self.state = State::FetchBootInfo;
                     return Some(LoadCommand {
                         addr: &mut *self.boot_header as *mut BootHeader as _,
                         len: (size_of::<BootHeader>() + 31) & !31,
                         offset: BootHeader::FIXED_DISC_OFFSET,
+                    });
+                }
+
+                State::FetchBootInfo => {
+                    self.state = State::FetchFst;
+                    unsafe { *OS_BOOT_INFO2 = Self::BOOT_INFO_LOAD_ADDR };
+                    return Some(LoadCommand {
+                        addr: Self::BOOT_INFO_LOAD_ADDR,
+                        len: OS_BOOT_INFO2_SIZE,
+                        offset: 0x440,
+                    });
+                }
+
+                State::FetchFst => {
+                    self.state = State::FetchDolHeader;
+                    unsafe { *OS_FST_ADDRESS = Self::FST_LOAD_ADDR };
+                    unsafe { *OS_FST_SIZE = self.boot_header.fst_size };
+                    return Some(LoadCommand {
+                        addr: Self::FST_LOAD_ADDR,
+                        len: self.boot_header.fst_size,
+                        offset: self.boot_header.fst_offset,
                     });
                 }
 
@@ -125,6 +153,11 @@ impl AppLoader {
 #[repr(C)]
 struct BootHeader {
     dol_offset: usize,
+    fst_offset: usize,
+    fst_size: usize,
+    fst_max_size: usize,
+    user_offset: usize,
+    user_size: usize,
     _padding: [usize; 7],
 }
 

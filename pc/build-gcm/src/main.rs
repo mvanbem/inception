@@ -76,6 +76,8 @@ fn write_disk_header(output: &mut RelocationWriter<impl Seek + Write>) -> Result
     output.write_pointer(PointerFormat::BigEndianU32, Cow::Borrowed("fst"))?;
     output.write_pointer(PointerFormat::BigEndianU32, Cow::Borrowed("fst_size"))?;
     output.write_pointer(PointerFormat::BigEndianU32, Cow::Borrowed("fst_size"))?;
+    output.seek(SeekFrom::Start(0x458))?;
+    output.write_u32::<BigEndian>(1)?; // Region (USA)
     Ok(())
 }
 
@@ -125,8 +127,8 @@ enum FlattenedFstEntry<'a> {
     },
     Directory {
         name: &'a str,
-        parent_offset: u32,
-        next_offset: u32,
+        parent_index: u32,
+        next_index: u32,
     },
 }
 
@@ -168,33 +170,47 @@ impl FstDirectory {
     fn flatten_to<'a>(
         &'a self,
         name: &'a str,
-        parent_offset: u32,
+        parent_index: u32,
         entries: &mut Vec<FlattenedFstEntry<'a>>,
     ) {
         // Add a placeholder entry for this directory.
         entries.push(FlattenedFstEntry::Directory {
             name,
-            parent_offset,
-            next_offset: u32::MAX, // Placeholder
+            parent_index,
+            next_index: u32::MAX, // Placeholder
         });
         let self_entry_index = entries.len() - 1;
-        let offset = u32::try_from(12 * self_entry_index).unwrap();
+        let index = u32::try_from(self_entry_index).unwrap();
 
         // Recursively traverse the entries.
-        for (name, entry) in &self.entries {
+        fn handle_entry<'a>(
+            entries: &mut Vec<FlattenedFstEntry<'a>>,
+            index: u32,
+            name: &'a str,
+            entry: &'a FstEntry,
+        ) {
             match entry {
                 FstEntry::File(file) => entries.push(FlattenedFstEntry::File { name, file }),
                 FstEntry::Directory(directory) => {
-                    directory.flatten_to(name, offset, entries);
+                    directory.flatten_to(name, index, entries);
                 }
+            }
+        }
+        // Process the banner file first if present.
+        if let Some(entry) = self.entries.get("opening.bnr") {
+            handle_entry(entries, index, "opening.bnr", entry);
+        }
+        for (name, entry) in &self.entries {
+            if name != "opening.bnr" {
+                handle_entry(entries, index, name, entry);
             }
         }
 
         // Fill in the placeholder now that we know how many entries the subtree spans.
         let entries_len = entries.len();
         match &mut entries[self_entry_index] {
-            FlattenedFstEntry::Directory { next_offset, .. } => {
-                *next_offset = u32::try_from(12 * entries_len).unwrap()
+            FlattenedFstEntry::Directory { next_index, .. } => {
+                *next_index = u32::try_from(entries_len).unwrap()
             }
             _ => unreachable!(),
         }
@@ -277,7 +293,7 @@ fn write_fst(output: &mut RelocationWriter<impl Seek + Write>, args: &Args) -> R
     output.zero_pad_to_alignment::<2048>()?;
     let fst_start = output.stream_position()?;
     output.define_symbol(Cow::Borrowed("fst"), fst_start);
-    for (index, entry) in entries.into_iter().enumerate() {
+    for entry in entries {
         match entry {
             FlattenedFstEntry::File { name, file } => {
                 output.write_u8(0)?; // Type: file
@@ -287,17 +303,13 @@ fn write_fst(output: &mut RelocationWriter<impl Seek + Write>, args: &Args) -> R
             }
             FlattenedFstEntry::Directory {
                 name,
-                parent_offset,
-                next_offset,
+                parent_index,
+                next_index,
             } => {
                 output.write_u8(1)?; // Type: directory
                 output.write_pointer(PointerFormat::BigEndianU24, string_table_symbol(name))?;
-                output.write_u32::<BigEndian>(parent_offset)?;
-                output.write_u32::<BigEndian>(if index == 0 {
-                    next_offset / 12
-                } else {
-                    next_offset
-                })?;
+                output.write_u32::<BigEndian>(parent_index)?;
+                output.write_u32::<BigEndian>(next_index)?;
             }
         }
     }
@@ -307,6 +319,7 @@ fn write_fst(output: &mut RelocationWriter<impl Seek + Write>, args: &Args) -> R
     string_table.maybe_write_string("<root>")?;
     root_directory.write_strings(&mut string_table)?;
 
+    output.zero_pad_to_alignment::<32>()?;
     let fst_size = output.stream_position()? - fst_start;
     output.define_symbol(Cow::Borrowed("fst_size"), fst_size);
 

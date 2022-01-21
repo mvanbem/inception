@@ -19,7 +19,7 @@ function subcommand_pack_all_maps {
 
     mkdir -p ftp
     rm -rf ftp/*
-    cp ../maps.txt ftp/
+    cp ../assets/maps.txt ftp/
     cp -r build/maps ftp/
 }
 
@@ -57,7 +57,7 @@ function subcommand_build {
 
     mkdir -p disc_root
     rm -rf disc_root/*
-    cp ../maps.txt disc_root/
+    cp ../assets/{opening.bnr,maps.txt} disc_root/
     mkdir disc_root/maps
     cp maps/* disc_root/maps/
 

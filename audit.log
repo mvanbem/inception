@@ -1,3 +1,4 @@
+WARNING: Skipping ComposeIntensityAlpha for textures with different dimensions: materials/glass/glasswindow031b_mask.vtf, materials/glass/glasswindow031b.vtf
 WARNING: Skipping shader in process_lit_textured_face: decalbasetimeslightmapalphablendselfillum
 WARNING: Skipping shader in process_lit_textured_face: water
 WARNING: Unexpected WorldVertexTransition object lightmappedgeneric_dx9

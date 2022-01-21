@@ -41,8 +41,8 @@ impl DvdGcmLoader {
             if entry.is_file() {
                 if name.eq_ignore_ascii_case(path) {
                     // Found the file. Read it.
-                    let file_offset = entry.data_or_parent_offset;
-                    let file_size = entry.num_entries_file_length_or_next_offset;
+                    let file_offset = entry.data_or_parent_index;
+                    let file_size = entry.file_length_or_next_index;
                     let mut data = Vec::with_capacity_in((file_size + 31) & !31, GlobalAlign32);
                     gamecube_dvd_driver::read_maybe_uninit(file_offset, data.spare_capacity_mut())
                         .unwrap();
@@ -57,7 +57,7 @@ impl DvdGcmLoader {
                 let mut iter = path.splitn(2, '/');
                 let dir_name = iter.next().unwrap();
 
-                let next_offset = entry.num_entries_file_length_or_next_offset;
+                let next_offset = size_of::<FileTableEntry>() * entry.file_length_or_next_index;
 
                 if name.eq_ignore_ascii_case(dir_name) {
                     // Found the next directory. Pop a component off the front of the path and
@@ -95,8 +95,7 @@ impl Loader for DvdGcmLoader {
         unsafe { table_data.set_len(metadata.fst_size) }
 
         let root_entry: &FileTableEntry = from_bytes(&table_data[..size_of::<FileTableEntry>()]);
-        let string_table_start =
-            size_of::<FileTableEntry>() * root_entry.num_entries_file_length_or_next_offset;
+        let string_table_start = size_of::<FileTableEntry>() * root_entry.file_length_or_next_index;
 
         Self {
             table_data,
@@ -133,8 +132,8 @@ struct DiscHeader0x420 {
 #[repr(C)]
 struct FileTableEntry {
     flags_and_name_offset: usize,
-    data_or_parent_offset: usize,
-    num_entries_file_length_or_next_offset: usize,
+    data_or_parent_index: usize,
+    file_length_or_next_index: usize,
 }
 
 impl FileTableEntry {
