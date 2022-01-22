@@ -24,6 +24,7 @@ use inception_render_common::map_data::{
 use memmap::Mmap;
 use nalgebra_glm::{lerp, mat3_to_mat4, vec2, vec3, vec4, Mat3, Mat3x4, Mat4, Vec3};
 use num_traits::PrimInt;
+use ordered_float::NotNan;
 use source_reader::asset::vmt::{
     LightmappedGeneric, Shader, Sky, UnlitGeneric, WorldVertexTransition,
 };
@@ -32,7 +33,7 @@ use source_reader::asset::AssetLoader;
 use source_reader::bsp::{Bsp, DispInfo, Face};
 use source_reader::file::zip::ZipArchiveLoader;
 use source_reader::file::{FallbackFileLoader, FileLoader};
-use source_reader::geometry::convert_vertex;
+use source_reader::geometry::{convert_vertex, Vertex};
 use source_reader::lightmap::{build_lightmaps, ClusterLightmap, LightmapPatch};
 use source_reader::vpk::path::VpkPath;
 use source_reader::vpk::Vpk;
@@ -763,25 +764,44 @@ fn process_lit_textured_face(
         ShaderParams::from_material_plane(&material, plane),
     ));
 
-    for vertex_index in bsp.iter_vertex_indices_from_face(face) {
-        let mut vertex = convert_vertex(
-            bsp,
-            (cluster_lightmap.width, cluster_lightmap.height),
-            lightmap_metadata,
-            face,
-            tex_info,
-            vertex_index,
-        );
-        vertex.texture_coord = [
-            vertex.texture_coord[0] / base_texture_size[0],
-            vertex.texture_coord[1] / base_texture_size[1],
-        ];
+    let face_vertices: Vec<Vertex> = bsp
+        .iter_vertex_indices_from_face(face)
+        .map(|vertex_index| {
+            let mut vertex = convert_vertex(
+                bsp,
+                (cluster_lightmap.width, cluster_lightmap.height),
+                lightmap_metadata,
+                face,
+                tex_info,
+                vertex_index,
+            );
+            vertex.texture_coord = [
+                vertex.texture_coord[0] / base_texture_size[0],
+                vertex.texture_coord[1] / base_texture_size[1],
+            ];
+            vertex
+        })
+        .collect();
 
+    let min_tile_s = *face_vertices
+        .iter()
+        .map(|vertex| NotNan::new(vertex.texture_coord[0].floor()).unwrap())
+        .min()
+        .unwrap();
+    let min_tile_t = *face_vertices
+        .iter()
+        .map(|vertex| NotNan::new(vertex.texture_coord[1].ceil()).unwrap())
+        .min()
+        .unwrap();
+
+    for vertex in face_vertices {
         let position_index: u16 = positions.add_vertex(hashable_float(&vertex.position));
         let normal_index: u16 = normals.add_vertex(quantize_normal(vertex.normal));
         let lightmap_coord = quantize_lightmap_coord(vertex.lightmap_coord);
-        let texture_coord_index: u16 =
-            texture_coords.add_vertex(quantize_texture_coord(vertex.texture_coord));
+        let texture_coord_index: u16 = texture_coords.add_vertex(quantize_texture_coord([
+            vertex.texture_coord[0] - min_tile_s,
+            vertex.texture_coord[1] - min_tile_t,
+        ]));
 
         polygon_builder.add_vertex((
             position_index,

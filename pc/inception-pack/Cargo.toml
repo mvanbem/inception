@@ -16,6 +16,7 @@ inception-render-common = { path = "../../shared/inception-render-common", featu
 memmap = "0.7"
 nalgebra-glm = "0.15"
 num-traits = "0.2"
+ordered-float = "2"
 paste = "1"
 seq-macro = "0.2"
 source-reader = { path = "../../shared/source-reader" }
