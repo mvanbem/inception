@@ -1683,6 +1683,7 @@ name = "source-reader"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "approx",
  "byteorder",
  "fully-occupied",
  "memmap",

@@ -2,10 +2,10 @@ use std::rc::Rc;
 use std::str::from_utf8;
 
 use anyhow::{bail, Context, Result};
-use nalgebra_glm::Vec3;
+use nalgebra_glm::{Mat2x3, Vec3};
 
 use crate::asset::{Asset, AssetLoader};
-use crate::properties::{material_vector, Entry, KeyValue, Object};
+use crate::properties::{material_vector, texture_transform, Entry, KeyValue, Object};
 use crate::vpk::path::VpkPath;
 
 fn parse_bool(s: &str) -> Result<bool> {
@@ -67,6 +67,13 @@ fn parse_vmt_path(s: &str) -> Result<VpkPath> {
     ))
 }
 
+fn parse_texture_transform(s: &str) -> Result<Mat2x3> {
+    match texture_transform(s) {
+        Ok(t) => Ok(t),
+        Err(e) => bail!("{}", e),
+    }
+}
+
 pub struct Vmt {
     path: VpkPath,
     shader: Shader,
@@ -79,6 +86,17 @@ impl Vmt {
 
     pub fn shader(&self) -> &Shader {
         &self.shader
+    }
+
+    pub fn texture_transform(&self) -> Mat2x3 {
+        match self.shader {
+            // TODO: Everywhere else, too.
+            Shader::WorldVertexTransition(WorldVertexTransition {
+                base_texture_transform,
+                ..
+            }) => base_texture_transform,
+            _ => Mat2x3::identity(),
+        }
     }
 }
 
@@ -413,6 +431,8 @@ pub struct UnlitGeneric {
 struct WorldVertexTransitionBuilder {
     base_texture_path: Option<VpkPath>,
     base_texture2_path: Option<VpkPath>,
+    base_texture_transform: Mat2x3,
+    base_texture_transform2: Mat2x3,
 }
 
 impl Default for WorldVertexTransitionBuilder {
@@ -420,6 +440,8 @@ impl Default for WorldVertexTransitionBuilder {
         Self {
             base_texture_path: None,
             base_texture2_path: None,
+            base_texture_transform: Mat2x3::identity(),
+            base_texture_transform2: Mat2x3::identity(),
         }
     }
 }
@@ -433,6 +455,19 @@ impl<'a> ShaderBuilder<'a> for WorldVertexTransitionBuilder {
                 }
                 "$basetexture2" => {
                     self.base_texture2_path = parse_vtf_path(value).context("$basetexture2")?
+                }
+                "$basetexturetransform" => {
+                    self.base_texture_transform =
+                        parse_texture_transform(value).context("$basetexturetransform")?;
+                    println!("Got $basetexturetransform: {}", self.base_texture_transform);
+                }
+                "$basetexturetransform2" => {
+                    self.base_texture_transform2 =
+                        parse_texture_transform(value).context("$basetexturetransform2")?;
+                    println!(
+                        "Got $basetexturetransform2: {}",
+                        self.base_texture_transform2,
+                    );
                 }
                 x if x.starts_with("%") => (),
                 key => eprintln!(
@@ -462,6 +497,8 @@ impl<'a> ShaderBuilder<'a> for WorldVertexTransitionBuilder {
                 Some(x) => x,
                 None => bail!("WorldVertexTransition $basetexture2 was unset"),
             },
+            base_texture_transform: self.base_texture_transform,
+            base_texture_transform2: self.base_texture_transform2,
         }))
     }
 }
@@ -470,6 +507,8 @@ impl<'a> ShaderBuilder<'a> for WorldVertexTransitionBuilder {
 pub struct WorldVertexTransition {
     pub base_texture_path: VpkPath,
     pub base_texture2_path: VpkPath,
+    pub base_texture_transform: Mat2x3,
+    pub base_texture_transform2: Mat2x3,
 }
 
 struct SkyBuilder {

@@ -222,6 +222,7 @@ impl PackedMaterial {
             Shader::WorldVertexTransition(WorldVertexTransition {
                 base_texture_path,
                 base_texture2_path,
+                ..
             }) if for_displacement => {
                 let base_id = ids.get(&BorrowedTextureKey::EncodeAsIs {
                     texture_path: base_texture_path,
@@ -239,8 +240,7 @@ impl PackedMaterial {
             }
 
             Shader::WorldVertexTransition(WorldVertexTransition {
-                base_texture_path,
-                base_texture2_path,
+                base_texture_path, ..
             }) if !for_displacement => {
                 let base_id = ids.get(&BorrowedTextureKey::EncodeAsIs {
                     texture_path: base_texture_path,

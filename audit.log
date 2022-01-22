@@ -42,8 +42,6 @@ WARNING: Unimplemented UnlitGeneric key $nofog
 WARNING: Unimplemented UnlitGeneric key $reflectivity
 WARNING: Unimplemented UnlitGeneric key $selfillum
 WARNING: Unimplemented UnlitGeneric key $surfaceprop
-WARNING: Unimplemented WorldVertexTransition key $basetexturetransform
-WARNING: Unimplemented WorldVertexTransition key $basetexturetransform2
 WARNING: Unimplemented WorldVertexTransition key $bumpbasetexture2withbumpmap
 WARNING: Unimplemented WorldVertexTransition key $bumpmap
 WARNING: Unimplemented WorldVertexTransition key $bumpmap2

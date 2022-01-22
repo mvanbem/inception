@@ -5,6 +5,24 @@ function subcommand_clean {
     rm -rf build/*
 }
 
+function subcommand_pack_map {
+    echo === Running inception-pack ===
+    pushd pc >/dev/null
+
+    cargo run -p inception-pack $release_flag -- \
+        --hl2-base ~/.steam/steam/steamapps/common/Half-Life\ 2/hl2 \
+        pack_map \
+        --dst ../build \
+        "$@"
+
+    popd >/dev/null
+
+    mkdir -p ftp
+    rm -rf ftp/*
+    cp assets/maps.txt ftp/
+    cp -r build/maps ftp/
+}
+
 function subcommand_pack_all_maps {
     echo === Running inception-pack ===
     pushd pc >/dev/null
@@ -89,7 +107,7 @@ function subcommand_audit {
     # Clear the cumulative error log.
     : > ../build/inception-pack.err
 
-    cat ../maps.txt | while read map; do
+    cat ../assets/maps.txt | while read map; do
         echo "Checking $map"
 
         exit_code=0
@@ -141,6 +159,10 @@ while true; do
             ;;
         clean)
             subcommand_clean
+            exit 0
+            ;;
+        pack_map)
+            subcommand_pack_map
             exit 0
             ;;
         pack_all_maps)

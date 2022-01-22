@@ -22,7 +22,7 @@ use inception_render_common::map_data::{
     LightmapPatchTableEntry, OwnedMapData, TextureTableEntry, WriteTo,
 };
 use memmap::Mmap;
-use nalgebra_glm::{lerp, mat3_to_mat4, vec2, vec3, vec4, Mat3, Mat3x4, Mat4, Vec3};
+use nalgebra_glm::{lerp, mat3_to_mat4, vec2, vec3, vec4, Mat2x3, Mat3, Mat3x4, Mat4, Vec3};
 use num_traits::PrimInt;
 use ordered_float::NotNan;
 use source_reader::asset::vmt::{
@@ -602,13 +602,26 @@ fn process_displacement(
             Some(packed_material) => packed_material,
             None => return Ok(()),
         };
-    let (pass, base_texture) = match material.shader() {
+    let (pass, base_texture, texture_transform1, texture_transform2) = match material.shader() {
         Shader::LightmappedGeneric(LightmappedGeneric {
             base_texture_path, ..
-        }) => (false, asset_loader.get_texture(base_texture_path)?),
+        }) => (
+            false,
+            asset_loader.get_texture(base_texture_path)?,
+            Mat2x3::identity(),
+            Mat2x3::identity(),
+        ),
         Shader::WorldVertexTransition(WorldVertexTransition {
-            base_texture_path, ..
-        }) => (true, asset_loader.get_texture(base_texture_path)?),
+            base_texture_path,
+            base_texture_transform,
+            base_texture_transform2,
+            ..
+        }) => (
+            true,
+            asset_loader.get_texture(base_texture_path)?,
+            *base_texture_transform,
+            *base_texture_transform2,
+        ),
         shader => panic!("Unexpected shader: {:?}", shader.name()),
     };
     let display_list_builder = display_list_builders_by_pass_material
@@ -617,7 +630,10 @@ fn process_displacement(
 
     let mut position_indices = Vec::new();
     let mut vertex_color_indices = Vec::new();
-    let mut texture_coordinate_indices = Vec::new();
+    let mut texture_coordinate1_indices = Vec::new();
+    let mut texture_coordinate2_indices = Vec::new();
+    let mut vertices = Vec::new();
+    let mut vertex_alphas = Vec::new();
     for y in 0..verts_per_side {
         for x in 0..verts_per_side {
             let xf = x as f32 / (verts_per_side - 1) as f32;
@@ -648,20 +664,63 @@ fn process_displacement(
                 + tex_info.texture_vecs[1][2] * base_position.z
                 + tex_info.texture_vecs[1][3];
 
-            let texture_s = texture_s / base_texture.width() as f32;
-            let texture_t = texture_t / base_texture.height() as f32;
+            let untransformed_texture_coordinate = vec3(
+                texture_s / base_texture.width() as f32,
+                texture_t / base_texture.height() as f32,
+                1.0,
+            );
+            let texture1 = texture_transform1 * untransformed_texture_coordinate;
+            let texture2 = texture_transform2 * untransformed_texture_coordinate;
 
-            position_indices
-                .push(positions.add_vertex(hashable_float(&displaced_position.data.0[0])));
-            vertex_color_indices.push(vertex_colors.add_vertex([
-                // (xf * 255.0).clamp(0.0, 255.0).round() as u8,
-                // (yf * 255.0).clamp(0.0, 255.0).round() as u8,
-                vert.alpha.clamp(0.0, 255.0).round() as u8,
-                vert.alpha.clamp(0.0, 255.0).round() as u8,
-                vert.alpha.clamp(0.0, 255.0).round() as u8,
-            ]));
-            texture_coordinate_indices
-                .push(texture_coordinates.add_vertex(hashable_float(&[texture_s, texture_t])));
+            // NOTE: Use the lightmap_coord to store the second texture coordinate. This is a silly hack!
+            vertices.push(Vertex {
+                position: displaced_position.data.0[0],
+                normal: [0.0; 3],
+                lightmap_coord: texture2.data.0[0],
+                texture_coord: texture1.data.0[0],
+            });
+            vertex_alphas.push(vert.alpha);
+        }
+    }
+
+    let min_tile_s1 = *vertices
+        .iter()
+        .map(|vertex| NotNan::new(vertex.texture_coord[0].floor()).unwrap())
+        .min()
+        .unwrap();
+    let min_tile_t1 = *vertices
+        .iter()
+        .map(|vertex| NotNan::new(vertex.texture_coord[1].floor()).unwrap())
+        .min()
+        .unwrap();
+    let min_tile_s2 = *vertices
+        .iter()
+        .map(|vertex| NotNan::new(vertex.lightmap_coord[0].floor()).unwrap())
+        .min()
+        .unwrap();
+    let min_tile_t2 = *vertices
+        .iter()
+        .map(|vertex| NotNan::new(vertex.lightmap_coord[1].floor()).unwrap())
+        .min()
+        .unwrap();
+
+    for y in 0..verts_per_side {
+        for x in 0..verts_per_side {
+            let index = verts_per_side * y + x;
+            let vertex = &vertices[index];
+            let alpha = &vertex_alphas[index];
+
+            position_indices.push(positions.add_vertex(hashable_float(&vertex.position)));
+            vertex_color_indices
+                .push(vertex_colors.add_vertex([alpha.clamp(0.0, 255.0).round() as u8; 3]));
+            texture_coordinate1_indices.push(texture_coordinates.add_vertex(hashable_float(&[
+                vertex.texture_coord[0] - min_tile_s1,
+                vertex.texture_coord[1] - min_tile_t1,
+            ])));
+            texture_coordinate2_indices.push(texture_coordinates.add_vertex(hashable_float(&[
+                vertex.lightmap_coord[0] - min_tile_s2,
+                vertex.lightmap_coord[1] - min_tile_t2,
+            ])));
         }
     }
 
@@ -672,7 +731,9 @@ fn process_displacement(
                 data.write_u16::<BigEndian>(position_indices[i]).unwrap();
                 data.write_u16::<BigEndian>(vertex_color_indices[i])
                     .unwrap();
-                data.write_u16::<BigEndian>(texture_coordinate_indices[i])
+                data.write_u16::<BigEndian>(texture_coordinate1_indices[i])
+                    .unwrap();
+                data.write_u16::<BigEndian>(texture_coordinate2_indices[i])
                     .unwrap();
             };
             if (x ^ y) & 1 == 0 {
@@ -700,7 +761,7 @@ fn process_lit_textured_face(
     ids: &mut TextureIdAllocator,
     positions: &mut AttributeBuilder<[FloatByBits; 3], u16>,
     normals: &mut AttributeBuilder<[u8; 3], u16>,
-    texture_coords: &mut AttributeBuilder<[i16; 2], u16>,
+    texture_coords: &mut AttributeBuilder<[u16; 2], u16>,
     cluster_builder: &mut ClusterGeometryBuilder,
     cluster_lightmap: &ClusterLightmap,
     face: &Face,
@@ -764,6 +825,7 @@ fn process_lit_textured_face(
         ShaderParams::from_material_plane(&material, plane),
     ));
 
+    let texture_transform = material.texture_transform();
     let face_vertices: Vec<Vertex> = bsp
         .iter_vertex_indices_from_face(face)
         .map(|vertex_index| {
@@ -775,10 +837,13 @@ fn process_lit_textured_face(
                 tex_info,
                 vertex_index,
             );
-            vertex.texture_coord = [
-                vertex.texture_coord[0] / base_texture_size[0],
-                vertex.texture_coord[1] / base_texture_size[1],
-            ];
+            let texture_coord = texture_transform
+                * vec3(
+                    vertex.texture_coord[0] / base_texture_size[0],
+                    vertex.texture_coord[1] / base_texture_size[1],
+                    1.0,
+                );
+            vertex.texture_coord = [texture_coord[0], texture_coord[1]];
             vertex
         })
         .collect();
@@ -790,7 +855,7 @@ fn process_lit_textured_face(
         .unwrap();
     let min_tile_t = *face_vertices
         .iter()
-        .map(|vertex| NotNan::new(vertex.texture_coord[1].ceil()).unwrap())
+        .map(|vertex| NotNan::new(vertex.texture_coord[1].floor()).unwrap())
         .min()
         .unwrap();
 
@@ -825,15 +890,31 @@ fn quantize_normal(normal: [f32; 3]) -> [u8; 3] {
 fn quantize_lightmap_coord(coord: [f32; 2]) -> [u16; 2] {
     let mut result = [0; 2];
     for index in 0..2 {
-        result[index] = (coord[index] * 32768.0).clamp(0.0, 65535.0) as u16;
+        let rounded = (coord[index] * 32768.0).round();
+        let clamped = rounded.clamp(0.0, 65535.0);
+        if rounded != clamped {
+            eprintln!(
+                "ERROR: Lightmap coord clamped from {} to {}",
+                rounded, clamped,
+            );
+        }
+        result[index] = clamped as u16;
     }
     result
 }
 
-fn quantize_texture_coord(coord: [f32; 2]) -> [i16; 2] {
+fn quantize_texture_coord(coord: [f32; 2]) -> [u16; 2] {
     let mut result = [0; 2];
     for index in 0..2 {
-        result[index] = (coord[index] * 256.0).round().clamp(-32768.0, 32767.0) as i16;
+        let rounded = (coord[index] * 256.0).round();
+        let clamped = rounded.clamp(0.0, 65535.0);
+        if rounded != clamped {
+            eprintln!(
+                "ERROR: Texture coord clamped from {} to {}",
+                rounded, clamped,
+            );
+        }
+        result[index] = clamped as u16;
     }
     result
 }

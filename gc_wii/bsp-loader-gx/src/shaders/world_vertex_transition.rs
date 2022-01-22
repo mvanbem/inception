@@ -13,20 +13,25 @@ pub static WORLD_VERTEX_TRANSITION_SHADER: Shader = Shader {
                 TevColorIn::TexColor,
                 TevColorIn::RasColor,
             ))
-            .with_tex(TevTexCoord::TexCoord0, TevTexMap::TEXMAP3)
+            .with_tex(TevTexCoord::TexCoord1, TevTexMap::TEXMAP2)
             .with_channel(TevChannel::Color0),
         )
         .build(),
     ind_tex_stages: [None; 4],
     num_chans: 1,
     tex_gens: [
-        // Texture coord.
+        // Texture coord 1.
         Some(TexGen::new(
             TexGenType::Mtx2x4,
             TexGenSrc::Tex0,
             TexMtxIndex::IDENTITY,
         )),
-        None,
+        // Texture coord 2.
+        Some(TexGen::new(
+            TexGenType::Mtx2x4,
+            TexGenSrc::Tex1,
+            TexMtxIndex::IDENTITY,
+        )),
         None,
         None,
         None,

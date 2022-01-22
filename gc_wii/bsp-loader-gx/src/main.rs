@@ -676,7 +676,7 @@ fn draw_visible_clusters<Data: Deref<Target = [u8]>>(
         GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
         GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_NRM, GX_NRM_XYZ, GX_S8, 0);
         GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX0, GX_TEX_ST, GX_U16, 15);
-        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX1, GX_TEX_ST, GX_S16, 8);
+        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX1, GX_TEX_ST, GX_U16, 8);
         GX_SetArray(GX_VA_POS, map_data.position_data().as_ptr() as *mut _, 12);
         GX_SetArray(GX_VA_NRM, map_data.normal_data().as_ptr() as *mut _, 3);
         GX_SetArray(
@@ -777,10 +777,10 @@ fn draw_visible_clusters<Data: Deref<Target = [u8]>>(
                     7 => LIGHTMAPPED_BAAA_ENV_EMAI_SHADER.apply(),
                     _ => unreachable!(),
                 }
-            } else if pass == 16 {
-                UNLIT_GENERIC_SHADER.apply();
-            } else if pass == 17 {
-                WORLD_VERTEX_TRANSITION_SHADER.apply();
+                // } else if pass == 16 {
+                //     UNLIT_GENERIC_SHADER.apply();
+                // } else if pass == 17 {
+                //     WORLD_VERTEX_TRANSITION_SHADER.apply();
             }
 
             let blend = pass < 16 && (pass & 8) == 8;
@@ -1012,9 +1012,11 @@ fn draw_displacements<Data: Deref<Target = [u8]>>(
         GX_SetVtxDesc(GX_VA_POS as u8, GX_INDEX16 as u8);
         GX_SetVtxDesc(GX_VA_CLR0 as u8, GX_INDEX16 as u8);
         GX_SetVtxDesc(GX_VA_TEX0 as u8, GX_INDEX16 as u8);
+        GX_SetVtxDesc(GX_VA_TEX1 as u8, GX_INDEX16 as u8);
         GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
         GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_CLR0, GX_CLR_RGB, GX_RGB8, 0);
         GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
+        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX1, GX_TEX_ST, GX_F32, 0);
         GX_SetArray(
             GX_VA_POS,
             map_data.displacement_position_data().as_ptr() as *mut _,
@@ -1027,6 +1029,11 @@ fn draw_displacements<Data: Deref<Target = [u8]>>(
         );
         GX_SetArray(
             GX_VA_TEX0,
+            map_data.displacement_texture_coordinate_data().as_ptr() as *mut _,
+            8,
+        );
+        GX_SetArray(
+            GX_VA_TEX1,
             map_data.displacement_texture_coordinate_data().as_ptr() as *mut _,
             8,
         );

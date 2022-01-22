@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use nalgebra_glm::{vec3, Vec3};
+use nalgebra_glm::{vec3, Mat2x3, Mat3, Vec3};
 use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::character::complete::*;
@@ -155,8 +155,47 @@ fn number(input: &str) -> IResult<&str, &str> {
     )(input)
 }
 
+pub fn texture_transform(input: &str) -> Result<Mat2x3, nom::Err<nom::error::Error<&str>>> {
+    let (input, ((cx, cy), (sx, sy), r, (tx, ty))) = tuple((
+        preceded(tuple((whitespace0, tag("center"))), tuple((number, number)))
+            .map(|(x, y)| -> (f32, f32) { (x.parse().unwrap(), y.parse().unwrap()) }),
+        preceded(tuple((whitespace0, tag("scale"))), tuple((number, number)))
+            .map(|(x, y)| -> (f32, f32) { (x.parse().unwrap(), y.parse().unwrap()) }),
+        preceded(tuple((whitespace0, tag("rotate"))), number)
+            .map(|a| -> f32 { a.parse().unwrap() }),
+        preceded(
+            tuple((whitespace0, tag("translate"))),
+            tuple((number, number)),
+        )
+        .map(|(x, y)| -> (f32, f32) { (x.parse().unwrap(), y.parse().unwrap()) }),
+    ))(input)?;
+    let (input, _) = whitespace0(input)?;
+    assert_eq!(input, "");
+
+    let shift_before_rotate = Mat3::from_rows(&[
+        vec3(1.0, 0.0, -cx).transpose(),
+        vec3(0.0, 1.0, -cy).transpose(),
+        vec3(0.0, 0.0, 1.0).transpose(),
+    ]);
+    let angle = core::f32::consts::PI / 180.0 * r;
+    let cos = angle.cos();
+    let sin = angle.sin();
+    let rotate_shift_back_and_translate = Mat3::from_rows(&[
+        vec3(cos, -sin, cx + tx).transpose(),
+        vec3(sin, cos, cy + ty).transpose(),
+        vec3(0.0, 0.0, 1.0).transpose(),
+    ]);
+
+    let scale = Mat3::from_diagonal(&vec3(sx, sy, 1.0));
+
+    Ok(Mat2x3::identity() * scale * rotate_shift_back_and_translate * shift_before_rotate)
+}
+
 #[cfg(test)]
 mod tests {
+    use approx::AbsDiffEq;
+    use nalgebra_glm::{vec3, Mat2x3};
+
     #[test]
     fn line_comment() {
         assert_eq!(
@@ -178,5 +217,57 @@ mod tests {
         assert_eq!(super::number("1."), Ok(("", "1.")));
         assert_eq!(super::number("1.2"), Ok(("", "1.2")));
         assert_eq!(super::number(".3"), Ok(("", ".3")));
+    }
+
+    #[test]
+    fn texture_transform() {
+        assert_eq!(
+            super::texture_transform("center .5 .5 scale 1 1 rotate 0 translate 0 0"),
+            Ok(Mat2x3::identity()),
+        );
+        assert!(
+            super::texture_transform("center 0 0 scale 1 1 rotate 90 translate 0 0")
+                .unwrap()
+                .abs_diff_eq(
+                    &Mat2x3::from_rows(&[
+                        vec3(0.0, -1.0, 0.0).transpose(),
+                        vec3(1.0, 0.0, 0.0).transpose(),
+                    ]),
+                    1e-6,
+                )
+        );
+        assert!(
+            super::texture_transform("center .5 .5 scale 1 1 rotate 90 translate 0 0")
+                .unwrap()
+                .abs_diff_eq(
+                    &Mat2x3::from_rows(&[
+                        vec3(0.0, -1.0, 1.0).transpose(),
+                        vec3(1.0, 0.0, 0.0).transpose(),
+                    ]),
+                    1e-6,
+                )
+        );
+        assert!(
+            super::texture_transform("center .5 .5 scale 2 0.5 rotate 0 translate 0 0")
+                .unwrap()
+                .abs_diff_eq(
+                    &Mat2x3::from_rows(&[
+                        vec3(2.0, 0.0, 0.0).transpose(),
+                        vec3(0.0, 0.5, 0.0).transpose(),
+                    ]),
+                    1e-6,
+                )
+        );
+        assert!(
+            super::texture_transform("center .5 .5 scale 1 1 rotate 0 translate 3 5")
+                .unwrap()
+                .abs_diff_eq(
+                    &Mat2x3::from_rows(&[
+                        vec3(1.0, 0.0, 3.0).transpose(),
+                        vec3(0.0, 1.0, 5.0).transpose(),
+                    ]),
+                    1e-6,
+                )
+        );
     }
 }
