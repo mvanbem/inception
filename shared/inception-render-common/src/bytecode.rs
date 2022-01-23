@@ -25,6 +25,9 @@ pub enum BytecodeOp {
         compare_type: u8,
         reference: u8,
     },
+    SetFaceIndex {
+        face_index: u16,
+    },
 }
 
 impl BytecodeOp {
@@ -69,6 +72,9 @@ impl BytecodeOp {
                         | reference as u32,
                 );
             }
+            &Self::SetFaceIndex { face_index } => {
+                bytecode.push(0x07000000 | face_index as u32);
+            }
         }
     }
 }
@@ -102,25 +108,19 @@ impl<'a> Iterator for BytecodeReader<'a> {
                 Some(BytecodeOp::SetVertexDesc { attr_list_offset })
             }
             0x02 => {
-                let base_texture_index = self.0[0] as u16;
+                let base_texture_id = self.0[0] as u16;
                 self.0 = &self.0[1..];
-                Some(BytecodeOp::SetBaseTexture {
-                    base_texture_id: base_texture_index,
-                })
+                Some(BytecodeOp::SetBaseTexture { base_texture_id })
             }
             0x03 => {
-                let aux_texture_index = self.0[0] as u16;
+                let aux_texture_id = self.0[0] as u16;
                 self.0 = &self.0[1..];
-                Some(BytecodeOp::SetAuxTexture {
-                    aux_texture_id: aux_texture_index,
-                })
+                Some(BytecodeOp::SetAuxTexture { aux_texture_id })
             }
             0x04 => {
-                let env_texture_index = self.0[0] as u16;
+                let env_texture_id = self.0[0] as u16;
                 self.0 = &self.0[1..];
-                Some(BytecodeOp::SetEnvTexture {
-                    env_texture_id: env_texture_index,
-                })
+                Some(BytecodeOp::SetEnvTexture { env_texture_id })
             }
             0x05 => {
                 let r = (self.0[0] >> 16) as u8;
@@ -139,6 +139,11 @@ impl<'a> Iterator for BytecodeReader<'a> {
                     compare_type,
                     reference,
                 })
+            }
+            0x07 => {
+                let face_index = self.0[0] as u16;
+                self.0 = &self.0[1..];
+                Some(BytecodeOp::SetFaceIndex { face_index })
             }
             _ => panic!("unexpected geometry op: 0x{:02x}", op),
         }

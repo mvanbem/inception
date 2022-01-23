@@ -18,11 +18,12 @@ use byteorder::{BigEndian, WriteBytesExt};
 use clap::{clap_app, crate_authors, crate_description, crate_version, ArgMatches};
 use inception_render_common::bytecode::BytecodeOp;
 use inception_render_common::map_data::{
-    BspLeaf, BspNode, ClusterGeometryTableEntry, DisplacementTableEntry, LightmapClusterTableEntry,
+    BspLeaf, BspNode, ClusterGeometryTableEntry, ClusterLightmapTableEntry,
+    CommonLightmapTableEntry, DisplacementLightmapTableEntry, DisplacementTableEntry,
     LightmapPatchTableEntry, OwnedMapData, TextureTableEntry, WriteTo,
 };
 use memmap::Mmap;
-use nalgebra_glm::{lerp, mat3_to_mat4, vec2, vec3, vec4, Mat2x3, Mat3, Mat3x4, Mat4, Vec3};
+use nalgebra_glm::{lerp, mat3_to_mat4, vec2, vec3, vec4, Mat2x3, Mat3, Mat3x4, Mat4, Vec2, Vec3};
 use num_traits::PrimInt;
 use ordered_float::NotNan;
 use source_reader::asset::vmt::{
@@ -34,7 +35,7 @@ use source_reader::bsp::{Bsp, DispInfo, Face};
 use source_reader::file::zip::ZipArchiveLoader;
 use source_reader::file::{FallbackFileLoader, FileLoader};
 use source_reader::geometry::{convert_vertex, Vertex};
-use source_reader::lightmap::{build_lightmaps, ClusterLightmap, LightmapPatch};
+use source_reader::lightmap::{build_lightmaps, Lightmap, LightmapMetadata, LightmapPatch};
 use source_reader::vpk::path::VpkPath;
 use source_reader::vpk::Vpk;
 use texture_format::{TextureBuf, TextureFormat};
@@ -44,7 +45,7 @@ use quickcheck::Arbitrary;
 
 use crate::counter::Counter;
 use crate::display_list::DisplayListBuilder;
-use crate::legacy_pass_params::{Pass, ShaderParams, ShaderParamsAlpha};
+use crate::legacy_pass_params::{DisplacementPass, Pass, ShaderParams, ShaderParamsAlpha};
 use crate::packed_material::PackedMaterial;
 use crate::texture_key::{OwnedTextureKey, TextureIdAllocator};
 use crate::write_big_endian::WriteBigEndian;
@@ -231,8 +232,13 @@ fn pack_map(hl2_base: &Path, dst: Option<&str>, map_name_or_path: Option<&str>) 
     ]));
     let asset_loader = AssetLoader::new(material_loader, texture_loader);
 
-    let cluster_lightmaps = build_lightmaps(bsp)?;
-    let map_geometry = process_geometry(bsp, &cluster_lightmaps, &asset_loader)?;
+    let (cluster_lightmaps, displacement_lightmaps) = build_lightmaps(bsp)?;
+    let map_geometry = process_geometry(
+        bsp,
+        &cluster_lightmaps,
+        &displacement_lightmaps,
+        &asset_loader,
+    )?;
 
     let (cluster_geometry_table, cluster_geometry_byte_code, cluster_geometry_display_lists) =
         pack_brush_geometry(&map_geometry);
@@ -240,8 +246,8 @@ fn pack_map(hl2_base: &Path, dst: Option<&str>, map_name_or_path: Option<&str>) 
     let bsp_leaves = pack_bsp_leaves(bsp);
     let visibility = pack_visibility(bsp);
     let (texture_table, texture_data) = pack_textures(&asset_loader, &map_geometry)?;
-    let (lightmap_cluster_table, lightmap_patch_table, lightmap_data) =
-        pack_lightmaps(bsp, &cluster_lightmaps);
+    let (lightmap_cluster_table, lightmap_displacement_table, lightmap_patch_table, lightmap_data) =
+        pack_lightmaps(bsp, &cluster_lightmaps, &displacement_lightmaps);
     let (displacement_table, displacement_byte_code, displacement_display_lists) =
         pack_displacement_geometry(&map_geometry);
 
@@ -263,6 +269,7 @@ fn pack_map(hl2_base: &Path, dst: Option<&str>, map_name_or_path: Option<&str>) 
         texture_table,
         texture_data,
         lightmap_cluster_table,
+        lightmap_displacement_table,
         lightmap_patch_table,
         lightmap_data,
         displacement_position_data: map_geometry.displacement_position_data,
@@ -286,7 +293,8 @@ struct MapGeometry {
     displacement_position_data: Vec<u8>,
     displacement_vertex_color_data: Vec<u8>,
     displacement_texture_coordinate_data: Vec<u8>,
-    displacement_display_lists_by_pass_material: BTreeMap<(bool, PackedMaterial), Vec<u8>>,
+    displacement_display_lists_by_pass_face_material:
+        BTreeMap<(DisplacementPass, u16, PackedMaterial), Vec<u8>>,
     texture_keys: Vec<OwnedTextureKey>,
 }
 
@@ -385,7 +393,8 @@ impl ClusterGeometryBuilder {
 
 fn process_geometry(
     bsp: Bsp,
-    cluster_lightmaps: &HashMap<i16, ClusterLightmap>,
+    cluster_lightmaps: &HashMap<i16, Lightmap>,
+    displacement_lightmaps: &HashMap<u16, Lightmap>,
     asset_loader: &AssetLoader,
 ) -> Result<MapGeometry> {
     // Pre-pass: Collect the set of unique planes for each material.
@@ -442,7 +451,7 @@ fn process_geometry(
             clusters.resize_with(cluster as usize + 1, Default::default);
         }
         let cluster_builder = &mut clusters[cluster as usize];
-        let cluster_lightmap = &cluster_lightmaps[&cluster];
+        let lightmap = &cluster_lightmaps[&cluster];
 
         for face in bsp.iter_faces_from_leaf(leaf) {
             if face.light_ofs != -1 && face.tex_info != -1 {
@@ -455,7 +464,7 @@ fn process_geometry(
                     &mut normals,
                     &mut texture_coords,
                     cluster_builder,
-                    cluster_lightmap,
+                    lightmap,
                     face,
                 )?;
             }
@@ -465,8 +474,9 @@ fn process_geometry(
     let mut displacement_positions = AttributeBuilder::new();
     let mut displacement_vertex_colors = AttributeBuilder::new();
     let mut displacement_texture_coordinates = AttributeBuilder::new();
-    let mut displacement_display_list_builders_by_pass_material = BTreeMap::new();
+    let mut displacement_display_list_builders_by_pass_face_material = BTreeMap::new();
     for disp_info in bsp.disp_infos() {
+        let lightmap = displacement_lightmaps.get(&disp_info.map_face);
         process_displacement(
             bsp,
             asset_loader,
@@ -474,12 +484,13 @@ fn process_geometry(
             &mut displacement_positions,
             &mut displacement_vertex_colors,
             &mut displacement_texture_coordinates,
-            &mut displacement_display_list_builders_by_pass_material,
+            &mut displacement_display_list_builders_by_pass_face_material,
+            lightmap,
             disp_info,
         )?;
     }
-    let displacement_display_lists_by_pass_material =
-        displacement_display_list_builders_by_pass_material
+    let displacement_display_lists_by_pass_face_material =
+        displacement_display_list_builders_by_pass_face_material
             .into_iter()
             .map(|(key, builder)| (key, builder.build()))
             .collect();
@@ -495,7 +506,7 @@ fn process_geometry(
         displacement_position_data: displacement_positions.build(),
         displacement_vertex_color_data: displacement_vertex_colors.build(),
         displacement_texture_coordinate_data: displacement_texture_coordinates.build(),
-        displacement_display_lists_by_pass_material,
+        displacement_display_lists_by_pass_face_material,
         texture_keys: ids.into_keys(),
     })
 }
@@ -541,11 +552,12 @@ fn process_displacement(
     ids: &mut TextureIdAllocator,
     positions: &mut AttributeBuilder<[FloatByBits; 3], u16>,
     vertex_colors: &mut AttributeBuilder<[u8; 3], u16>,
-    texture_coordinates: &mut AttributeBuilder<[FloatByBits; 2], u16>,
-    display_list_builders_by_pass_material: &mut BTreeMap<
-        (bool, PackedMaterial),
+    texture_coordinates: &mut AttributeBuilder<[u16; 2], u16>,
+    display_list_builders_by_pass_face_material: &mut BTreeMap<
+        (DisplacementPass, u16, PackedMaterial),
         DisplayListBuilder,
     >,
+    lightmap: Option<&Lightmap>,
     disp_info: &DispInfo,
 ) -> Result<()> {
     let verts_per_side = (1 << disp_info.power) + 1;
@@ -561,12 +573,8 @@ fn process_displacement(
     let face = &bsp.faces()[disp_info.map_face as usize];
     assert_eq!(face.num_edges, 4);
     assert_ne!(face.tex_info, -1);
-    println!(
-        "* Displacement face lightmap: width={} height={} light_ofs={}",
-        face.lightmap_texture_size_in_luxels[0] + 1,
-        face.lightmap_texture_size_in_luxels[1] + 1,
-        face.light_ofs,
-    );
+    let lightmap_metadata =
+        lightmap.map(|lightmap| lightmap.metadata_by_data_offset[&face.light_ofs]);
     let mut corners = [Vec3::zeros(); 4];
     let mut closest_distance = f32::INFINITY;
     let mut closest_corner = 0;
@@ -597,16 +605,13 @@ fn process_displacement(
     );
     let material = asset_loader.get_material(&material_path)?;
     let packed_material =
-        match PackedMaterial::from_material_and_all_planes(asset_loader, ids, &material, [], true)?
-        {
-            Some(packed_material) => packed_material,
-            None => return Ok(()),
-        };
+        PackedMaterial::from_material_and_all_planes(asset_loader, ids, &material, [], true)?
+            .unwrap();
     let (pass, base_texture, texture_transform1, texture_transform2) = match material.shader() {
         Shader::LightmappedGeneric(LightmappedGeneric {
             base_texture_path, ..
         }) => (
-            false,
+            DisplacementPass::LightmappedGeneric,
             asset_loader.get_texture(base_texture_path)?,
             Mat2x3::identity(),
             Mat2x3::identity(),
@@ -617,23 +622,37 @@ fn process_displacement(
             base_texture_transform2,
             ..
         }) => (
-            true,
+            DisplacementPass::WorldVertexTransition,
             asset_loader.get_texture(base_texture_path)?,
             *base_texture_transform,
             *base_texture_transform2,
         ),
         shader => panic!("Unexpected shader: {:?}", shader.name()),
     };
-    let display_list_builder = display_list_builders_by_pass_material
-        .entry((pass, packed_material))
+    let display_list_builder = display_list_builders_by_pass_face_material
+        .entry((pass, disp_info.map_face, packed_material))
         .or_insert_with(|| DisplayListBuilder::new(DisplayListBuilder::QUADS));
+
+    struct DisplacementVertex {
+        position: Vec3,
+        lightmap_coord: Vec2,
+        texture_coords: [Vec2; 2],
+        alpha: f32,
+    }
+
+    let x0 = 0.5;
+    let x1 = face.lightmap_texture_size_in_luxels[0] as f32 + 0.5;
+    let y0 = 0.5;
+    let y1 = face.lightmap_texture_size_in_luxels[1] as f32 + 0.5;
+    let corner_lightmap_coords: [Vec2; 4] =
+        [vec2(x0, y0), vec2(x0, y1), vec2(x1, y1), vec2(x1, y0)];
 
     let mut position_indices = Vec::new();
     let mut vertex_color_indices = Vec::new();
+    let mut lightmap_coordinates = Vec::new();
     let mut texture_coordinate1_indices = Vec::new();
     let mut texture_coordinate2_indices = Vec::new();
     let mut vertices = Vec::new();
-    let mut vertex_alphas = Vec::new();
     for y in 0..verts_per_side {
         for x in 0..verts_per_side {
             let xf = x as f32 / (verts_per_side - 1) as f32;
@@ -653,7 +672,29 @@ fn process_displacement(
                 ),
                 yf,
             );
+            let lightmap_base_position = lerp(
+                &lerp(&corner_lightmap_coords[0], &corner_lightmap_coords[3], xf),
+                &lerp(&corner_lightmap_coords[1], &corner_lightmap_coords[2], xf),
+                yf,
+            );
             let displaced_position = base_position + offset;
+
+            let (lightmap_s, lightmap_t) =
+                if let (Some(lightmap), Some(lightmap_metadata)) = (lightmap, lightmap_metadata) {
+                    let patch_s = lightmap_base_position.x;
+                    let patch_t = lightmap_base_position.y;
+                    let (patch_s, patch_t) = if lightmap_metadata.is_flipped {
+                        (patch_t, patch_s)
+                    } else {
+                        (patch_s, patch_t)
+                    };
+                    (
+                        patch_s / lightmap.width as f32,
+                        patch_t / lightmap.height as f32,
+                    )
+                } else {
+                    (0.0, 0.0)
+                };
 
             let texture_s = tex_info.texture_vecs[0][0] * base_position.x
                 + tex_info.texture_vecs[0][1] * base_position.y
@@ -669,38 +710,37 @@ fn process_displacement(
                 texture_t / base_texture.height() as f32,
                 1.0,
             );
-            let texture1 = texture_transform1 * untransformed_texture_coordinate;
-            let texture2 = texture_transform2 * untransformed_texture_coordinate;
 
-            // NOTE: Use the lightmap_coord to store the second texture coordinate. This is a silly hack!
-            vertices.push(Vertex {
-                position: displaced_position.data.0[0],
-                normal: [0.0; 3],
-                lightmap_coord: texture2.data.0[0],
-                texture_coord: texture1.data.0[0],
+            vertices.push(DisplacementVertex {
+                position: displaced_position,
+                lightmap_coord: vec2(lightmap_s, lightmap_t),
+                texture_coords: [
+                    texture_transform1 * untransformed_texture_coordinate,
+                    texture_transform2 * untransformed_texture_coordinate,
+                ],
+                alpha: vert.alpha,
             });
-            vertex_alphas.push(vert.alpha);
         }
     }
 
     let min_tile_s1 = *vertices
         .iter()
-        .map(|vertex| NotNan::new(vertex.texture_coord[0].floor()).unwrap())
+        .map(|vertex| NotNan::new(vertex.texture_coords[0].x.floor()).unwrap())
         .min()
         .unwrap();
     let min_tile_t1 = *vertices
         .iter()
-        .map(|vertex| NotNan::new(vertex.texture_coord[1].floor()).unwrap())
+        .map(|vertex| NotNan::new(vertex.texture_coords[0].y.floor()).unwrap())
         .min()
         .unwrap();
     let min_tile_s2 = *vertices
         .iter()
-        .map(|vertex| NotNan::new(vertex.lightmap_coord[0].floor()).unwrap())
+        .map(|vertex| NotNan::new(vertex.texture_coords[1].x.floor()).unwrap())
         .min()
         .unwrap();
     let min_tile_t2 = *vertices
         .iter()
-        .map(|vertex| NotNan::new(vertex.lightmap_coord[1].floor()).unwrap())
+        .map(|vertex| NotNan::new(vertex.texture_coords[1].y.floor()).unwrap())
         .min()
         .unwrap();
 
@@ -708,28 +748,39 @@ fn process_displacement(
         for x in 0..verts_per_side {
             let index = verts_per_side * y + x;
             let vertex = &vertices[index];
-            let alpha = &vertex_alphas[index];
 
-            position_indices.push(positions.add_vertex(hashable_float(&vertex.position)));
+            position_indices.push(positions.add_vertex(hashable_float(&vertex.position.data.0[0])));
             vertex_color_indices
-                .push(vertex_colors.add_vertex([alpha.clamp(0.0, 255.0).round() as u8; 3]));
-            texture_coordinate1_indices.push(texture_coordinates.add_vertex(hashable_float(&[
-                vertex.texture_coord[0] - min_tile_s1,
-                vertex.texture_coord[1] - min_tile_t1,
-            ])));
-            texture_coordinate2_indices.push(texture_coordinates.add_vertex(hashable_float(&[
-                vertex.lightmap_coord[0] - min_tile_s2,
-                vertex.lightmap_coord[1] - min_tile_t2,
-            ])));
+                .push(vertex_colors.add_vertex([vertex.alpha.clamp(0.0, 255.0).round() as u8; 3]));
+            lightmap_coordinates.push(quantize_lightmap_coord([
+                vertex.lightmap_coord.x,
+                vertex.lightmap_coord.y,
+            ]));
+            texture_coordinate1_indices.push(texture_coordinates.add_vertex(
+                quantize_texture_coord([
+                    vertex.texture_coords[0].x - min_tile_s1,
+                    vertex.texture_coords[0].y - min_tile_t1,
+                ]),
+            ));
+            texture_coordinate2_indices.push(texture_coordinates.add_vertex(
+                quantize_texture_coord([
+                    vertex.texture_coords[1].x - min_tile_s2,
+                    vertex.texture_coords[1].y - min_tile_t2,
+                ]),
+            ));
         }
     }
 
     for y in 0..quads_per_side {
         for x in 0..quads_per_side {
             let mut data: Vec<u8> = Vec::new();
-            let mut emit = |i| {
+            let mut emit = |i: usize| {
                 data.write_u16::<BigEndian>(position_indices[i]).unwrap();
                 data.write_u16::<BigEndian>(vertex_color_indices[i])
+                    .unwrap();
+                data.write_u16::<BigEndian>(lightmap_coordinates[i][0])
+                    .unwrap();
+                data.write_u16::<BigEndian>(lightmap_coordinates[i][1])
                     .unwrap();
                 data.write_u16::<BigEndian>(texture_coordinate1_indices[i])
                     .unwrap();
@@ -763,10 +814,10 @@ fn process_lit_textured_face(
     normals: &mut AttributeBuilder<[u8; 3], u16>,
     texture_coords: &mut AttributeBuilder<[u16; 2], u16>,
     cluster_builder: &mut ClusterGeometryBuilder,
-    cluster_lightmap: &ClusterLightmap,
+    lightmap: &Lightmap,
     face: &Face,
 ) -> Result<()> {
-    let lightmap_metadata = &cluster_lightmap.metadata_by_data_offset[&face.light_ofs];
+    let lightmap_metadata = &lightmap.metadata_by_data_offset[&face.light_ofs];
     let tex_info = &bsp.tex_infos()[face.tex_info as usize];
     if tex_info.tex_data == -1 {
         // Not textured.
@@ -809,18 +860,16 @@ fn process_lit_textured_face(
             return Ok(());
         }
     };
-    let packed_material = match PackedMaterial::from_material_and_all_planes(
+    let packed_material = PackedMaterial::from_material_and_all_planes(
         asset_loader,
         ids,
         &material,
         &material_planes[&material_path],
         false,
-    )? {
-        Some(packed_material) => packed_material,
-        None => return Ok(()), // Skip any face with a material we can't load.
-    };
+    )?
+    .unwrap();
     let mut polygon_builder = PolygonBuilder::new(cluster_builder.display_list_builder(
-        Pass::from_material(&material, &packed_material, false),
+        Pass::from_material(&material, &packed_material),
         packed_material,
         ShaderParams::from_material_plane(&material, plane),
     ));
@@ -831,7 +880,7 @@ fn process_lit_textured_face(
         .map(|vertex_index| {
             let mut vertex = convert_vertex(
                 bsp,
-                (cluster_lightmap.width, cluster_lightmap.height),
+                (lightmap.width, lightmap.height),
                 lightmap_metadata,
                 face,
                 tex_info,
@@ -1559,10 +1608,10 @@ fn pack_brush_geometry(
 
     for cluster in &map_geometry.clusters {
         let mut cluster_geometry_table_entry = ClusterGeometryTableEntry {
-            byte_code_index_ranges: [[0, 0]; 18],
+            byte_code_index_ranges: [[0, 0]; 17],
         };
         let mut display_list_offset = u32::try_from(cluster_geometry_display_lists.len()).unwrap();
-        for mode in 0..18 {
+        for mode in 0..17 {
             cluster_geometry_table_entry.byte_code_index_ranges[mode as usize][0] =
                 u32::try_from(cluster_geometry_byte_code.len()).unwrap();
 
@@ -1726,13 +1775,13 @@ fn pack_displacement_geometry(
     let mut displacement_byte_code = Vec::new();
     let mut displacement_display_lists = Vec::new();
 
-    for mode in [false, true] {
+    for mode in 0..2 {
         let byte_code_start_index = u32::try_from(displacement_byte_code.len()).unwrap();
 
-        for ((pass, packed_material), display_list) in
-            &map_geometry.displacement_display_lists_by_pass_material
+        for ((pass, face_index, packed_material), display_list) in
+            &map_geometry.displacement_display_lists_by_pass_face_material
         {
-            if *pass != mode {
+            if pass.as_mode() != mode {
                 continue;
             }
 
@@ -1740,11 +1789,15 @@ fn pack_displacement_geometry(
             displacement_display_lists.extend_from_slice(display_list);
             let display_list_size = u32::try_from(display_list.len()).unwrap();
 
+            BytecodeOp::SetFaceIndex {
+                face_index: *face_index,
+            }
+            .append_to(&mut displacement_byte_code);
             BytecodeOp::SetBaseTexture {
                 base_texture_id: packed_material.base_id,
             }
             .append_to(&mut displacement_byte_code);
-            if mode {
+            if *pass == DisplacementPass::WorldVertexTransition {
                 BytecodeOp::SetAuxTexture {
                     aux_texture_id: packed_material.aux_id.unwrap(),
                 }
@@ -1826,9 +1879,11 @@ fn pack_visibility(bsp: Bsp) -> Vec<u8> {
 
 fn pack_lightmaps(
     bsp: Bsp,
-    cluster_lightmaps: &HashMap<i16, ClusterLightmap>,
+    cluster_lightmaps: &HashMap<i16, Lightmap>,
+    displacement_lightmaps: &HashMap<u16, Lightmap>,
 ) -> (
-    Vec<LightmapClusterTableEntry>,
+    Vec<ClusterLightmapTableEntry>,
+    Vec<DisplacementLightmapTableEntry>,
     Vec<LightmapPatchTableEntry>,
     Vec<u8>,
 ) {
@@ -1837,116 +1892,207 @@ fn pack_lightmaps(
     let mut lightmap_data = Vec::new();
 
     let cluster_end_index = cluster_lightmaps.keys().copied().max().unwrap();
-    for cluster in 0..cluster_end_index {
-        let lightmap = match cluster_lightmaps.get(&cluster) {
+    for cluster_index in 0..cluster_end_index {
+        let lightmap = match cluster_lightmaps.get(&cluster_index) {
             Some(x) => x,
             None => continue,
         };
 
         let patch_table_start_index = u32::try_from(lightmap_patch_table.len()).unwrap();
-        for leaf in bsp.iter_worldspawn_leaves() {
-            if leaf.cluster() != cluster {
-                continue;
-            }
-
-            let mut lightmap_patches_by_data_offset = HashMap::new();
-            for face in bsp.iter_faces_from_leaf(leaf) {
-                if face.light_ofs == -1 || face.tex_info == -1 {
-                    continue;
-                }
-                let width = face.lightmap_texture_size_in_luxels[0] as usize + 1;
-                let height = face.lightmap_texture_size_in_luxels[1] as usize + 1;
-                let metadata = lightmap.metadata_by_data_offset[&face.light_ofs];
-                let tex_info = &bsp.tex_infos()[face.tex_info as usize];
-                let style_count: u8 = face
-                    .styles
-                    .iter()
-                    .map(|&x| if x != 255 { 1 } else { 0 })
-                    .sum();
-                assert!(style_count > 0);
-                let bump_light = (tex_info.flags & 0x800) != 0;
-
-                lightmap_patches_by_data_offset
-                    .entry(face.light_ofs)
-                    .or_insert_with(|| LightmapPatch {
-                        width: u8::try_from(width).unwrap(),
-                        height: u8::try_from(height).unwrap(),
-                        style_count,
-                        bump_light,
-                        luxel_offset: metadata.luxel_offset,
-                        is_flipped: metadata.is_flipped,
-                    });
-            }
-
-            let mut data_offsets: Vec<_> =
-                lightmap_patches_by_data_offset.keys().copied().collect();
-            data_offsets.sort_unstable();
-            for data_offset in data_offsets {
-                let data_start_offset = u32::try_from(lightmap_data.len()).unwrap();
-
-                let patch = &lightmap_patches_by_data_offset[&data_offset];
-                assert_eq!(patch.luxel_offset[0] % 4, 0);
-                assert_eq!(patch.luxel_offset[1] % 4, 0);
-                let patch_size = 4 * patch.width as usize * patch.height as usize;
-                let (oriented_width, oriented_height) = if patch.is_flipped {
-                    (patch.height, patch.width)
-                } else {
-                    (patch.width, patch.height)
-                };
-                let blocks_wide = ((oriented_width as usize + 3) / 4).max(1);
-                let blocks_high = ((oriented_height as usize + 3) / 4).max(1);
-
-                let angle_count = if patch.bump_light { 4 } else { 1 };
-                for style in 0..patch.style_count {
-                    // Only export the first angle, which is the omnidirectional lightmap sample.
-                    let angle = 0u8;
-
-                    // Higher indexed styles come first. Angles are in increasing index order.
-                    let patch_index =
-                        (angle_count * (patch.style_count - style - 1) + angle) as usize;
-                    let patch_base = data_offset as usize + patch_size * patch_index;
-
-                    // Traverse blocks in texture format order.
-                    for coarse_y in 0..blocks_high {
-                        for coarse_x in 0..blocks_wide {
-                            lightmap_data.extend_from_slice(
-                                &transcode_lightmap_patch_to_gamecube_cmpr_sub_block(
-                                    bsp,
-                                    patch,
-                                    patch_base,
-                                    4 * coarse_x,
-                                    4 * coarse_y,
-                                ),
-                            );
-                        }
-                    }
-                }
-                let data_end_offset = u32::try_from(lightmap_data.len()).unwrap();
-
-                lightmap_patch_table.push(LightmapPatchTableEntry {
-                    sub_block_x: (patch.luxel_offset[0] / 4) as u8,
-                    sub_block_y: (patch.luxel_offset[1] / 4) as u8,
-                    sub_blocks_wide: blocks_wide as u8,
-                    sub_blocks_high: blocks_high as u8,
-                    style_count: patch.style_count,
-                    _padding1: 0,
-                    _padding2: 0,
-                    data_start_offset,
-                    data_end_offset,
-                });
-            }
-        }
+        pack_cluster_lightmap_patches(
+            bsp,
+            cluster_index,
+            lightmap,
+            &mut lightmap_patch_table,
+            &mut lightmap_data,
+        );
         let patch_table_end_index = u32::try_from(lightmap_patch_table.len()).unwrap();
 
-        lightmap_cluster_table.push(LightmapClusterTableEntry {
-            width: lightmap.width as u16,
-            height: lightmap.height as u16,
-            patch_table_start_index,
-            patch_table_end_index,
+        lightmap_cluster_table.push(ClusterLightmapTableEntry {
+            common: CommonLightmapTableEntry {
+                width: lightmap.width as u16,
+                height: lightmap.height as u16,
+                patch_table_start_index,
+                patch_table_end_index,
+            },
         });
     }
 
-    (lightmap_cluster_table, lightmap_patch_table, lightmap_data)
+    let lightmap_displacement_table = pack_displacement_lightmap_patches(
+        bsp,
+        displacement_lightmaps,
+        &mut lightmap_patch_table,
+        &mut lightmap_data,
+    );
+
+    (
+        lightmap_cluster_table,
+        lightmap_displacement_table,
+        lightmap_patch_table,
+        lightmap_data,
+    )
+}
+
+fn pack_cluster_lightmap_patches(
+    bsp: Bsp,
+    cluster_index: i16,
+    lightmap: &Lightmap,
+    lightmap_patch_table: &mut Vec<LightmapPatchTableEntry>,
+    lightmap_data: &mut Vec<u8>,
+) {
+    for leaf in bsp.iter_worldspawn_leaves() {
+        if leaf.cluster() != cluster_index {
+            continue;
+        }
+
+        let mut lightmap_patches_by_data_offset = HashMap::new();
+        for face in bsp.iter_faces_from_leaf(leaf) {
+            if face.light_ofs == -1 || face.tex_info == -1 {
+                continue;
+            }
+            lightmap_patches_by_data_offset
+                .entry(face.light_ofs)
+                .or_insert(lightmap_patch_from_face(
+                    bsp,
+                    face,
+                    lightmap.metadata_by_data_offset[&face.light_ofs],
+                ));
+        }
+
+        pack_lightmap_patches(
+            bsp,
+            lightmap_patches_by_data_offset,
+            lightmap_patch_table,
+            lightmap_data,
+        );
+    }
+}
+
+fn pack_displacement_lightmap_patches(
+    bsp: Bsp,
+    displacement_lightmaps: &HashMap<u16, Lightmap>,
+    lightmap_patch_table: &mut Vec<LightmapPatchTableEntry>,
+    lightmap_data: &mut Vec<u8>,
+) -> Vec<DisplacementLightmapTableEntry> {
+    let mut lightmap_displacement_table = Vec::new();
+    for disp_info in bsp.disp_infos() {
+        let lightmap = match displacement_lightmaps.get(&disp_info.map_face) {
+            Some(lightmap) => lightmap,
+            None => continue,
+        };
+        let face = &bsp.faces()[disp_info.map_face as usize];
+
+        let patch_table_start_index = u32::try_from(lightmap_patch_table.len()).unwrap();
+        let mut lightmap_patches_by_data_offset = HashMap::new();
+        let metadata = lightmap.metadata_by_data_offset[&face.light_ofs];
+        lightmap_patches_by_data_offset
+            .entry(face.light_ofs)
+            .or_insert(lightmap_patch_from_face(bsp, face, metadata));
+        pack_lightmap_patches(
+            bsp,
+            lightmap_patches_by_data_offset,
+            lightmap_patch_table,
+            lightmap_data,
+        );
+        let patch_table_end_index = u32::try_from(lightmap_patch_table.len()).unwrap();
+
+        lightmap_displacement_table.push(DisplacementLightmapTableEntry {
+            face_index: disp_info.map_face,
+            _padding: 0,
+            common: CommonLightmapTableEntry {
+                width: lightmap.width as u16,
+                height: lightmap.height as u16,
+                patch_table_start_index,
+                patch_table_end_index,
+            },
+        });
+    }
+    lightmap_displacement_table
+}
+
+fn lightmap_patch_from_face(bsp: Bsp, face: &Face, metadata: LightmapMetadata) -> LightmapPatch {
+    let width = face.lightmap_texture_size_in_luxels[0] as usize + 1;
+    let height = face.lightmap_texture_size_in_luxels[1] as usize + 1;
+    let tex_info = &bsp.tex_infos()[face.tex_info as usize];
+    let style_count: u8 = face
+        .styles
+        .iter()
+        .map(|&x| if x != 255 { 1 } else { 0 })
+        .sum();
+    assert!(style_count > 0);
+    let bump_light = (tex_info.flags & 0x800) != 0;
+
+    LightmapPatch {
+        width: u8::try_from(width).unwrap(),
+        height: u8::try_from(height).unwrap(),
+        style_count,
+        bump_light,
+        luxel_offset: metadata.luxel_offset,
+        is_flipped: metadata.is_flipped,
+    }
+}
+
+fn pack_lightmap_patches(
+    bsp: Bsp,
+    lightmap_patches_by_data_offset: HashMap<i32, LightmapPatch>,
+    lightmap_patch_table: &mut Vec<LightmapPatchTableEntry>,
+    lightmap_data: &mut Vec<u8>,
+) {
+    let mut data_offsets: Vec<_> = lightmap_patches_by_data_offset.keys().copied().collect();
+    data_offsets.sort_unstable();
+    for data_offset in data_offsets {
+        let data_start_offset = u32::try_from(lightmap_data.len()).unwrap();
+
+        let patch = &lightmap_patches_by_data_offset[&data_offset];
+        assert_eq!(patch.luxel_offset[0] % 4, 0);
+        assert_eq!(patch.luxel_offset[1] % 4, 0);
+        let patch_size = 4 * patch.width as usize * patch.height as usize;
+        let (oriented_width, oriented_height) = if patch.is_flipped {
+            (patch.height, patch.width)
+        } else {
+            (patch.width, patch.height)
+        };
+        let blocks_wide = ((oriented_width as usize + 3) / 4).max(1);
+        let blocks_high = ((oriented_height as usize + 3) / 4).max(1);
+
+        let angle_count = if patch.bump_light { 4 } else { 1 };
+        for style in 0..patch.style_count {
+            // Only export the first angle, which is the omnidirectional lightmap sample.
+            let angle = 0u8;
+
+            // Higher indexed styles come first. Angles are in increasing index order.
+            let patch_index = (angle_count * (patch.style_count - style - 1) + angle) as usize;
+            let patch_base = data_offset as usize + patch_size * patch_index;
+
+            // Traverse blocks in texture format order.
+            for coarse_y in 0..blocks_high {
+                for coarse_x in 0..blocks_wide {
+                    lightmap_data.extend_from_slice(
+                        &transcode_lightmap_patch_to_gamecube_cmpr_sub_block(
+                            bsp,
+                            patch,
+                            patch_base,
+                            4 * coarse_x,
+                            4 * coarse_y,
+                        ),
+                    );
+                }
+            }
+        }
+        let data_end_offset = u32::try_from(lightmap_data.len()).unwrap();
+
+        lightmap_patch_table.push(LightmapPatchTableEntry {
+            sub_block_x: (patch.luxel_offset[0] / 4) as u8,
+            sub_block_y: (patch.luxel_offset[1] / 4) as u8,
+            sub_blocks_wide: blocks_wide as u8,
+            sub_blocks_high: blocks_high as u8,
+            style_count: patch.style_count,
+            _padding1: 0,
+            _padding2: 0,
+            data_start_offset,
+            data_end_offset,
+        });
+    }
 }
 
 fn transcode_lightmap_patch_to_gamecube_cmpr_sub_block(

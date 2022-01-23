@@ -83,7 +83,8 @@ pub struct OwnedMapData {
     pub texture_table: Vec<TextureTableEntry>,
     pub texture_data: Vec<u8>,
 
-    pub lightmap_cluster_table: Vec<LightmapClusterTableEntry>,
+    pub lightmap_cluster_table: Vec<ClusterLightmapTableEntry>,
+    pub lightmap_displacement_table: Vec<DisplacementLightmapTableEntry>,
     pub lightmap_patch_table: Vec<LightmapPatchTableEntry>,
     pub lightmap_data: Vec<u8>,
 
@@ -130,6 +131,7 @@ impl<W: Seek + Write> WriteTo<W> for OwnedMapData {
         write_slice_header!(texture_table);
         write_slice_header!(texture_data);
         write_slice_header!(lightmap_cluster_table);
+        write_slice_header!(lightmap_displacement_table);
         write_slice_header!(lightmap_patch_table);
         write_slice_header!(lightmap_data);
         write_slice_header!(displacement_position_data);
@@ -195,6 +197,7 @@ impl<W: Seek + Write> WriteTo<W> for OwnedMapData {
         write_slice_data!(texture_table);
         write_slice_bytes!(texture_data, 32);
         write_slice_data!(lightmap_cluster_table);
+        write_slice_data!(lightmap_displacement_table);
         write_slice_data!(lightmap_patch_table);
         write_slice_bytes!(lightmap_data);
         write_slice_bytes!(displacement_position_data);
@@ -239,6 +242,8 @@ struct PackedMapData {
 
     lightmap_cluster_table_offset: usize,
     lightmap_cluster_table_len: usize,
+    lightmap_displacement_table_offset: usize,
+    lightmap_displacement_table_len: usize,
     lightmap_patch_table_offset: usize,
     lightmap_patch_table_len: usize,
     lightmap_data_offset: usize,
@@ -372,12 +377,22 @@ impl<Data: Deref<Target = [u8]>> MapData<Data> {
         unsafe { self.cast_slice(packed.texture_data_offset, packed.texture_data_len) }
     }
 
-    pub fn lightmap_cluster_table(&self) -> &[LightmapClusterTableEntry] {
+    pub fn lightmap_cluster_table(&self) -> &[ClusterLightmapTableEntry] {
         let packed = self.packed();
         unsafe {
             self.cast_slice(
                 packed.lightmap_cluster_table_offset,
                 packed.lightmap_cluster_table_len,
+            )
+        }
+    }
+
+    pub fn lightmap_displacement_table(&self) -> &[DisplacementLightmapTableEntry] {
+        let packed = self.packed();
+        unsafe {
+            self.cast_slice(
+                packed.lightmap_displacement_table_offset,
+                packed.lightmap_displacement_table_len,
             )
         }
     }
@@ -461,7 +476,7 @@ impl<Data: Deref<Target = [u8]>> MapData<Data> {
 #[derive(Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 pub struct ClusterGeometryTableEntry {
-    pub byte_code_index_ranges: [[u32; 2]; 18],
+    pub byte_code_index_ranges: [[u32; 2]; 17],
 }
 
 impl ClusterGeometryTableEntry {
@@ -558,7 +573,7 @@ impl<W: Seek + Write> WriteTo<W> for TextureTableEntry {
 
 #[derive(Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
-pub struct LightmapClusterTableEntry {
+pub struct CommonLightmapTableEntry {
     pub width: u16,
     pub height: u16,
     pub patch_table_start_index: u32,
@@ -566,12 +581,44 @@ pub struct LightmapClusterTableEntry {
 }
 
 #[cfg(feature = "std")]
-impl<W: Seek + Write> WriteTo<W> for LightmapClusterTableEntry {
+impl<W: Seek + Write> WriteTo<W> for CommonLightmapTableEntry {
     fn write_to(&self, w: &mut W) -> io::Result<()> {
         w.write_u16::<BigEndian>(self.width)?;
         w.write_u16::<BigEndian>(self.height)?;
         w.write_u32::<BigEndian>(self.patch_table_start_index)?;
         w.write_u32::<BigEndian>(self.patch_table_end_index)?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+pub struct ClusterLightmapTableEntry {
+    pub common: CommonLightmapTableEntry,
+}
+
+#[cfg(feature = "std")]
+impl<W: Seek + Write> WriteTo<W> for ClusterLightmapTableEntry {
+    fn write_to(&self, w: &mut W) -> io::Result<()> {
+        self.common.write_to(w)?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+pub struct DisplacementLightmapTableEntry {
+    pub face_index: u16,
+    pub _padding: u16,
+    pub common: CommonLightmapTableEntry,
+}
+
+#[cfg(feature = "std")]
+impl<W: Seek + Write> WriteTo<W> for DisplacementLightmapTableEntry {
+    fn write_to(&self, w: &mut W) -> io::Result<()> {
+        w.write_u16::<BigEndian>(self.face_index)?;
+        w.write_u16::<BigEndian>(self._padding)?;
+        self.common.write_to(w)?;
         Ok(())
     }
 }

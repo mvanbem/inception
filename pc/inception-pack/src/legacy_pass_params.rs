@@ -14,7 +14,6 @@ pub enum Pass {
         env_map: Option<PassEnvMap>,
     },
     UnlitGeneric,
-    WorldVertexTransition,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -29,11 +28,7 @@ pub struct PassEnvMap {
 }
 
 impl Pass {
-    pub fn from_material(
-        material: &Vmt,
-        packed_material: &PackedMaterial,
-        for_displacement: bool,
-    ) -> Self {
+    pub fn from_material(material: &Vmt, packed_material: &PackedMaterial) -> Self {
         match material.shader() {
             Shader::LightmappedGeneric(LightmappedGeneric {
                 alpha_test,
@@ -52,10 +47,7 @@ impl Pass {
                     .map(|env_map| PassEnvMap { mask: env_map.mask }),
             },
             Shader::UnlitGeneric(UnlitGeneric { .. }) => Self::UnlitGeneric,
-            Shader::WorldVertexTransition(WorldVertexTransition { .. }) if for_displacement => {
-                Self::WorldVertexTransition
-            }
-            Shader::WorldVertexTransition(WorldVertexTransition { .. }) if !for_displacement => {
+            Shader::WorldVertexTransition(WorldVertexTransition { .. }) => {
                 Self::LightmappedGeneric {
                     alpha: PassAlpha::OpaqueOrAlphaTest,
                     base_alpha: packed_material.base_alpha,
@@ -200,9 +192,22 @@ impl Pass {
 
             Pass::UnlitGeneric => 16,
 
-            Pass::WorldVertexTransition => 17,
-
             _ => panic!("unexpected pass: {:?}", self),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum DisplacementPass {
+    LightmappedGeneric,
+    WorldVertexTransition,
+}
+
+impl DisplacementPass {
+    pub fn as_mode(self) -> u8 {
+        match self {
+            Self::LightmappedGeneric => 0,
+            Self::WorldVertexTransition => 1,
         }
     }
 }

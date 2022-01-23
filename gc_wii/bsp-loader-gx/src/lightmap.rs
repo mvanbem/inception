@@ -1,7 +1,7 @@
 use core::mem::zeroed;
 use core::ops::Deref;
 
-use inception_render_common::map_data::MapData;
+use inception_render_common::map_data::{CommonLightmapTableEntry, MapData};
 use ogc_sys::*;
 
 use crate::memalign::Memalign;
@@ -12,10 +12,9 @@ pub struct Lightmap {
 }
 
 impl Lightmap {
-    pub fn new<Data: Deref<Target = [u8]>>(map_data: &MapData<Data>, cluster_index: usize) -> Self {
-        let cluster = &map_data.lightmap_cluster_table()[cluster_index];
-        let coarse_width = ((cluster.width + 3) / 4).max(1);
-        let coarse_height = ((cluster.height + 3) / 4).max(1);
+    pub fn new(entry: &CommonLightmapTableEntry) -> Self {
+        let coarse_width = ((entry.width + 3) / 4).max(1);
+        let coarse_height = ((entry.height + 3) / 4).max(1);
         let physical_width = 4 * coarse_width;
         let physical_height = 4 * coarse_height;
 
@@ -45,14 +44,18 @@ impl Lightmap {
         }
     }
 
-    pub fn update<Data: Deref<Target = [u8]>>(&mut self, map_data: &MapData<Data>, cluster_index: usize, style: usize) {
+    pub fn update<Data: Deref<Target = [u8]>>(
+        &mut self,
+        map_data: &MapData<Data>,
+        entry: &CommonLightmapTableEntry,
+        style: usize,
+    ) {
         assert!(style < 4);
 
-        let cluster = &map_data.lightmap_cluster_table()[cluster_index];
-        let blocks_wide = ((cluster.width + 7) / 8).max(1) as usize;
+        let blocks_wide = ((entry.width + 7) / 8).max(1) as usize;
 
         let patches = &map_data.lightmap_patch_table()
-            [cluster.patch_table_start_index as usize..cluster.patch_table_end_index as usize];
+            [entry.patch_table_start_index as usize..entry.patch_table_end_index as usize];
         for patch in patches {
             let style = style.min(patch.style_count as usize - 1);
 

@@ -458,16 +458,11 @@ impl<'a> ShaderBuilder<'a> for WorldVertexTransitionBuilder {
                 }
                 "$basetexturetransform" => {
                     self.base_texture_transform =
-                        parse_texture_transform(value).context("$basetexturetransform")?;
-                    println!("Got $basetexturetransform: {}", self.base_texture_transform);
+                        parse_texture_transform(value).context("$basetexturetransform")?
                 }
                 "$basetexturetransform2" => {
                     self.base_texture_transform2 =
-                        parse_texture_transform(value).context("$basetexturetransform2")?;
-                    println!(
-                        "Got $basetexturetransform2: {}",
-                        self.base_texture_transform2,
-                    );
+                        parse_texture_transform(value).context("$basetexturetransform2")?
                 }
                 x if x.starts_with("%") => (),
                 key => eprintln!(

@@ -162,7 +162,8 @@ while true; do
             exit 0
             ;;
         pack_map)
-            subcommand_pack_map
+            shift
+            subcommand_pack_map "$@"
             exit 0
             ;;
         pack_all_maps)

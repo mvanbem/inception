@@ -17,6 +17,7 @@ use core::ops::Deref;
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
 
+use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -233,10 +234,16 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
 
             // Set up texture objects for cluster lightmaps.
             let mut cluster_lightmaps = Vec::new();
-            for cluster_index in 0..map_data.lightmap_cluster_table().len() {
-                let mut lightmap = Lightmap::new(&map_data, cluster_index);
-                lightmap.update(&map_data, cluster_index, 0);
+            for entry in map_data.lightmap_cluster_table() {
+                let mut lightmap = Lightmap::new(&entry.common);
+                lightmap.update(&map_data, &entry.common, 0);
                 cluster_lightmaps.push(lightmap);
+            }
+            let mut displacement_lightmaps = BTreeMap::new();
+            for entry in map_data.lightmap_displacement_table() {
+                let mut lightmap = Lightmap::new(&entry.common);
+                lightmap.update(&map_data, &entry.common, 0);
+                displacement_lightmaps.insert(entry.face_index, lightmap);
             }
             GX_InvalidateTexAll();
 
@@ -370,7 +377,12 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
                 }
 
                 let game_logic_elapsed = Timer::time(|| {
-                    do_game_logic(&map_data, &mut game_state, &mut cluster_lightmaps);
+                    do_game_logic(
+                        &map_data,
+                        &mut game_state,
+                        &mut cluster_lightmaps,
+                        &mut displacement_lightmaps,
+                    );
                 });
                 let (main_draw_elapsed, view_cluster) = Timer::time_with_result(|| {
                     prepare_main_draw(width, height, &game_state);
@@ -380,6 +392,7 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
                         visibility,
                         &map_texobjs,
                         &cluster_lightmaps,
+                        &displacement_lightmaps,
                     )
                 });
                 let copy_to_texture_elapsed = Timer::time(|| {
@@ -467,6 +480,7 @@ fn do_game_logic<Data: Deref<Target = [u8]>>(
     map_data: &MapData<Data>,
     game_state: &mut GameState,
     cluster_lightmaps: &mut [Lightmap],
+    displacement_lightmaps: &mut BTreeMap<u16, Lightmap>,
 ) {
     unsafe {
         PAD_ScanPads();
@@ -518,7 +532,14 @@ fn do_game_logic<Data: Deref<Target = [u8]>>(
         if game_state.lightmap_style != new_lightmap_style {
             game_state.lightmap_style = new_lightmap_style;
             for (cluster_index, lightmap) in cluster_lightmaps.iter_mut().enumerate() {
-                lightmap.update(map_data, cluster_index, game_state.lightmap_style);
+                let entry = &map_data.lightmap_cluster_table()[cluster_index];
+                lightmap.update(map_data, &entry.common, game_state.lightmap_style);
+            }
+            for entry in map_data.lightmap_displacement_table() {
+                displacement_lightmaps
+                    .get_mut(&entry.face_index)
+                    .unwrap()
+                    .update(map_data, &entry.common, game_state.lightmap_style);
             }
         }
     }
@@ -647,9 +668,10 @@ fn do_main_draw<Data: Deref<Target = [u8]>>(
     visibility: Visibility,
     map_texobjs: &[GXTexObj],
     cluster_lightmaps: &[Lightmap],
+    displacement_lightmaps: &BTreeMap<u16, Lightmap>,
 ) -> i16 {
     draw_skybox(game_state, map_texobjs);
-    draw_displacements(map_data, game_state, map_texobjs);
+    draw_displacements(map_data, game_state, displacement_lightmaps, map_texobjs);
     let view_cluster = draw_visible_clusters(
         map_data,
         game_state,
@@ -762,11 +784,12 @@ fn draw_visible_clusters<Data: Deref<Target = [u8]>>(
                             0,
                         );
                     }
+                    BytecodeOp::SetFaceIndex { .. } => unreachable!(),
                 }
             }
         };
 
-        for pass in 0..18 {
+        for pass in 0..17 {
             if pass < 16 {
                 match pass & 0x7 {
                     0 => LIGHTMAPPED_SHADER.apply(),
@@ -777,10 +800,8 @@ fn draw_visible_clusters<Data: Deref<Target = [u8]>>(
                     7 => LIGHTMAPPED_BAAA_ENV_EMAI_SHADER.apply(),
                     _ => unreachable!(),
                 }
-                // } else if pass == 16 {
-                //     UNLIT_GENERIC_SHADER.apply();
-                // } else if pass == 17 {
-                //     WORLD_VERTEX_TRANSITION_SHADER.apply();
+            } else if pass == 16 {
+                UNLIT_GENERIC_SHADER.apply();
             }
 
             let blend = pass < 16 && (pass & 8) == 8;
@@ -1005,18 +1026,21 @@ fn draw_skybox(game_state: &GameState, map_texobjs: &[GXTexObj]) {
 fn draw_displacements<Data: Deref<Target = [u8]>>(
     map_data: &MapData<Data>,
     game_state: &GameState,
+    displacement_lightmaps: &BTreeMap<u16, Lightmap>,
     map_texobjs: &[GXTexObj],
 ) {
     unsafe {
         GX_ClearVtxDesc();
         GX_SetVtxDesc(GX_VA_POS as u8, GX_INDEX16 as u8);
         GX_SetVtxDesc(GX_VA_CLR0 as u8, GX_INDEX16 as u8);
-        GX_SetVtxDesc(GX_VA_TEX0 as u8, GX_INDEX16 as u8);
+        GX_SetVtxDesc(GX_VA_TEX0 as u8, GX_DIRECT as u8);
         GX_SetVtxDesc(GX_VA_TEX1 as u8, GX_INDEX16 as u8);
+        GX_SetVtxDesc(GX_VA_TEX2 as u8, GX_INDEX16 as u8);
         GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
         GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_CLR0, GX_CLR_RGB, GX_RGB8, 0);
-        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
-        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX1, GX_TEX_ST, GX_F32, 0);
+        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX0, GX_TEX_ST, GX_U16, 15);
+        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX1, GX_TEX_ST, GX_U16, 8);
+        GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX2, GX_TEX_ST, GX_U16, 8);
         GX_SetArray(
             GX_VA_POS,
             map_data.displacement_position_data().as_ptr() as *mut _,
@@ -1028,14 +1052,14 @@ fn draw_displacements<Data: Deref<Target = [u8]>>(
             3,
         );
         GX_SetArray(
-            GX_VA_TEX0,
-            map_data.displacement_texture_coordinate_data().as_ptr() as *mut _,
-            8,
-        );
-        GX_SetArray(
             GX_VA_TEX1,
             map_data.displacement_texture_coordinate_data().as_ptr() as *mut _,
-            8,
+            4,
+        );
+        GX_SetArray(
+            GX_VA_TEX2,
+            map_data.displacement_texture_coordinate_data().as_ptr() as *mut _,
+            4,
         );
         GX_InvVtxCache();
 
@@ -1047,11 +1071,15 @@ fn draw_displacements<Data: Deref<Target = [u8]>>(
         let displacement_byte_code = map_data.displacement_byte_code();
         let displacement_display_lists = map_data.displacement_display_lists();
 
+        let mut prev_mode = None;
         for (mode, entry) in map_data.displacement_table().iter().enumerate() {
-            match mode {
-                0 => UNLIT_GENERIC_SHADER.apply(),
-                1 => WORLD_VERTEX_TRANSITION_SHADER.apply(),
-                _ => unreachable!(),
+            if prev_mode != Some(mode) {
+                prev_mode = Some(mode);
+                match mode {
+                    0 => LIGHTMAPPED_SHADER.apply(),
+                    1 => WORLD_VERTEX_TRANSITION_SHADER.apply(),
+                    _ => unreachable!(),
+                }
             }
 
             for op in BytecodeReader::new(
@@ -1081,6 +1109,12 @@ fn draw_displacements<Data: Deref<Target = [u8]>>(
                             &map_texobjs[aux_texture_id as usize] as *const GXTexObj
                                 as *mut GXTexObj,
                             GX_TEXMAP2 as u8,
+                        );
+                    }
+                    BytecodeOp::SetFaceIndex { face_index } => {
+                        GX_LoadTexObj(
+                            displacement_lightmaps[&face_index].texobj(),
+                            GX_TEXMAP0 as u8,
                         );
                     }
                     _ => unreachable!(),
