@@ -223,6 +223,7 @@ impl TextureBuf {
 fn encode_dxt1_to_gx_tf_cmpr(width: usize, height: usize, src_data: &[u8]) -> TextureBuf {
     let blocks_wide = GxTfCmpr::METRICS.blocks_wide(width);
     let blocks_high = GxTfCmpr::METRICS.blocks_high(height);
+    let dxt1_blocks_wide = Dxt1::METRICS.blocks_wide(width);
     let mut data =
         Vec::with_capacity(GxTfCmpr::METRICS.encoded_block_size * blocks_wide * blocks_high);
     for coarse_y in 0..blocks_high {
@@ -230,7 +231,7 @@ fn encode_dxt1_to_gx_tf_cmpr(width: usize, height: usize, src_data: &[u8]) -> Te
             for fine_y in 0..2 {
                 for fine_x in 0..2 {
                     let offset =
-                        8 * (2 * blocks_wide * (2 * coarse_y + fine_y) + 2 * coarse_x + fine_x);
+                        8 * (dxt1_blocks_wide * (2 * coarse_y + fine_y) + 2 * coarse_x + fine_x);
                     match src_data.get(offset..offset + 8) {
                         Some(src_block) => data.extend_from_slice(&permute_dxt1_for_gamecube(
                             src_block.try_into().unwrap(),
