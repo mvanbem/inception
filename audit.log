@@ -1,6 +1,11 @@
 WARNING: Skipping ComposeIntensityAlpha for textures with different dimensions: materials/glass/glasswindow031b_mask.vtf, materials/glass/glasswindow031b.vtf
+WARNING: Skipping shader in process_lit_textured_face: cable
 WARNING: Skipping shader in process_lit_textured_face: decalbasetimeslightmapalphablendselfillum
+WARNING: Skipping shader in process_lit_textured_face: unlittwotexture
+WARNING: Skipping shader in process_lit_textured_face: vertexlitgeneric
 WARNING: Skipping shader in process_lit_textured_face: water
+WARNING: Texture coord clamped
+WARNING: Unexpected UnlitGeneric object proxies
 WARNING: Unexpected WorldVertexTransition object lightmappedgeneric_dx9
 WARNING: Unexpected WorldVertexTransition object worldvertextransition_dx9
 WARNING: Unimplemented $envmapcontrast None
@@ -27,21 +32,29 @@ WARNING: Unimplemented LightmappedGeneric key $nomip
 WARNING: Unimplemented LightmappedGeneric key $normalmapalpha
 WARNING: Unimplemented LightmappedGeneric key $vertexalpha
 WARNING: Unimplemented LightmappedGeneric key $vertexcolor
+WARNING: Unimplemented LightmappedGeneric key srgb?$basetexture
 WARNING: Unimplemented material proxies
+WARNING: Unimplemented shader cable
 WARNING: Unimplemented shader decalbasetimeslightmapalphablendselfillum
+WARNING: Unimplemented shader unlittwotexture
+WARNING: Unimplemented shader vertexlitgeneric
 WARNING: Unimplemented shader water
 WARNING: Unimplemented Sky key $basetexturetransform
 WARNING: Unimplemented Sky key $hdrbaseTexture
 WARNING: Unimplemented Sky key $hdrcompressedTexture
 WARNING: Unimplemented Sky key $ignorez
 WARNING: Unimplemented Sky key $nofog
+WARNING: Unimplemented UnlitGeneric key $alpha
 WARNING: Unimplemented UnlitGeneric key $basetexturetransform
+WARNING: Unimplemented UnlitGeneric key $color
 WARNING: Unimplemented UnlitGeneric key $ignorez
+WARNING: Unimplemented UnlitGeneric key $model
+WARNING: Unimplemented UnlitGeneric key $nocull
 WARNING: Unimplemented UnlitGeneric key $nodecal
 WARNING: Unimplemented UnlitGeneric key $nofog
 WARNING: Unimplemented UnlitGeneric key $reflectivity
-WARNING: Unimplemented UnlitGeneric key $selfillum
 WARNING: Unimplemented UnlitGeneric key $surfaceprop
+WARNING: Unimplemented UnlitGeneric key $translucent
 WARNING: Unimplemented WorldVertexTransition key $bumpbasetexture2withbumpmap
 WARNING: Unimplemented WorldVertexTransition key $bumpmap
 WARNING: Unimplemented WorldVertexTransition key $bumpmap2

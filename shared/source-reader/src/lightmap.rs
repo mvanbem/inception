@@ -96,18 +96,18 @@ pub fn build_lightmaps(bsp: Bsp) -> Result<(HashMap<i16, Lightmap>, HashMap<u16,
             &bsp.faces()[disp_info.map_face as usize],
             &mut lightmap_builder,
         );
-        if !lightmap_builder.patch_ids_by_data_offset.is_empty() {
-            displacement_lightmap_builders.insert(disp_info.map_face, lightmap_builder);
-        }
+        displacement_lightmap_builders.insert(disp_info.map_face, lightmap_builder);
     }
 
     // Bake texture atlases.
     let cluster_lightmaps: HashMap<i16, Lightmap> = cluster_lightmap_builders
         .into_iter()
+        .filter(|(_, builder)| !builder.patch_ids_by_data_offset.is_empty())
         .map(|(cluster, builder)| (cluster, builder.build()))
         .collect();
     let displacement_lightmaps: HashMap<u16, Lightmap> = displacement_lightmap_builders
         .into_iter()
+        .filter(|(_, builder)| !builder.patch_ids_by_data_offset.is_empty())
         .map(|(face_index, builder)| (face_index, builder.build()))
         .collect();
 

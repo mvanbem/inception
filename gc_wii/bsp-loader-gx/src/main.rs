@@ -36,6 +36,7 @@ use crate::shaders::lightmapped_baaa_env::LIGHTMAPPED_BAAA_ENV_SHADER;
 use crate::shaders::lightmapped_baaa_env_emai::LIGHTMAPPED_BAAA_ENV_EMAI_SHADER;
 use crate::shaders::lightmapped_env::LIGHTMAPPED_ENV_SHADER;
 use crate::shaders::lightmapped_env_emai::LIGHTMAPPED_ENV_EMAI_SHADER;
+use crate::shaders::self_illum::SELF_ILLUM_SHADER;
 use crate::shaders::unlit_generic::UNLIT_GENERIC_SHADER;
 use crate::shaders::world_vertex_transition::WORLD_VERTEX_TRANSITION_SHADER;
 use crate::visibility::{ClusterIndex, Visibility};
@@ -789,7 +790,7 @@ fn draw_visible_clusters<Data: Deref<Target = [u8]>>(
             }
         };
 
-        for pass in 0..17 {
+        for pass in 0..18 {
             if pass < 16 {
                 match pass & 0x7 {
                     0 => LIGHTMAPPED_SHADER.apply(),
@@ -802,6 +803,8 @@ fn draw_visible_clusters<Data: Deref<Target = [u8]>>(
                 }
             } else if pass == 16 {
                 UNLIT_GENERIC_SHADER.apply();
+            } else if pass == 17 {
+                SELF_ILLUM_SHADER.apply();
             }
 
             let blend = pass < 16 && (pass & 8) == 8;

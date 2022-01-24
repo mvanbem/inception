@@ -14,6 +14,7 @@ pub enum Pass {
         env_map: Option<PassEnvMap>,
     },
     UnlitGeneric,
+    SelfIllum,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -32,13 +33,16 @@ impl Pass {
         match material.shader() {
             Shader::LightmappedGeneric(LightmappedGeneric {
                 alpha_test,
+                self_illum: false,
                 translucent,
                 ..
             }) => Self::LightmappedGeneric {
                 alpha: match (*alpha_test, *translucent) {
                     (_, false) => PassAlpha::OpaqueOrAlphaTest,
                     (false, true) => PassAlpha::AlphaBlend,
-                    (true, true) => panic!("material is both alpha-tested and alpha-blended"),
+                    (true, true) => {
+                        panic!("material is both alpha-tested and alpha-blended")
+                    }
                 },
                 base_alpha: packed_material.base_alpha,
                 env_map: packed_material
@@ -46,7 +50,19 @@ impl Pass {
                     .as_ref()
                     .map(|env_map| PassEnvMap { mask: env_map.mask }),
             },
-            Shader::UnlitGeneric(UnlitGeneric { .. }) => Self::UnlitGeneric,
+
+            Shader::LightmappedGeneric(LightmappedGeneric {
+                self_illum: true, ..
+            }) => Self::SelfIllum,
+
+            Shader::UnlitGeneric(UnlitGeneric {
+                self_illum: false, ..
+            }) => Self::UnlitGeneric,
+
+            Shader::UnlitGeneric(UnlitGeneric {
+                self_illum: true, ..
+            }) => Self::SelfIllum,
+
             Shader::WorldVertexTransition(WorldVertexTransition { .. }) => {
                 Self::LightmappedGeneric {
                     alpha: PassAlpha::OpaqueOrAlphaTest,
@@ -57,6 +73,7 @@ impl Pass {
                         .map(|env_map| PassEnvMap { mask: env_map.mask }),
                 }
             }
+
             shader => panic!("unexpected shader for Pass: {:?}", shader.name()),
         }
     }
@@ -191,6 +208,8 @@ impl Pass {
             } => 15,
 
             Pass::UnlitGeneric => 16,
+
+            Pass::SelfIllum => 17,
 
             _ => panic!("unexpected pass: {:?}", self),
         }

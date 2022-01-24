@@ -70,6 +70,7 @@ impl PackedMaterial {
                 env_map_mask_path,
                 env_map_path,
                 normal_map_alpha_env_map_mask,
+                self_illum: false,
                 ..
             }) => {
                 let base_texture = asset_loader.get_texture(base_texture_path)?;
@@ -206,7 +207,30 @@ impl PackedMaterial {
                 })
             }
 
-            Shader::UnlitGeneric(UnlitGeneric { base_texture_path }) => {
+            Shader::LightmappedGeneric(LightmappedGeneric {
+                base_texture_path,
+                self_illum: true,
+                ..
+            }) => {
+                let base_id = ids.get(&BorrowedTextureKey::EncodeAsIs {
+                    texture_path: base_texture_path,
+                });
+                let aux_id = Some(ids.get(&BorrowedTextureKey::AlphaToIntensity {
+                    texture_path: base_texture_path,
+                }));
+
+                Some(Self {
+                    base_id,
+                    aux_id,
+                    base_alpha: PackedMaterialBaseAlpha::AuxTextureAlpha,
+                    env_map: None,
+                })
+            }
+
+            Shader::UnlitGeneric(UnlitGeneric {
+                base_texture_path,
+                self_illum: false,
+            }) => {
                 let base_id = ids.get(&BorrowedTextureKey::EncodeAsIs {
                     texture_path: base_texture_path,
                 });
@@ -215,6 +239,25 @@ impl PackedMaterial {
                     base_id,
                     aux_id: None,
                     base_alpha: PackedMaterialBaseAlpha::BaseTextureAlpha,
+                    env_map: None,
+                })
+            }
+
+            Shader::UnlitGeneric(UnlitGeneric {
+                base_texture_path,
+                self_illum: true,
+            }) => {
+                let base_id = ids.get(&BorrowedTextureKey::EncodeAsIs {
+                    texture_path: base_texture_path,
+                });
+                let aux_id = Some(ids.get(&BorrowedTextureKey::AlphaToIntensity {
+                    texture_path: base_texture_path,
+                }));
+
+                Some(Self {
+                    base_id,
+                    aux_id,
+                    base_alpha: PackedMaterialBaseAlpha::AuxTextureAlpha,
                     env_map: None,
                 })
             }

@@ -1,5 +1,5 @@
 use crate::bsp::{Bsp, Face, TexInfo};
-use crate::lightmap::LightmapMetadata;
+use crate::lightmap::Lightmap;
 
 #[derive(Clone, Copy)]
 pub struct Vertex {
@@ -11,8 +11,7 @@ pub struct Vertex {
 
 pub fn convert_vertex(
     bsp: Bsp,
-    (lightmap_width, lightmap_height): (usize, usize),
-    lightmap_metadata: &LightmapMetadata,
+    lightmap: Option<&Lightmap>,
     face: &Face,
     tex_info: &TexInfo,
     vertex_index: usize,
@@ -22,25 +21,33 @@ pub fn convert_vertex(
 
     let normal = [plane.normal[0], plane.normal[1], plane.normal[2]];
 
-    let patch_s = tex_info.lightmap_vecs[0][0] * vertex.x
-        + tex_info.lightmap_vecs[0][1] * vertex.y
-        + tex_info.lightmap_vecs[0][2] * vertex.z
-        + tex_info.lightmap_vecs[0][3]
-        - face.lightmap_texture_mins_in_luxels[0] as f32;
-    let patch_t = tex_info.lightmap_vecs[1][0] * vertex.x
-        + tex_info.lightmap_vecs[1][1] * vertex.y
-        + tex_info.lightmap_vecs[1][2] * vertex.z
-        + tex_info.lightmap_vecs[1][3]
-        - face.lightmap_texture_mins_in_luxels[1] as f32;
-    let (patch_s, patch_t) = if lightmap_metadata.is_flipped {
-        (patch_t, patch_s)
+    let (lightmap_s, lightmap_t) = if let Some(lightmap) = lightmap {
+        if let Some(lightmap_metadata) = lightmap.metadata_by_data_offset.get(&face.light_ofs) {
+            let patch_s = tex_info.lightmap_vecs[0][0] * vertex.x
+                + tex_info.lightmap_vecs[0][1] * vertex.y
+                + tex_info.lightmap_vecs[0][2] * vertex.z
+                + tex_info.lightmap_vecs[0][3]
+                - face.lightmap_texture_mins_in_luxels[0] as f32;
+            let patch_t = tex_info.lightmap_vecs[1][0] * vertex.x
+                + tex_info.lightmap_vecs[1][1] * vertex.y
+                + tex_info.lightmap_vecs[1][2] * vertex.z
+                + tex_info.lightmap_vecs[1][3]
+                - face.lightmap_texture_mins_in_luxels[1] as f32;
+            let (patch_s, patch_t) = if lightmap_metadata.is_flipped {
+                (patch_t, patch_s)
+            } else {
+                (patch_s, patch_t)
+            };
+            (
+                (patch_s + lightmap_metadata.luxel_offset[0] as f32 + 0.5) / lightmap.width as f32,
+                (patch_t + lightmap_metadata.luxel_offset[1] as f32 + 0.5) / lightmap.height as f32,
+            )
+        } else {
+            (0.0, 0.0)
+        }
     } else {
-        (patch_s, patch_t)
+        (0.0, 0.0)
     };
-    let lightmap_s =
-        (patch_s + lightmap_metadata.luxel_offset[0] as f32 + 0.5) / lightmap_width as f32;
-    let lightmap_t =
-        (patch_t + lightmap_metadata.luxel_offset[1] as f32 + 0.5) / lightmap_height as f32;
 
     let texture_s = tex_info.texture_vecs[0][0] * vertex.x
         + tex_info.texture_vecs[0][1] * vertex.y

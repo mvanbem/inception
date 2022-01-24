@@ -406,8 +406,8 @@ fn process_geometry(
         }
 
         for face in bsp.iter_faces_from_leaf(leaf) {
-            if face.light_ofs == -1 || face.tex_info == -1 {
-                // Not a textured lightmapped surface.
+            if face.tex_info == -1 {
+                // Not a textured surface.
                 continue;
             }
 
@@ -451,11 +451,11 @@ fn process_geometry(
             clusters.resize_with(cluster as usize + 1, Default::default);
         }
         let cluster_builder = &mut clusters[cluster as usize];
-        let lightmap = &cluster_lightmaps[&cluster];
+        let lightmap = cluster_lightmaps.get(&cluster);
 
         for face in bsp.iter_faces_from_leaf(leaf) {
-            if face.light_ofs != -1 && face.tex_info != -1 {
-                process_lit_textured_face(
+            if face.tex_info != -1 {
+                process_textured_brush_face(
                     bsp,
                     asset_loader,
                     &material_planes,
@@ -805,7 +805,7 @@ fn process_displacement(
     Ok(())
 }
 
-fn process_lit_textured_face(
+fn process_textured_brush_face(
     bsp: Bsp,
     asset_loader: &AssetLoader,
     material_planes: &HashMap<VpkPath, HashSet<Plane>>,
@@ -814,10 +814,9 @@ fn process_lit_textured_face(
     normals: &mut AttributeBuilder<[u8; 3], u16>,
     texture_coords: &mut AttributeBuilder<[u16; 2], u16>,
     cluster_builder: &mut ClusterGeometryBuilder,
-    lightmap: &Lightmap,
+    lightmap: Option<&Lightmap>,
     face: &Face,
 ) -> Result<()> {
-    let lightmap_metadata = &lightmap.metadata_by_data_offset[&face.light_ofs];
     let tex_info = &bsp.tex_infos()[face.tex_info as usize];
     if tex_info.tex_data == -1 {
         // Not textured.
@@ -842,7 +841,9 @@ fn process_lit_textured_face(
             let base_texture = asset_loader.get_texture(base_texture_path)?;
             [base_texture.width() as f32, base_texture.height() as f32]
         }
-        Shader::UnlitGeneric(UnlitGeneric { base_texture_path }) => {
+        Shader::UnlitGeneric(UnlitGeneric {
+            base_texture_path, ..
+        }) => {
             let base_texture = asset_loader.get_texture(base_texture_path)?;
             [base_texture.width() as f32, base_texture.height() as f32]
         }
@@ -852,6 +853,10 @@ fn process_lit_textured_face(
             let base_texture = asset_loader.get_texture(base_texture_path)?;
             [base_texture.width() as f32, base_texture.height() as f32]
         }
+
+        // Do not actually draw the special compile flag shaders.
+        Shader::CompileSky => return Ok(()),
+
         shader => {
             eprintln!(
                 "WARNING: Skipping shader in process_lit_textured_face: {}",
@@ -878,14 +883,7 @@ fn process_lit_textured_face(
     let face_vertices: Vec<Vertex> = bsp
         .iter_vertex_indices_from_face(face)
         .map(|vertex_index| {
-            let mut vertex = convert_vertex(
-                bsp,
-                (lightmap.width, lightmap.height),
-                lightmap_metadata,
-                face,
-                tex_info,
-                vertex_index,
-            );
+            let mut vertex = convert_vertex(bsp, lightmap, face, tex_info, vertex_index);
             let texture_coord = texture_transform
                 * vec3(
                     vertex.texture_coord[0] / base_texture_size[0],
@@ -943,7 +941,7 @@ fn quantize_lightmap_coord(coord: [f32; 2]) -> [u16; 2] {
         let clamped = rounded.clamp(0.0, 65535.0);
         if rounded != clamped {
             eprintln!(
-                "ERROR: Lightmap coord clamped from {} to {}",
+                "WARNING: Lightmap coord clamped from {} to {}",
                 rounded, clamped,
             );
         }
@@ -959,7 +957,7 @@ fn quantize_texture_coord(coord: [f32; 2]) -> [u16; 2] {
         let clamped = rounded.clamp(0.0, 65535.0);
         if rounded != clamped {
             eprintln!(
-                "ERROR: Texture coord clamped from {} to {}",
+                "WARNING: Texture coord clamped from {} to {}",
                 rounded, clamped,
             );
         }
@@ -1608,10 +1606,10 @@ fn pack_brush_geometry(
 
     for cluster in &map_geometry.clusters {
         let mut cluster_geometry_table_entry = ClusterGeometryTableEntry {
-            byte_code_index_ranges: [[0, 0]; 17],
+            byte_code_index_ranges: [[0, 0]; 18],
         };
         let mut display_list_offset = u32::try_from(cluster_geometry_display_lists.len()).unwrap();
-        for mode in 0..17 {
+        for mode in 0..18 {
             cluster_geometry_table_entry.byte_code_index_ranges[mode as usize][0] =
                 u32::try_from(cluster_geometry_byte_code.len()).unwrap();
 
@@ -1893,29 +1891,35 @@ fn pack_lightmaps(
 
     let cluster_end_index = cluster_lightmaps.keys().copied().max().unwrap();
     for cluster_index in 0..cluster_end_index {
-        let lightmap = match cluster_lightmaps.get(&cluster_index) {
-            Some(x) => x,
-            None => continue,
-        };
+        if let Some(lightmap) = &cluster_lightmaps.get(&cluster_index) {
+            let patch_table_start_index = u32::try_from(lightmap_patch_table.len()).unwrap();
+            pack_cluster_lightmap_patches(
+                bsp,
+                cluster_index,
+                lightmap,
+                &mut lightmap_patch_table,
+                &mut lightmap_data,
+            );
+            let patch_table_end_index = u32::try_from(lightmap_patch_table.len()).unwrap();
 
-        let patch_table_start_index = u32::try_from(lightmap_patch_table.len()).unwrap();
-        pack_cluster_lightmap_patches(
-            bsp,
-            cluster_index,
-            lightmap,
-            &mut lightmap_patch_table,
-            &mut lightmap_data,
-        );
-        let patch_table_end_index = u32::try_from(lightmap_patch_table.len()).unwrap();
-
-        lightmap_cluster_table.push(ClusterLightmapTableEntry {
-            common: CommonLightmapTableEntry {
-                width: lightmap.width as u16,
-                height: lightmap.height as u16,
-                patch_table_start_index,
-                patch_table_end_index,
-            },
-        });
+            lightmap_cluster_table.push(ClusterLightmapTableEntry {
+                common: CommonLightmapTableEntry {
+                    width: lightmap.width as u16,
+                    height: lightmap.height as u16,
+                    patch_table_start_index,
+                    patch_table_end_index,
+                },
+            });
+        } else {
+            lightmap_cluster_table.push(ClusterLightmapTableEntry {
+                common: CommonLightmapTableEntry {
+                    width: 0,
+                    height: 0,
+                    patch_table_start_index: 0,
+                    patch_table_end_index: 0,
+                },
+            });
+        }
     }
 
     let lightmap_displacement_table = pack_displacement_lightmap_patches(

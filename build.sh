@@ -133,7 +133,7 @@ function subcommand_audit {
         fi
     done
 
-    sed -e 's/ in materials.*//g' ../build/inception-pack.err | sort | uniq \
+    sed -e 's/ in materials.*//g' -e 's/clamped.*/clamped/g' ../build/inception-pack.err | sort | uniq \
         > ../audit.log
 
     echo "Success! Deduped audit log: audit.log"

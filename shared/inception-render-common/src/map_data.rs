@@ -476,7 +476,7 @@ impl<Data: Deref<Target = [u8]>> MapData<Data> {
 #[derive(Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 pub struct ClusterGeometryTableEntry {
-    pub byte_code_index_ranges: [[u32; 2]; 17],
+    pub byte_code_index_ranges: [[u32; 2]; 18],
 }
 
 impl ClusterGeometryTableEntry {

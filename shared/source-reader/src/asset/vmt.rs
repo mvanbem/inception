@@ -113,10 +113,16 @@ impl Asset for Vmt {
 
 #[derive(Debug)]
 pub enum Shader {
+    // Regular shaders.
     LightmappedGeneric(LightmappedGeneric),
     UnlitGeneric(UnlitGeneric),
     WorldVertexTransition(WorldVertexTransition),
     Sky(Sky),
+
+    // Compile flags represented as shaders.
+    CompileSky,
+
+    // Everything else.
     Unsupported { shader: String },
 }
 
@@ -127,6 +133,9 @@ impl Shader {
             Shader::UnlitGeneric(_) => "UnlitGeneric",
             Shader::WorldVertexTransition(_) => "WorldVertexTransition",
             Shader::Sky(_) => "Sky",
+
+            Shader::CompileSky => "%compilesky",
+
             Shader::Unsupported { shader } => shader,
         }
     }
@@ -157,13 +166,40 @@ fn create_shader_builder<'a>(
             }));
         }
     };
+    let mut compile_sky = false;
     for entry in root.entries {
+        match entry {
+            Entry::KeyValue(KeyValue { key, value }) => match key.to_ascii_lowercase().as_str() {
+                "%compilesky" => compile_sky = parse_bool(value).context("%compilesky")?,
+
+                _ => (),
+            },
+
+            _ => (),
+        }
+
         builder
             .parse(path, entry)
             .with_context(|| format!("Parsing material {:?}", path.as_canonical_path()))?;
     }
 
-    Ok(builder)
+    if compile_sky {
+        Ok(Box::new(CompileSkyShaderBuilder))
+    } else {
+        Ok(builder)
+    }
+}
+
+struct CompileSkyShaderBuilder;
+
+impl<'a> ShaderBuilder<'a> for CompileSkyShaderBuilder {
+    fn parse(&mut self, _material_path: &VpkPath, _entry: Entry<'a>) -> Result<()> {
+        unreachable!()
+    }
+
+    fn build(self: Box<Self>, _loader: &AssetLoader, _material_path: &VpkPath) -> Result<Shader> {
+        Ok(Shader::CompileSky)
+    }
 }
 
 struct LightmappedGenericBuilder {
@@ -378,12 +414,14 @@ impl<'a> ShaderBuilder<'a> for LightmappedGenericBuilder {
 
 struct UnlitGenericBuilder {
     base_texture_path: Option<VpkPath>,
+    self_illum: bool,
 }
 
 impl Default for UnlitGenericBuilder {
     fn default() -> Self {
         Self {
             base_texture_path: None,
+            self_illum: false,
         }
     }
 }
@@ -395,6 +433,7 @@ impl<'a> ShaderBuilder<'a> for UnlitGenericBuilder {
                 "$basetexture" => {
                     self.base_texture_path = parse_vtf_path(value).context("$basetexture")?
                 }
+                "$selfillum" => self.self_illum = parse_bool(value).context("$selfillum")?,
                 x if x.starts_with("%") => (),
                 key => eprintln!(
                     "WARNING: Unimplemented UnlitGeneric key {} in {}",
@@ -419,6 +458,7 @@ impl<'a> ShaderBuilder<'a> for UnlitGenericBuilder {
                 Some(x) => x,
                 None => bail!("UnlitGeneric $basetexture was unset"),
             },
+            self_illum: self.self_illum,
         }))
     }
 }
@@ -426,6 +466,7 @@ impl<'a> ShaderBuilder<'a> for UnlitGenericBuilder {
 #[derive(Debug)]
 pub struct UnlitGeneric {
     pub base_texture_path: VpkPath,
+    pub self_illum: bool,
 }
 
 struct WorldVertexTransitionBuilder {
