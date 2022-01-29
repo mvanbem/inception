@@ -12,6 +12,7 @@ anyhow = "1"
 bytemuck = { version = "1", features = ["extern_crate_alloc"] }
 byteorder = "1"
 clap = "2"
+fontdue = "0.6"
 inception-render-common = { path = "../../shared/inception-render-common", features = ["std"] }
 memmap = "0.7"
 nalgebra-glm = "0.15"

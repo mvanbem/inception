@@ -4,6 +4,83 @@
     <size>32</size>
     <peripherals>
         <peripheral>
+            <name>CP</name>
+            <description>Command Processor</description>
+            <baseAddress>0xcc000000</baseAddress>
+            <size>16</size>
+            <registers>
+                <!-- TODO: Lots of other registers in here. -->
+                <register>
+                    <name>XF_RASBUSY_L</name>
+                    <addressOffset>0x40</addressOffset>
+                </register>
+                <register>
+                    <name>XF_RASBUSY_H</name>
+                    <addressOffset>0x42</addressOffset>
+                </register>
+                <register>
+                    <name>XF_CLKS_L</name>
+                    <addressOffset>0x44</addressOffset>
+                </register>
+                <register>
+                    <name>XF_CLKS_H</name>
+                    <addressOffset>0x46</addressOffset>
+                </register>
+                <register>
+                    <name>XF_WAIT_IN_L</name>
+                    <addressOffset>0x48</addressOffset>
+                </register>
+                <register>
+                    <name>XF_WAIT_IN_H</name>
+                    <addressOffset>0x4a</addressOffset>
+                </register>
+                <register>
+                    <name>XF_WAIT_OUT_L</name>
+                    <addressOffset>0x4c</addressOffset>
+                </register>
+                <register>
+                    <name>XF_WAIT_OUT_H</name>
+                    <addressOffset>0x4e</addressOffset>
+                </register>
+                <register>
+                    <name>VCACHE_METRIC_CHECK_L</name>
+                    <addressOffset>0x50</addressOffset>
+                </register>
+                <register>
+                    <name>VCACHE_METRIC_CHECK_H</name>
+                    <addressOffset>0x52</addressOffset>
+                </register>
+                <register>
+                    <name>VCACHE_METRIC_MISS_L</name>
+                    <addressOffset>0x54</addressOffset>
+                </register>
+                <register>
+                    <name>VCACHE_METRIC_MISS_H</name>
+                    <addressOffset>0x56</addressOffset>
+                </register>
+                <register>
+                    <name>VCACHE_METRIC_STALL_L</name>
+                    <addressOffset>0x58</addressOffset>
+                </register>
+                <register>
+                    <name>VCACHE_METRIC_STALL_H</name>
+                    <addressOffset>0x5a</addressOffset>
+                </register>
+                <register>
+                    <name>CLKS_PER_VTX_IN_L</name>
+                    <addressOffset>0x60</addressOffset>
+                </register>
+                <register>
+                    <name>CLKS_PER_VTX_IN_H</name>
+                    <addressOffset>0x62</addressOffset>
+                </register>
+                <register>
+                    <name>CLKS_PER_VTX_OUT</name>
+                    <addressOffset>0x64</addressOffset>
+                </register>
+            </registers>
+        </peripheral>
+        <peripheral>
             <name>PI</name>
             <description>Processor Interface</description>
             <baseAddress>0xcc003000</baseAddress>

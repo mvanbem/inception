@@ -1,13 +1,12 @@
 use core::mem::zeroed;
 use core::ops::Deref;
 
+use alloc::vec::Vec;
 use inception_render_common::map_data::{CommonLightmapTableEntry, MapData};
 use ogc_sys::*;
 
-use crate::memalign::Memalign;
-
 pub struct Lightmap {
-    image_data: Memalign<32>,
+    image_data: Vec<u8, GlobalAlign32>,
     texobj: GXTexObj,
 }
 
@@ -18,16 +17,25 @@ impl Lightmap {
         let physical_width = 4 * coarse_width;
         let physical_height = 4 * coarse_height;
 
-        let image_data =
-            Memalign::<32>::new(4 * physical_width as usize * physical_height as usize);
-        unsafe { libc::memset(image_data.as_void_ptr_mut(), 0, image_data.size()) };
-        unsafe { image_data.dc_flush() };
+        let mut image_data = Vec::with_capacity_in(
+            4 * physical_width as usize * physical_height as usize,
+            GlobalAlign32,
+        );
+        unsafe {
+            core::ptr::write_bytes(
+                image_data.spare_capacity_mut().as_mut_ptr(),
+                0,
+                image_data.spare_capacity_mut().len(),
+            );
+            image_data.set_len(image_data.capacity());
+            DCFlushRange(image_data.as_ptr() as _, image_data.len() as u32);
+        };
 
         let mut texobj = unsafe { zeroed::<GXTexObj>() };
         unsafe {
             GX_InitTexObj(
                 &mut texobj,
-                image_data.as_void_ptr_mut(),
+                image_data.as_ptr() as _,
                 physical_width as u16,
                 physical_height as u16,
                 GX_TF_CMPR as u8,
@@ -84,13 +92,13 @@ impl Lightmap {
                         + 16 * (dst_y & 1)
                         + 8 * (dst_x & 1);
 
-                    self.image_data.as_mut()[dst_offset..dst_offset + 8]
+                    self.image_data[dst_offset..dst_offset + 8]
                         .copy_from_slice(&page_data[src_offset..src_offset + 8]);
                 }
             }
         }
         unsafe {
-            self.image_data.dc_flush();
+            DCFlushRange(self.image_data.as_ptr() as _, self.image_data.len() as u32);
             GX_InvalidateTexAll();
         }
     }

@@ -17,17 +17,19 @@ use core::ops::Deref;
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
 
+use aligned::A32;
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use derive_try_from_primitive::TryFromPrimitive;
 use inception_render_common::bytecode::{BytecodeOp, BytecodeReader};
 use inception_render_common::map_data::{MapData, TextureTableEntry};
+use num_traits::float::FloatCore;
 use ogc_sys::*;
 
 use crate::lightmap::Lightmap;
 use crate::loader::Loader;
-use crate::memalign::Memalign;
 use crate::shaders::flat_textured::FLAT_TEXTURED_SHADER;
 use crate::shaders::flat_vertex_color::FLAT_VERTEX_COLOR_SHADER;
 use crate::shaders::lightmapped::LIGHTMAPPED_SHADER;
@@ -47,13 +49,15 @@ mod include_bytes_align;
 mod iso9660;
 mod lightmap;
 mod loader;
-mod memalign;
 mod net;
 mod shader;
 mod shaders;
 mod visibility;
 
-static XFB: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
+static UI_FONT: &[u8] = include_bytes_align_as!(A32, "../../../build/ui_font.dat");
+
+static XFB_FRONT: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
+static XFB_BACK: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 static GP_FIFO: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 static DO_COPY: AtomicBool = AtomicBool::new(false);
 
@@ -101,6 +105,8 @@ fn select_map(loader: &mut impl Loader) -> String {
             if maps.is_empty() {
                 libc::printf(b"Map list was empty!\0".as_ptr());
                 loop {}
+            } else if maps.len() == 1 {
+                return maps.swap_remove(0);
             }
 
             libc::printf(
@@ -176,31 +182,15 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
     unsafe {
         init_for_console();
 
-        loop {
-            libc::printf(b"Resetting the disc drive...\n\0".as_ptr());
-            gamecube_dvd_driver::reset();
-            match gamecube_dvd_driver::read_disc_id() {
-                Ok(disc_id) => {
-                    if &disc_id[..8] == b"GGMEMV\x00\x00" {
-                        break;
-                    }
-                }
-                Err(_) => (),
-            }
-
-            libc::printf(b"Unrecognized disc. Open the disc cover.\n\0".as_ptr());
-            gamecube_dvd_driver::wait_for_cover(true);
-
-            libc::printf(b"Insert the Inception disc and close the cover.\n\0".as_ptr());
-            gamecube_dvd_driver::wait_for_cover(false);
-        }
-
         let mut loader = configure_loader();
 
         loop {
             PENDING_GAME_STATE_CHANGE.store(GameStateChange::None as u32, Ordering::SeqCst);
 
             let (rmode, width, height) = init_for_console();
+
+            // Compute logical height.
+            let height = if (*rmode).aa != 0 { 2 * height } else { height };
 
             let map = select_map(&mut loader);
             libc::printf(b"Loading map...\n\0".as_ptr());
@@ -347,21 +337,66 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
                 })
                 .collect();
 
+            let ui_font = {
+                let mut ui_font = zeroed::<GXTexObj>();
+                GX_InitTexObj(
+                    &mut ui_font,
+                    UI_FONT.as_ptr() as *mut c_void,
+                    256,
+                    256,
+                    GX_TF_I8 as u8,
+                    GX_CLAMP as u8,
+                    GX_CLAMP as u8,
+                    GX_FALSE as u8,
+                );
+                GX_InitTexObjLOD(
+                    &mut ui_font,
+                    GX_NEAR as u8,
+                    GX_NEAR as u8,
+                    0.0,
+                    0.0,
+                    0.0,
+                    GX_FALSE as u8,
+                    GX_FALSE as u8,
+                    GX_ANISO_1 as u8,
+                );
+                ui_font
+            };
+
             let visibility = Visibility::new(map_data.visibility().as_ptr());
 
             let mut game_state = GameState {
+                // // d1_trainstation_01 classic view
+                // pos: guVector {
+                //     x: -4875.0,
+                //     y: -1237.0,
+                //     z: 140.0,
+                // },
+                // yaw: core::f32::consts::PI,
+                // pitch: 0.0,
+
+                // d1_trainstation_01 difficult case
                 pos: guVector {
-                    x: -4875.0,
-                    y: -1237.0,
+                    x: -4295.0,
+                    y: -2543.0,
                     z: 140.0,
                 },
-                yaw: core::f32::consts::PI,
-                pitch: 0.0,
+                yaw: 3.6915,
+                pitch: 0.0155,
+
                 inverted_pitch_control: false,
+                msaa: false,
+                copy_filter: false,
                 widescreen: get_widescreen_setting(),
                 lightmap_style: 0,
+
+                ui_item: 0,
+
+                gp_perf_metric0: GpPerfMetric0::NONE,
+                gp_perf_metric1: GpPerfMetric1::NONE,
             };
 
+            let mut performance_metrics = PerformanceMetrics::default();
             let mut last_frame_timers = zeroed::<FrameTimers>();
             loop {
                 match PENDING_GAME_STATE_CHANGE.load(Ordering::SeqCst) {
@@ -385,32 +420,79 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
                         &mut displacement_lightmaps,
                     );
                 });
-                let (main_draw_elapsed, view_cluster) = Timer::time_with_result(|| {
-                    prepare_main_draw(width, height, &game_state);
-                    do_main_draw(
-                        &map_data,
-                        &game_state,
-                        visibility,
-                        &map_texobjs,
-                        &cluster_lightmaps,
-                        &displacement_lightmaps,
-                    )
+                GX_ClearGPMetric();
+                GX_ClearVCacheMetric();
+                let main_draw_elapsed = Timer::time(|| {
+                    if game_state.msaa {
+                        prepare_main_draw(width, height, &game_state, Some(false));
+                        let view_cluster = do_main_draw(
+                            &map_data,
+                            &game_state,
+                            visibility,
+                            &map_texobjs,
+                            &cluster_lightmaps,
+                            &displacement_lightmaps,
+                        );
+                        do_debug_draw(
+                            width,
+                            height,
+                            &game_state,
+                            &last_frame_timers,
+                            view_cluster,
+                            &cluster_lightmaps,
+                            &ui_font,
+                            &performance_metrics,
+                        );
+                        copy_disp(Some(false));
+
+                        prepare_main_draw(width, height, &game_state, Some(true));
+                        let view_cluster = do_main_draw(
+                            &map_data,
+                            &game_state,
+                            visibility,
+                            &map_texobjs,
+                            &cluster_lightmaps,
+                            &displacement_lightmaps,
+                        );
+                        do_debug_draw(
+                            width,
+                            height,
+                            &game_state,
+                            &last_frame_timers,
+                            view_cluster,
+                            &cluster_lightmaps,
+                            &ui_font,
+                            &performance_metrics,
+                        );
+                        copy_disp(Some(true));
+                    } else {
+                        prepare_main_draw(width, height, &game_state, None);
+                        let view_cluster = do_main_draw(
+                            &map_data,
+                            &game_state,
+                            visibility,
+                            &map_texobjs,
+                            &cluster_lightmaps,
+                            &displacement_lightmaps,
+                        );
+                        do_debug_draw(
+                            width,
+                            height,
+                            &game_state,
+                            &last_frame_timers,
+                            view_cluster,
+                            &cluster_lightmaps,
+                            &ui_font,
+                            &performance_metrics,
+                        );
+                        copy_disp(None);
+                    }
                 });
-                let copy_to_texture_elapsed = Timer::time(|| {
-                    // do_copy_to_texture(&screen_texture_color_data);
-                });
-                let debug_draw_elapsed = Timer::time(|| {
-                    do_debug_draw(
-                        width,
-                        height,
-                        &game_state,
-                        &last_frame_timers,
-                        view_cluster,
-                        &cluster_lightmaps,
-                    );
-                });
+                let copy_to_texture_elapsed = 0;
+                let debug_draw_elapsed = 0;
                 let draw_done_elapsed = Timer::time(|| {
                     GX_DrawDone();
+                    performance_metrics = PerformanceMetrics::read();
                     DO_COPY.store(true, Ordering::Release);
                 });
                 let idle_elapsed = Timer::time(|| {
@@ -435,8 +517,15 @@ struct GameState {
     yaw: f32,
     pitch: f32,
     inverted_pitch_control: bool,
+    msaa: bool,
+    copy_filter: bool,
     widescreen: bool,
     lightmap_style: usize,
+
+    ui_item: usize,
+
+    gp_perf_metric0: GpPerfMetric0,
+    gp_perf_metric1: GpPerfMetric1,
 }
 
 impl GameState {
@@ -521,34 +610,106 @@ fn do_game_logic<Data: Deref<Target = [u8]>>(
             89.0 / 180.0 * core::f32::consts::PI,
         );
 
-        let mut new_lightmap_style = game_state.lightmap_style;
         if (PAD_ButtonsDown(0) & PAD_BUTTON_UP as u16) != 0 {
-            new_lightmap_style = new_lightmap_style.wrapping_add(1);
+            game_state.ui_item = game_state.ui_item.checked_sub(1).unwrap_or(4);
         }
         if (PAD_ButtonsDown(0) & PAD_BUTTON_DOWN as u16) != 0 {
-            new_lightmap_style = new_lightmap_style.wrapping_sub(1);
+            game_state.ui_item = (game_state.ui_item + 1) % 5;
         }
-        new_lightmap_style %= 4;
 
-        if game_state.lightmap_style != new_lightmap_style {
-            game_state.lightmap_style = new_lightmap_style;
-            for (cluster_index, lightmap) in cluster_lightmaps.iter_mut().enumerate() {
-                let entry = &map_data.lightmap_cluster_table()[cluster_index];
-                lightmap.update(map_data, &entry.common, game_state.lightmap_style);
+        let ui_increment: i32 = if (PAD_ButtonsDown(0) & PAD_BUTTON_LEFT as u16) != 0 {
+            -1
+        } else {
+            0
+        } + if (PAD_ButtonsDown(0) & PAD_BUTTON_RIGHT as u16) != 0 {
+            1
+        } else {
+            0
+        };
+
+        match game_state.ui_item {
+            0 => {
+                game_state.msaa ^= ui_increment != 0;
             }
-            for entry in map_data.lightmap_displacement_table() {
-                displacement_lightmaps
-                    .get_mut(&entry.face_index)
-                    .unwrap()
-                    .update(map_data, &entry.common, game_state.lightmap_style);
+
+            1 => {
+                game_state.copy_filter ^= ui_increment != 0;
             }
+
+            2 => {
+                // Change lightmap styles.
+                let new_lightmap_style = game_state
+                    .lightmap_style
+                    .wrapping_add(ui_increment as usize)
+                    % 4;
+
+                if game_state.lightmap_style != new_lightmap_style {
+                    game_state.lightmap_style = new_lightmap_style;
+                    for (cluster_index, lightmap) in cluster_lightmaps.iter_mut().enumerate() {
+                        let entry = &map_data.lightmap_cluster_table()[cluster_index];
+                        lightmap.update(map_data, &entry.common, game_state.lightmap_style);
+                    }
+                    for entry in map_data.lightmap_displacement_table() {
+                        displacement_lightmaps
+                            .get_mut(&entry.face_index)
+                            .unwrap()
+                            .update(map_data, &entry.common, game_state.lightmap_style);
+                    }
+                }
+            }
+
+            3 => {
+                // Change GP perf metric 0.
+                match ui_increment {
+                    -1 => game_state.gp_perf_metric0 = game_state.gp_perf_metric0.prev(),
+                    1 => game_state.gp_perf_metric0 = game_state.gp_perf_metric0.next(),
+                    _ => (),
+                };
+            }
+
+            4 => {
+                // Change GP perf metric 1.
+                match ui_increment {
+                    -1 => game_state.gp_perf_metric1 = game_state.gp_perf_metric1.prev(),
+                    1 => game_state.gp_perf_metric1 = game_state.gp_perf_metric1.next(),
+                    _ => (),
+                };
+            }
+
+            _ => unreachable!(),
         }
+
+        GX_SetGPMetric(
+            game_state.gp_perf_metric0 as u32,
+            game_state.gp_perf_metric1 as u32,
+        );
+        GX_SetVCacheMetric(GX_VC_ALL);
     }
 }
 
-fn prepare_main_draw(width: u16, height: u16, game_state: &GameState) {
+fn prepare_main_draw(width: u16, height: u16, game_state: &GameState, half: Option<bool>) {
     unsafe {
-        load_camera_proj_matrix(width, height, game_state);
+        GX_SetPixelFmt(
+            if game_state.msaa {
+                GX_PF_RGB565_Z16
+            } else {
+                GX_PF_RGB8_Z24
+            } as u8,
+            GX_ZC_LINEAR as u8,
+        );
+        GX_SetCopyFilter(
+            game_state.msaa as u8,
+            TVNtsc480ProgAa.sample_pattern.as_ptr() as *mut [u8; 2],
+            game_state.copy_filter as u8,
+            TVNtsc480ProgSoft.vfilter.as_ptr() as *mut u8,
+        );
+        GX_SetDispCopyYScale(
+            // Weird hack: Why does libogc set up a 242 line EFB in NTSC 480p AA mode?
+            // TODO: Make this generally correct.
+            1.0,
+        );
+
+        load_camera_proj_matrix(width, height, game_state, half);
 
         let mut eye_offset = zeroed::<Mtx>();
         c_guMtxTrans(
@@ -567,7 +728,7 @@ fn prepare_main_draw(width: u16, height: u16, game_state: &GameState) {
     }
 }
 
-fn load_camera_proj_matrix(width: u16, height: u16, game_state: &GameState) {
+fn load_camera_proj_matrix(width: u16, height: u16, game_state: &GameState, half: Option<bool>) {
     unsafe {
         let mut proj = zeroed::<Mtx44>();
         guPerspective(
@@ -578,6 +739,22 @@ fn load_camera_proj_matrix(width: u16, height: u16, game_state: &GameState) {
             16384.0,
         );
         GX_LoadProjectionMtx(proj.as_mut_ptr(), GX_PERSPECTIVE as u8);
+
+        GX_SetViewport(0.0, 0.0, 640.0, 480.0, 0.0, 1.0);
+        match half {
+            None => {
+                GX_SetScissor(0, 0, 640, 480);
+                GX_SetScissorBoxOffset(0, 0);
+            }
+            Some(false) => {
+                GX_SetScissor(0, 0, 640, 240);
+                GX_SetScissorBoxOffset(0, 0);
+            }
+            Some(true) => {
+                GX_SetScissor(0, 240, 640, 240);
+                GX_SetScissorBoxOffset(0, 240);
+            }
+        }
     }
 }
 
@@ -842,7 +1019,6 @@ fn draw_visible_clusters<Data: Deref<Target = [u8]>>(
         GX_SetZMode(GX_TRUE as u8, GX_LEQUAL as u8, GX_TRUE as u8);
         GX_SetZCompLoc(GX_TRUE as u8);
         GX_SetAlphaCompare(GX_ALWAYS as u8, 0, GX_AOP_OR as u8, GX_ALWAYS as u8, 0);
-        GX_DrawDone();
 
         view_cluster
     }
@@ -1124,22 +1300,20 @@ fn draw_displacements<Data: Deref<Target = [u8]>>(
                 }
             }
         }
-
-        GX_Flush();
     }
 }
 
-fn _do_copy_to_texture(screen_texture_color_data: &Memalign<32>) {
+fn _do_copy_to_texture(screen_texture_color_data: &Vec<u8, GlobalAlign32>) {
     unsafe {
         // Copy the color buffer to a texture in main memory.
         GX_SetTexCopySrc(0, 0, 640, 480); // TODO: Use the current mode.
 
         DCInvalidateRange(
-            screen_texture_color_data.as_void_ptr_mut(),
-            screen_texture_color_data.size() as u32,
+            screen_texture_color_data.as_ptr() as _,
+            screen_texture_color_data.len() as u32,
         );
         GX_SetTexCopyDst(640, 480, GX_TF_RGBA8, GX_FALSE as u8);
-        GX_CopyTex(screen_texture_color_data.as_void_ptr_mut(), GX_FALSE as u8);
+        GX_CopyTex(screen_texture_color_data.as_ptr() as _, GX_FALSE as u8);
 
         GX_PixModeSync();
         GX_Flush();
@@ -1192,6 +1366,160 @@ fn _do_copy_to_texture(screen_texture_color_data: &Memalign<32>) {
     }
 }
 
+#[allow(non_camel_case_types)]
+#[derive(Clone, Copy, Debug, TryFromPrimitive)]
+#[repr(u32)]
+enum GpPerfMetric0 {
+    VERTICES = 0,
+    CLIP_VTX = 1,
+    CLIP_CLKS = 2,
+    XF_WAIT_IN = 3,
+    XF_WAIT_OUT = 4,
+    XF_XFRM_CLKS = 5,
+    XF_LIT_CLKS = 6,
+    XF_BOT_CLKS = 7,
+    XF_REGLD_CLKS = 8,
+    XF_REGRD_CLKS = 9,
+    CLIP_RATIO = 10,
+    TRIANGLES = 11,
+    TRIANGLES_CULLED = 12,
+    TRIANGLES_PASSED = 13,
+    TRIANGLES_SCISSORED = 14,
+    TRIANGLES_0TEX = 15,
+    TRIANGLES_1TEX = 16,
+    TRIANGLES_2TEX = 17,
+    TRIANGLES_3TEX = 18,
+    TRIANGLES_4TEX = 19,
+    TRIANGLES_5TEX = 20,
+    TRIANGLES_6TEX = 21,
+    TRIANGLES_7TEX = 22,
+    TRIANGLES_8TEX = 23,
+    TRIANGLES_0CLR = 24,
+    TRIANGLES_1CLR = 25,
+    TRIANGLES_2CLR = 26,
+    QUAD_0CVG = 27,
+    QUAD_NON0CVG = 28,
+    QUAD_1CVG = 29,
+    QUAD_2CVG = 30,
+    QUAD_3CVG = 31,
+    QUAD_4CVG = 32,
+    AVG_QUAD_CNT = 33,
+    CLOCKS = 34,
+    NONE = 35,
+}
+
+impl GpPerfMetric0 {
+    fn prev(self) -> Self {
+        if let Ok(result) = Self::try_from(self as u32 - 1) {
+            result
+        } else {
+            Self::NONE
+        }
+    }
+
+    fn next(self) -> Self {
+        if let Ok(result) = Self::try_from(self as u32 + 1) {
+            result
+        } else {
+            Self::VERTICES
+        }
+    }
+}
+
+#[allow(non_camel_case_types)]
+#[derive(Clone, Copy, Debug, TryFromPrimitive)]
+#[repr(u32)]
+enum GpPerfMetric1 {
+    TEXELS = 0,
+    TX_IDLE = 1,
+    TX_REGS = 2,
+    TX_MEMSTALL = 3,
+    TC_CHECK1_2 = 4,
+    TC_CHECK3_4 = 5,
+    TC_CHECK5_6 = 6,
+    TC_CHECK7_8 = 7,
+    TC_MISS = 8,
+    VC_ELEMQ_FULL = 9,
+    VC_MISSQ_FULL = 10,
+    VC_MEMREQ_FULL = 11,
+    VC_STATUS7 = 12,
+    VC_MISSREP_FULL = 13,
+    VC_STREAMBUF_LOW = 14,
+    VC_ALL_STALLS = 15,
+    VERTICES = 16,
+    FIFO_REQ = 17,
+    CALL_REQ = 18,
+    VC_MISS_REQ = 19,
+    CP_ALL_REQ = 20,
+    CLOCKS = 21,
+    NONE = 22,
+}
+
+impl GpPerfMetric1 {
+    fn prev(self) -> Self {
+        if let Ok(result) = Self::try_from(self as u32 - 1) {
+            result
+        } else {
+            Self::NONE
+        }
+    }
+
+    fn next(self) -> Self {
+        if let Ok(result) = Self::try_from(self as u32 + 1) {
+            result
+        } else {
+            Self::TEXELS
+        }
+    }
+}
+
+#[derive(Default)]
+struct PerformanceMetrics {
+    gp_a: u32,
+    gp_b: u32,
+    gp_c: u32,
+    gp_d: u32,
+    vcache_metric_check: u32,
+    vcache_metric_miss: u32,
+    vcache_metric_stall: u32,
+}
+
+impl PerformanceMetrics {
+    fn read() -> Self {
+        unsafe {
+            let cp = gamecube_peripheral_access::CP::PTR;
+            let gp_a = ((*cp).xf_rasbusy_h.read().bits() as u32) << 16
+                | (*cp).xf_rasbusy_l.read().bits() as u32;
+            let gp_b =
+                ((*cp).xf_clks_h.read().bits() as u32) << 16 | (*cp).xf_clks_l.read().bits() as u32;
+            let gp_c = ((*cp).xf_wait_in_h.read().bits() as u32) << 16
+                | (*cp).xf_wait_in_l.read().bits() as u32;
+            let gp_d = ((*cp).xf_wait_out_h.read().bits() as u32) << 16
+                | (*cp).xf_wait_out_l.read().bits() as u32;
+            let vcache_metric_check = ((*cp).vcache_metric_check_h.read().bits() as u32) << 16
+                | (*cp).vcache_metric_check_l.read().bits() as u32;
+            let vcache_metric_miss = ((*cp).vcache_metric_miss_h.read().bits() as u32) << 16
+                | (*cp).vcache_metric_miss_l.read().bits() as u32;
+            let vcache_metric_stall = ((*cp).vcache_metric_stall_h.read().bits() as u32) << 16
+                | (*cp).vcache_metric_stall_l.read().bits() as u32;
+            // let clks_per_vtx_in = ((*cp).clks_per_vtx_in_h.read().bits() as u32) << 16
+            //     | (*cp).clks_per_vtx_in_l.read().bits() as u32;
+            // let clks_per_vtx_out = (*cp).clks_per_vtx_out.read().bits() as u32;
+            Self {
+                gp_a,
+                gp_b,
+                gp_c,
+                gp_d,
+                vcache_metric_check,
+                vcache_metric_miss,
+                vcache_metric_stall,
+                // clks_per_vtx_in: 0,
+                // clks_per_vtx_out: 0,
+            }
+        }
+    }
+}
+
 fn do_debug_draw(
     width: u16,
     height: u16,
@@ -1199,6 +1527,8 @@ fn do_debug_draw(
     last_frame_timers: &FrameTimers,
     view_cluster: i16,
     cluster_lightmaps: &[Lightmap],
+    ui_font: &GXTexObj,
+    performance_metrics: &PerformanceMetrics,
 ) {
     unsafe {
         GX_ClearVtxDesc();
@@ -1368,6 +1698,134 @@ fn do_debug_draw(
             (*wgPipe).U8 = 0;
             (*wgPipe).U8 = 1;
         }
+
+        // Draw some  T E X T
+        TextRenderer::prepare(ui_font);
+        let mut r = TextRenderer {
+            x: 16,
+            y: 480 - 15 * 16,
+            left_margin: 16,
+        };
+        let buf = format!(
+            "At ({}, {}, {}) yaw={} pitch={}\n\
+             {} MSAA: {}\n\
+             {} Copy filter: {}\n\
+             {} Lightmap style: {}\n\
+             {} GP perf metric 0: {:?}\n\
+             {} GP perf metric 1: {:?}\n\
+             gp_a: {}\n\
+             gp_b: {}\n\
+             gp_c: {}\n\
+             gp_d: {}\n\
+             vcache_metric_check: {}\n\
+             vcache_metric_miss: {}\n\
+             vcache_metric_stall: {}\n",
+            game_state.pos.x.round(),
+            game_state.pos.y.round(),
+            game_state.pos.z.round(),
+            game_state.yaw,
+            game_state.pitch,
+            if game_state.ui_item == 0 { "->" } else { "  " },
+            game_state.msaa,
+            if game_state.ui_item == 1 { "->" } else { "  " },
+            game_state.copy_filter,
+            if game_state.ui_item == 2 { "->" } else { "  " },
+            game_state.lightmap_style,
+            if game_state.ui_item == 3 { "->" } else { "  " },
+            game_state.gp_perf_metric0,
+            if game_state.ui_item == 4 { "->" } else { "  " },
+            game_state.gp_perf_metric1,
+            performance_metrics.gp_a,
+            performance_metrics.gp_b,
+            performance_metrics.gp_c,
+            performance_metrics.gp_d,
+            performance_metrics.vcache_metric_check,
+            performance_metrics.vcache_metric_miss,
+            performance_metrics.vcache_metric_stall,
+        );
+        r.draw_str(buf.as_bytes());
+    }
+}
+
+struct TextRenderer {
+    x: u16,
+    y: u16,
+    left_margin: u16,
+}
+
+impl TextRenderer {
+    fn prepare(ui_font: &GXTexObj) {
+        unsafe {
+            GX_ClearVtxDesc();
+            GX_SetVtxDesc(GX_VA_POS as u8, GX_DIRECT as u8);
+            GX_SetVtxDesc(GX_VA_TEX0 as u8, GX_DIRECT as u8);
+            GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_POS, GX_POS_XY, GX_U16, 0);
+            GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX0, GX_TEX_ST, GX_U8, 6);
+            GX_InvVtxCache();
+
+            FLAT_TEXTURED_SHADER.apply();
+            GX_LoadTexObj(
+                ui_font as *const GXTexObj as *mut GXTexObj,
+                GX_TEXMAP0 as u8,
+            );
+        }
+    }
+
+    fn new_line(&mut self) {
+        self.x = self.left_margin;
+        self.y += 16;
+    }
+
+    fn draw_char(&mut self, c: u8) {
+        if c == b'\n' {
+            self.new_line();
+            return;
+        }
+
+        let x0 = self.x;
+        let x1 = x0 + 8;
+        let y0 = self.y;
+        let y1 = y0 + 16;
+
+        let s0 = ((c & 0xf) << 2) + 1;
+        let s1 = s0 + 2;
+        let t0 = (c >> 4) << 2;
+        let t1 = t0 + 4;
+
+        unsafe {
+            GX_Begin(GX_QUADS as u8, GX_VTXFMT0 as u8, 4);
+
+            (*wgPipe).U16 = x0;
+            (*wgPipe).U16 = y0;
+            (*wgPipe).U8 = s0;
+            (*wgPipe).U8 = t0;
+
+            (*wgPipe).U16 = x1;
+            (*wgPipe).U16 = y0;
+            (*wgPipe).U8 = s1;
+            (*wgPipe).U8 = t0;
+
+            (*wgPipe).U16 = x1;
+            (*wgPipe).U16 = y1;
+            (*wgPipe).U8 = s1;
+            (*wgPipe).U8 = t1;
+
+            (*wgPipe).U16 = x0;
+            (*wgPipe).U16 = y1;
+            (*wgPipe).U8 = s0;
+            (*wgPipe).U8 = t1;
+        }
+
+        self.x += 8;
+        if self.x + 8 >= 640 {
+            self.new_line();
+        }
+    }
+
+    fn draw_str(&mut self, s: &[u8]) {
+        for &c in s {
+            self.draw_char(c);
+        }
     }
 }
 
@@ -1377,18 +1835,21 @@ fn init_for_console() -> (*mut GXRModeObj, u16, u16) {
         PAD_Init();
 
         // Configure the preferred video mode.
-        let rmode = VIDEO_GetPreferredMode(null_mut());
+        // let rmode = VIDEO_GetPreferredMode(null_mut());
+        let rmode = &TVNtsc480ProgAa as *const GXRModeObj as _;
         VIDEO_Configure(rmode);
 
         // Allocate an external frame buffer, set up a vblank callback to swap buffers, and wait two
         // frames (for hardware to warm up?).
-        let mut xfb = XFB.load(Ordering::Acquire);
-        if xfb.is_null() {
-            xfb = MEM_K0_TO_K1(SYS_AllocateFramebuffer(rmode));
-            XFB.store(xfb, Ordering::Release);
+        let mut xfb_front = XFB_FRONT.load(Ordering::Acquire);
+        if xfb_front.is_null() {
+            xfb_front = MEM_K0_TO_K1(SYS_AllocateFramebuffer(rmode));
+            XFB_FRONT.store(xfb_front, Ordering::Release);
+            let xfb_back = MEM_K0_TO_K1(SYS_AllocateFramebuffer(rmode));
+            XFB_BACK.store(xfb_back, Ordering::Release);
         }
-        VIDEO_ClearFrameBuffer(rmode, xfb, 0x80808080);
-        VIDEO_SetNextFramebuffer(xfb);
+        VIDEO_ClearFrameBuffer(rmode, xfb_front, 0x80808080);
+        VIDEO_SetNextFramebuffer(xfb_front);
         VIDEO_SetBlack(false);
         VIDEO_Flush();
         VIDEO_WaitVSync();
@@ -1419,12 +1880,13 @@ fn init_for_console() -> (*mut GXRModeObj, u16, u16) {
 /// Assumes init_for_console() was called previously.
 fn init_for_3d(rmode: &GXRModeObj) {
     unsafe {
-        drop(VIDEO_SetPostRetraceCallback(Some(copy_to_xfb)));
+        drop(VIDEO_SetPreRetraceCallback(Some(pre_retrace_callback)));
+        drop(VIDEO_SetPostRetraceCallback(None));
 
         // Allocate a FIFO for sending commands to the GPU.
         let gp_fifo = GP_FIFO.load(Ordering::Acquire);
         if gp_fifo.is_null() {
-            const FIFO_SIZE: usize = 256 * 1024;
+            const FIFO_SIZE: usize = 512 * 1024;
             let gp_fifo = MEM_K0_TO_K1(libc::memalign(32, FIFO_SIZE));
             GP_FIFO.store(gp_fifo, Ordering::Release);
             libc::memset(gp_fifo, 0, FIFO_SIZE);
@@ -1440,24 +1902,6 @@ fn init_for_3d(rmode: &GXRModeObj) {
             },
             0x00ffffff,
         );
-        GX_SetViewport(
-            0.0,
-            0.0,
-            rmode.fbWidth as f32,
-            rmode.efbHeight as f32,
-            0.0,
-            1.0,
-        );
-        GX_SetDispCopyYScale(rmode.xfbHeight as f32 / rmode.efbHeight as f32);
-        GX_SetScissor(0, 0, rmode.fbWidth as u32, rmode.efbHeight as u32);
-        GX_SetDispCopySrc(0, 0, rmode.fbWidth, rmode.efbHeight);
-        GX_SetDispCopyDst(rmode.fbWidth, rmode.xfbHeight);
-        GX_SetCopyFilter(
-            rmode.aa,
-            rmode.sample_pattern.as_ptr() as *mut [u8; 2],
-            GX_TRUE as u8,
-            rmode.vfilter.as_ptr() as *mut u8,
-        );
         GX_SetFieldMode(
             rmode.field_rendering,
             if rmode.viHeight == 2 * rmode.xfbHeight {
@@ -1466,18 +1910,9 @@ fn init_for_3d(rmode: &GXRModeObj) {
                 GX_DISABLE
             } as u8,
         );
-        GX_SetPixelFmt(
-            if rmode.aa != 0 {
-                GX_PF_RGB565_Z16
-            } else {
-                GX_PF_RGB8_Z24
-            } as u8,
-            GX_ZC_LINEAR as u8,
-        );
 
         GX_SetCullMode(GX_CULL_BACK as u8);
         GX_SetDispCopyGamma(GX_GM_1_0 as u8);
-        GX_CopyDisp(XFB.load(Ordering::Acquire), GX_TRUE as u8);
     }
 }
 
@@ -1509,17 +1944,48 @@ struct FrameTimers {
     idle: u32,
 }
 
-extern "C" fn copy_to_xfb(_count: u32) {
+extern "C" fn pre_retrace_callback(_count: u32) {
     if DO_COPY
         .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
     {
+        // Swap buffers.
+        let next_xfb_back = XFB_FRONT.load(Ordering::Acquire);
+        let next_xfb_front = XFB_BACK.load(Ordering::Acquire);
+        XFB_BACK.store(next_xfb_back, Ordering::Release);
+        XFB_FRONT.store(next_xfb_front, Ordering::Release);
         unsafe {
-            GX_SetZMode(GX_TRUE as u8, GX_LEQUAL as u8, GX_TRUE as u8);
-            GX_SetColorUpdate(GX_TRUE as u8);
-            GX_CopyDisp(XFB.load(Ordering::Acquire), GX_TRUE as u8);
-            GX_Flush();
+            VIDEO_SetNextFramebuffer(next_xfb_front);
+            VIDEO_Flush();
         }
+    }
+}
+
+fn copy_disp(half: Option<bool>) {
+    unsafe {
+        GX_SetZMode(GX_TRUE as u8, GX_LEQUAL as u8, GX_TRUE as u8);
+        GX_SetColorUpdate(GX_TRUE as u8);
+        match half {
+            None => {
+                GX_SetDispCopySrc(0, 0, 640, 480);
+                GX_SetDispCopyDst(640, 480);
+                GX_CopyDisp(XFB_BACK.load(Ordering::Acquire), GX_TRUE as u8);
+            }
+            Some(false) => {
+                GX_SetDispCopySrc(0, 0, 640, 240);
+                GX_SetDispCopyDst(640, 240);
+                GX_CopyDisp(XFB_BACK.load(Ordering::Acquire), GX_TRUE as u8);
+            }
+            Some(true) => {
+                GX_SetDispCopySrc(0, 0, 640, 240);
+                GX_SetDispCopyDst(640, 240);
+                GX_CopyDisp(
+                    (XFB_BACK.load(Ordering::Acquire) as usize + 2 * 640 * 240) as _,
+                    GX_TRUE as u8,
+                );
+            }
+        }
+        GX_Flush();
     }
 }
 

@@ -129,13 +129,16 @@ version = "0.1.0"
 dependencies = [
  "aligned",
  "bytemuck",
+ "derive-try-from-primitive",
  "derive_more",
  "gamecube-dvd-driver",
+ "gamecube-peripheral-access",
  "inception-render-common",
  "libc",
  "libm",
  "no-std-ftp",
  "no-std-io",
+ "num-traits",
  "ogc-sys",
  "paste",
  "seq-macro",
@@ -207,6 +210,17 @@ name = "convert_case"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6245d59a3e82a7fc217c5828a6692dbc6dfb63a0c8c90495621f7b9d79704a0e"
+
+[[package]]
+name = "derive-try-from-primitive"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "302ccf094df1151173bb6f5a2282fcd2f45accd5eae1bdf82dcbfefbc501ad5c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "derive_more"

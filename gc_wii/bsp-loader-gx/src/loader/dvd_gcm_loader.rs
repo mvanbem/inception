@@ -83,6 +83,28 @@ impl Loader for DvdGcmLoader {
     type Data = Vec<u8, GlobalAlign32>;
 
     fn new(_: ()) -> Self {
+        // Check for the expected disc.
+        loop {
+            unsafe {
+                libc::printf(b"Resetting the disc drive...\n\0".as_ptr());
+                gamecube_dvd_driver::reset();
+                match gamecube_dvd_driver::read_disc_id() {
+                    Ok(disc_id) => {
+                        if &disc_id[..8] == b"GGMEMV\x00\x00" {
+                            break;
+                        }
+                    }
+                    Err(_) => (),
+                }
+
+                libc::printf(b"Unrecognized disc. Open the disc cover.\n\0".as_ptr());
+                gamecube_dvd_driver::wait_for_cover(true);
+
+                libc::printf(b"Insert the Inception disc and close the cover.\n\0".as_ptr());
+                gamecube_dvd_driver::wait_for_cover(false);
+            }
+        }
+
         let mut metadata: Aligned<A32, _> = Aligned(DiscHeader0x420::zeroed());
         gamecube_dvd_driver::read(0x420, bytemuck::bytes_of_mut(&mut *metadata)).unwrap();
 

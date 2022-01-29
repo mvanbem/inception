@@ -41,7 +41,7 @@ impl Loader for FtpLoader {
     }
 
     fn load_map(&mut self, map: &str) -> MapData<Self::Data> {
-        let data = ftp_get_in(&self.addr, &format!("{}.dat", map), GlobalAlign32).unwrap();
+        let data = ftp_get_in(&self.addr, &format!("maps/{}.dat", map), GlobalAlign32).unwrap();
         unsafe { MapData::new(data) }
     }
 }

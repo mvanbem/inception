@@ -41,7 +41,51 @@ function subcommand_pack_all_maps {
     cp -r build/maps ftp/
 }
 
-function subcommand_build {
+function subcommand_build_embedded {
+    echo === Building bsp-loader-gx ===
+    pushd gc_wii >/dev/null
+
+    cargo build -p bsp-loader-gx $release_flag --no-default-features --features=gamecube,embedded_loader
+    elf2dol \
+        target/powerpc-none-eabi/$release_path_component/bsp-loader-gx \
+        ../build/bsp-loader-gx_gamecube.dol
+
+    # cargo build -p bsp-loader-gx $release_flag --no-default-features --features=wii,embedded_loader
+    # elf2dol \
+    #     target/powerpc-none-eabi/$release_path_component/bsp-loader-gx \
+    #     ../build/bsp-loader-gx_wii.dol
+
+    popd >/dev/null
+
+    mkdir -p ftp
+    cp build/bsp-loader-gx_gamecube.dol ftp/bsp-loader-gx.dol
+
+    echo === SUCCESS ===
+}
+
+function subcommand_build_ftp {
+    echo === Building bsp-loader-gx ===
+    pushd gc_wii >/dev/null
+
+    cargo build -p bsp-loader-gx $release_flag --no-default-features --features=gamecube,ftp_loader
+    elf2dol \
+        target/powerpc-none-eabi/$release_path_component/bsp-loader-gx \
+        ../build/bsp-loader-gx_gamecube.dol
+
+    # cargo build -p bsp-loader-gx $release_flag --no-default-features --features=wii,ftp_loader
+    # elf2dol \
+    #     target/powerpc-none-eabi/$release_path_component/bsp-loader-gx \
+    #     ../build/bsp-loader-gx_wii.dol
+
+    popd >/dev/null
+
+    mkdir -p ftp
+    cp build/bsp-loader-gx_gamecube.dol ftp/bsp-loader-gx.dol
+
+    echo === SUCCESS ===
+}
+
+function subcommand_build_gcm {
     echo === Building bsp-loader-gx ===
     pushd gc_wii >/dev/null
 
@@ -149,8 +193,16 @@ while true; do
             release_path_component=debug
             shift
             ;;
-        ""|build)
-            subcommand_build
+        ""|build|build_embedded)
+            subcommand_build_embedded
+            exit 0
+            ;;
+        build_ftp)
+            subcommand_build_ftp
+            exit 0
+            ;;
+        build_gcm)
+            subcommand_build_gcm
             exit 0
             ;;
         audit)

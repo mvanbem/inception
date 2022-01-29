@@ -24,6 +24,34 @@ use core::ops::Deref;
 use generic::*;
 #[doc = r"Common register and bit access and modify traits"]
 pub mod generic;
+#[doc = "Command Processor"]
+pub struct CP {
+    _marker: PhantomData<*const ()>,
+}
+unsafe impl Send for CP {}
+impl CP {
+    #[doc = r"Pointer to the register block"]
+    pub const PTR: *const cp::RegisterBlock = 0xcc00_0000 as *const _;
+    #[doc = r"Return the pointer to the register block"]
+    #[inline(always)]
+    pub const fn ptr() -> *const cp::RegisterBlock {
+        Self::PTR
+    }
+}
+impl Deref for CP {
+    type Target = cp::RegisterBlock;
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*Self::PTR }
+    }
+}
+impl core::fmt::Debug for CP {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        f.debug_struct("CP").finish()
+    }
+}
+#[doc = "Command Processor"]
+pub mod cp;
 #[doc = "Processor Interface"]
 pub struct PI {
     _marker: PhantomData<*const ()>,
@@ -85,6 +113,8 @@ static mut DEVICE_PERIPHERALS: bool = false;
 #[doc = r"All the peripherals"]
 #[allow(non_snake_case)]
 pub struct Peripherals {
+    #[doc = "CP"]
+    pub CP: CP,
     #[doc = "PI"]
     pub PI: PI,
     #[doc = "DI"]
@@ -96,6 +126,9 @@ impl Peripherals {
     pub unsafe fn steal() -> Self {
         DEVICE_PERIPHERALS = true;
         Peripherals {
+            CP: CP {
+                _marker: PhantomData,
+            },
             PI: PI {
                 _marker: PhantomData,
             },

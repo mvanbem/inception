@@ -4,7 +4,7 @@ extern crate quickcheck_macros;
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::fs::{create_dir_all, read_dir, File};
+use std::fs::{create_dir_all, read, read_dir, File};
 use std::hash::{Hash, Hasher};
 use std::io::{stdout, Write};
 use std::panic::resume_unwind;
@@ -13,9 +13,10 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::thread::spawn;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use byteorder::{BigEndian, WriteBytesExt};
 use clap::{clap_app, crate_authors, crate_description, crate_version, ArgMatches};
+use fontdue::{Font, FontSettings};
 use inception_render_common::bytecode::BytecodeOp;
 use inception_render_common::map_data::{
     BspLeaf, BspNode, ClusterGeometryTableEntry, ClusterLightmapTableEntry,
@@ -65,26 +66,29 @@ fn main() -> Result<()> {
         (about: crate_description!())
         (@arg hl2_base: --("hl2-base") <PATH> "Path to a Half-Life 2 installation")
         (@subcommand pack_map =>
-            (about: "packs a single map for use on GC/Wii")
+            (about: "Packs a single map for use on GC/Wii")
             (@arg MAP: "Map name or path to map file if ending with \".bsp\" (default: d1_trainstation_01)")
             (@arg dst: --dst [PATH] "Path to write packed outputs (default: .)")
         )
         (@subcommand pack_all_maps =>
-            (about: "packs maps for use on GC/Wii")
+            (about: "Packs maps for use on GC/Wii")
             (@arg dst: --dst [PATH] "Path to write packed outputs (default: .)")
         )
         (@subcommand cat_lump =>
-            (about: "dumps an arbitrary BSP lump to stdout")
+            (about: "Dumps an arbitrary BSP lump to stdout")
             (@arg MAP: "Map name (example: d1_trainstation_01)")
             (@arg LUMP: "Lump index (example: 40)")
         )
         (@subcommand cat_material =>
-            (about: "prints a material definition to stdout")
+            (about: "Prints a material definition to stdout")
             (@arg NAME: ... "Material name (example: tile/tilefloor013a)")
         )
         (@subcommand describe_texture =>
-            (about: "prints texture metadata to stdout")
+            (about: "Prints texture metadata to stdout")
             (@arg NAME: ... "Texture name (example: tile/tilefloor013a)")
+        )
+        (@subcommand build_ui_font =>
+            (about: "Builds the UI font to stdout")
         )
     )
     .get_matches();
@@ -98,6 +102,7 @@ fn main() -> Result<()> {
         ("cat_lump", Some(matches)) => cat_lump(hl2_base, matches)?,
         ("cat_material", Some(matches)) => cat_material(hl2_base, matches)?,
         ("describe_texture", Some(matches)) => describe_texture(hl2_base, matches)?,
+        ("build_ui_font", _) => build_ui_font()?,
         (name, _) => bail!("unknown subcommand: {:?}", name),
     }
     Ok(())
@@ -2138,4 +2143,59 @@ fn transcode_lightmap_patch_to_gamecube_cmpr_sub_block(
     .into_data()[..8]
         .try_into()
         .unwrap()
+}
+
+fn build_ui_font() -> Result<()> {
+    const SCALE: f32 = 15.0;
+
+    // Clamped lower bound to keep characters like underscore in the box.
+    const LOWEST_YMIN: i32 = -2;
+
+    // How far the baseline is raised from the bottom edge of the cell.
+    const BASELINE_OFFSET: i32 = 2;
+
+    let font_bytes = read("../third_party/dejavu-fonts-ttf-2.37/DejaVuSansMono.ttf")?;
+    let font = Font::from_bytes(
+        font_bytes,
+        FontSettings {
+            scale: SCALE,
+            ..FontSettings::default()
+        },
+    )
+    .map_err(|e| anyhow!(e))?;
+
+    let mut texels = vec![0; 3 * 256 * 256];
+
+    for c in 0x20 as char..=0x7f as char {
+        let (metrics, coverage) = font.rasterize(c, SCALE);
+        let x0 = ((c as i32) & 0xf) * 16 + metrics.xmin + metrics.width as i32 / 2;
+        let y0 = ((c as i32) >> 4) * 16 + 16
+            - metrics.height as i32
+            - metrics.ymin.max(LOWEST_YMIN)
+            - BASELINE_OFFSET;
+        for dy in 0..metrics.height {
+            for dx in 0..metrics.width {
+                let x = x0 + dx as i32;
+                let y = y0 + dy as i32;
+                if x >= 0 && x < 256 && y >= 0 && y < 256 {
+                    let src = metrics.width * dy + dx;
+                    let dst = (3 * (256 * y + x)) as usize;
+                    texels[dst] = coverage[src];
+                    texels[dst + 1] = coverage[src];
+                    texels[dst + 2] = coverage[src];
+                }
+            }
+        }
+    }
+
+    let texture = TextureBuf::transcode(
+        TextureBuf::new(TextureFormat::Rgb8, 256, 256, texels).as_slice(),
+        TextureFormat::GxTfI8,
+    );
+    let stdout = stdout();
+    let mut stdout = stdout.lock();
+    stdout.write_all(texture.data())?;
+    stdout.flush()?;
+
+    Ok(())
 }
