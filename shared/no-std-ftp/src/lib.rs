@@ -52,6 +52,7 @@ impl<S: Read + Write> FtpClient<S> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FtpResponse {
     Code(u32),
+    FileSize { size: usize },
     EnteringPassiveMode { addr: [u8; 4], port: u16 },
 }
 
@@ -60,6 +61,9 @@ enum FtpResponseParser {
     ResponseCode { code: u32 },
     AwaitCr { code: u32 },
     AwaitLf { code: u32 },
+
+    FileSizeSize { size: usize },
+    FileSizeAwaitLf { size: usize },
 
     PassiveAwaitLParen,
     PassiveAddr1 { byte: u8 },
@@ -86,6 +90,8 @@ impl FtpResponseParser {
             n += 1;
 
             match (&mut *self, b) {
+                // Response code parsing.
+
                 // A digit is accumulated into the response code parsed so far.
                 (&mut Self::ResponseCode { code }, b) if b.is_ascii_digit() => {
                     let code = 10 * code + (b - b'0') as u32;
@@ -95,6 +101,7 @@ impl FtpResponseParser {
                 // A space locks in the response code and changes state.
                 (&mut Self::ResponseCode { code }, b' ') => {
                     *self = match code {
+                        213 => Self::FileSizeSize { size: 0 },
                         227 => Self::PassiveAwaitLParen,
                         code => Self::AwaitCr { code },
                     }
@@ -109,6 +116,23 @@ impl FtpResponseParser {
                     *self = Self::ResponseCode { code: 0 };
                     return (n, Some(FtpResponse::Code(code)));
                 }
+
+                // File size parsing.
+
+                // A digit is accumulated into the size parsed so far.
+                (&mut Self::FileSizeSize { size }, b) if b.is_ascii_digit() => {
+                    let size = 10 * size + (b - b'0') as usize;
+                    *self = Self::FileSizeSize { size };
+                }
+                (&mut Self::FileSizeSize { size }, b'\r') => *self = Self::FileSizeAwaitLf { size },
+
+                // The next character *must* be <LF>. This completes the response.
+                (&mut Self::FileSizeAwaitLf { size }, b'\n') => {
+                    *self = Self::ResponseCode { code: 0 };
+                    return (n, Some(FtpResponse::FileSize { size }));
+                }
+
+                // Entering passive mode parsing.
 
                 // Any number of non-'(' characters are skipped until '(' is found.
                 (&mut Self::PassiveAwaitLParen, b'(') => *self = Self::PassiveAddr1 { byte: 0 },
@@ -219,8 +243,17 @@ mod tests {
                 Some(FtpResponse::EnteringPassiveMode {
                     addr: [12, 34, 56, 78],
                     port: 9876,
-                })
+                }),
             )
+        );
+    }
+
+    #[test]
+    fn parse_size() {
+        let mut parser = FtpResponseParser::new();
+        assert_eq!(
+            parser.parse(b"213 12345\r\n"),
+            (11, Some(FtpResponse::FileSize { size: 12345 })),
         );
     }
 }

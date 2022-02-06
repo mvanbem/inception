@@ -9,7 +9,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use inception_render_common::map_data::MapData;
 use no_std_ftp::{FtpClient, FtpResponse};
-use no_std_io::{NetError, Read};
+use no_std_io::{NetError, ReadExt};
 use ogc_sys::GlobalAlign32;
 
 pub struct FtpLoader {
@@ -71,6 +71,15 @@ fn ftp_get_in<A: Allocator>(
         resp => panic!("Unexpected response to TYPE: {:?}", resp),
     }
 
+    // Get the file's size.
+    // NOTE: This makes no attempt to encode the path correctly. Interesting characters will cause
+    // this to fail.
+    let command = format!("SIZE {}\r\n", path);
+    let size = match client.send(command.as_bytes())? {
+        FtpResponse::FileSize { size } => size,
+        resp => panic!("Unexpected response to SIZE: {:?}", resp),
+    };
+
     // Switch to passive mode and establish the data connection.
     let addr = match client.send(b"PASV\r\n")? {
         FtpResponse::EnteringPassiveMode { addr, port } => SocketAddr::new(addr, port),
@@ -88,17 +97,9 @@ fn ftp_get_in<A: Allocator>(
     }
 
     // Read the file from the data connection.
-    let mut data = Vec::new_in(alloc);
-    let mut bytes_read = 0;
-    loop {
-        // Reserve a 4K buffer to read into at the end of the existing data.
-        data.resize(bytes_read + 4096, 0);
-        match data_stream.read(&mut data[bytes_read..])? {
-            0 => break,
-            n => bytes_read += n,
-        }
-    }
-    data.resize(bytes_read, 0);
+    let mut data = Vec::with_capacity_in(size, alloc);
+    data.resize(size, 0);
+    data_stream.read_all(&mut data)?;
 
     // There should be a response confirming the transfer is complete, but at this point we can just
     // close both connections and declare success.
