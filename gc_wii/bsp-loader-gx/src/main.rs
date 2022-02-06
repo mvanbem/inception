@@ -15,7 +15,7 @@ use core::ffi::c_void;
 use core::mem::zeroed;
 use core::ops::Deref;
 use core::ptr::null_mut;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 
 use aligned::A32;
 use alloc::collections::BTreeMap;
@@ -60,6 +60,8 @@ static XFB_FRONT: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 static XFB_BACK: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 static GP_FIFO: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 static DO_COPY: AtomicBool = AtomicBool::new(false);
+static FRAMES: AtomicUsize = AtomicUsize::new(0);
+static LAST_FRAME_FRAMES: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(feature = "wii")]
 fn get_widescreen_setting() -> bool {
@@ -238,55 +240,55 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
             }
             GX_InvalidateTexAll();
 
-            // Configure a texture object for the identity map.
-            let mut identity_map_data: Vec<u8, _> =
-                Vec::with_capacity_in(256 * 256 * 4, GlobalAlign32);
-            {
-                let mut texels = identity_map_data.as_mut_ptr();
-                for coarse_y in 0..64 {
-                    for coarse_x in 0..64 {
-                        for fine_y in 0..4 {
-                            for fine_x in 0..4 {
-                                let x = (4 * coarse_x + fine_x) as u8;
-                                let _y = (4 * coarse_y + fine_y) as u8;
-                                // A
-                                (*texels) = 255;
-                                texels = texels.offset(1);
-                                // R
-                                (*texels) = x;
-                                texels = texels.offset(1);
-                            }
-                        }
-                        for fine_y in 0..4 {
-                            for fine_x in 0..4 {
-                                let _x = (4 * coarse_x + fine_x) as u8;
-                                let y = (4 * coarse_y + fine_y) as u8;
-                                // G
-                                (*texels) = y;
-                                texels = texels.offset(1);
-                                // B
-                                (*texels) = 0;
-                                texels = texels.offset(1);
-                            }
-                        }
-                    }
-                }
-                DCFlushRange(identity_map_data.as_mut_ptr() as *mut c_void, 256 * 256 * 4);
+            // // Configure a texture object for the identity map.
+            // let mut identity_map_data: Vec<u8, _> =
+            //     Vec::with_capacity_in(256 * 256 * 4, GlobalAlign32);
+            // {
+            //     let mut texels = identity_map_data.as_mut_ptr();
+            //     for coarse_y in 0..64 {
+            //         for coarse_x in 0..64 {
+            //             for fine_y in 0..4 {
+            //                 for fine_x in 0..4 {
+            //                     let x = (4 * coarse_x + fine_x) as u8;
+            //                     let _y = (4 * coarse_y + fine_y) as u8;
+            //                     // A
+            //                     (*texels) = 255;
+            //                     texels = texels.offset(1);
+            //                     // R
+            //                     (*texels) = x;
+            //                     texels = texels.offset(1);
+            //                 }
+            //             }
+            //             for fine_y in 0..4 {
+            //                 for fine_x in 0..4 {
+            //                     let _x = (4 * coarse_x + fine_x) as u8;
+            //                     let y = (4 * coarse_y + fine_y) as u8;
+            //                     // G
+            //                     (*texels) = y;
+            //                     texels = texels.offset(1);
+            //                     // B
+            //                     (*texels) = 0;
+            //                     texels = texels.offset(1);
+            //                 }
+            //             }
+            //         }
+            //     }
+            //     DCFlushRange(identity_map_data.as_mut_ptr() as *mut c_void, 256 * 256 * 4);
 
-                let mut texobj = zeroed::<GXTexObj>();
-                GX_InitTexObj(
-                    &mut texobj,
-                    identity_map_data.as_mut_ptr() as *mut c_void,
-                    256,
-                    256,
-                    GX_TF_RGBA8 as u8,
-                    GX_CLAMP as u8,
-                    GX_CLAMP as u8,
-                    GX_FALSE as u8,
-                );
-                GX_InitTexObjFilterMode(&mut texobj, GX_NEAR as u8, GX_NEAR as u8);
-                GX_LoadTexObj(&mut texobj, GX_TEXMAP7 as u8);
-            }
+            //     let mut texobj = zeroed::<GXTexObj>();
+            //     GX_InitTexObj(
+            //         &mut texobj,
+            //         identity_map_data.as_mut_ptr() as *mut c_void,
+            //         256,
+            //         256,
+            //         GX_TF_RGBA8 as u8,
+            //         GX_CLAMP as u8,
+            //         GX_CLAMP as u8,
+            //         GX_FALSE as u8,
+            //     );
+            //     GX_InitTexObjFilterMode(&mut texobj, GX_NEAR as u8, GX_NEAR as u8);
+            //     GX_LoadTexObj(&mut texobj, GX_TEXMAP7 as u8);
+            // }
 
             // Set up texture objects for all other textures.
             let texture_data = map_data.texture_data();
@@ -398,6 +400,7 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
 
             let mut performance_metrics = PerformanceMetrics::default();
             let mut last_frame_timers = zeroed::<FrameTimers>();
+            let mut last_frame_frames = 0;
             loop {
                 match PENDING_GAME_STATE_CHANGE.load(Ordering::SeqCst) {
                     x if x == GameStateChange::Reset as u32 => {
@@ -420,9 +423,10 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
                         &mut displacement_lightmaps,
                     );
                 });
-                GX_ClearGPMetric();
-                GX_ClearVCacheMetric();
                 let main_draw_elapsed = Timer::time(|| {
+                    GX_ClearGPMetric();
+                    GX_ClearVCacheMetric();
+
                     if game_state.msaa {
                         prepare_main_draw(width, height, &game_state, Some(false));
                         let view_cluster = do_main_draw(
@@ -442,6 +446,7 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
                             &cluster_lightmaps,
                             &ui_font,
                             &performance_metrics,
+                            last_frame_frames,
                         );
                         copy_disp(Some(false));
 
@@ -463,6 +468,7 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
                             &cluster_lightmaps,
                             &ui_font,
                             &performance_metrics,
+                            last_frame_frames,
                         );
                         copy_disp(Some(true));
                     } else {
@@ -484,6 +490,7 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
                             &cluster_lightmaps,
                             &ui_font,
                             &performance_metrics,
+                            last_frame_frames,
                         );
                         copy_disp(None);
                     }
@@ -498,6 +505,7 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
                 let idle_elapsed = Timer::time(|| {
                     VIDEO_WaitVSync();
                 });
+                last_frame_frames = LAST_FRAME_FRAMES.load(Ordering::Acquire);
 
                 last_frame_timers = FrameTimers {
                     game_logic: game_logic_elapsed,
@@ -1529,6 +1537,7 @@ fn do_debug_draw(
     cluster_lightmaps: &[Lightmap],
     ui_font: &GXTexObj,
     performance_metrics: &PerformanceMetrics,
+    last_frame_frames: usize,
 ) {
     unsafe {
         GX_ClearVtxDesc();
@@ -1744,6 +1753,10 @@ fn do_debug_draw(
             performance_metrics.vcache_metric_stall,
         );
         r.draw_str(buf.as_bytes());
+        r.x = 640 - 24;
+        r.y = 480 - 28;
+        let buf = format!("{}", last_frame_frames);
+        r.draw_str(buf.as_bytes());
     }
 }
 
@@ -1817,7 +1830,7 @@ impl TextRenderer {
         }
 
         self.x += 8;
-        if self.x + 8 >= 640 {
+        if self.x + 8 > 640 {
             self.new_line();
         }
     }
@@ -1913,6 +1926,50 @@ fn init_for_3d(rmode: &GXRModeObj) {
 
         GX_SetCullMode(GX_CULL_BACK as u8);
         GX_SetDispCopyGamma(GX_GM_1_0 as u8);
+
+        // Custom texture cache configuration: statically reserve 1/4 of each bank for textures 0-3.
+        GX_InitTexCacheRegion(
+            &mut TEX_REGIONS[0],
+            GX_FALSE as u8,
+            0,
+            GX_TEXCACHE_128K as u8,
+            512 * 1024,
+            GX_TEXCACHE_128K as u8,
+        );
+        GX_InitTexCacheRegion(
+            &mut TEX_REGIONS[1],
+            GX_FALSE as u8,
+            128 * 1024,
+            GX_TEXCACHE_128K as u8,
+            640 * 1024,
+            GX_TEXCACHE_128K as u8,
+        );
+        GX_InitTexCacheRegion(
+            &mut TEX_REGIONS[2],
+            GX_FALSE as u8,
+            256 * 1024,
+            GX_TEXCACHE_128K as u8,
+            768 * 1024,
+            GX_TEXCACHE_128K as u8,
+        );
+        GX_InitTexCacheRegion(
+            &mut TEX_REGIONS[3],
+            GX_FALSE as u8,
+            384 * 1024,
+            GX_TEXCACHE_128K as u8,
+            896 * 1024,
+            GX_TEXCACHE_128K as u8,
+        );
+        GX_SetTexRegionCallback(Some(tex_region_callback));
+    }
+}
+
+static mut TEX_REGIONS: [GXTexRegion; 4] = [GXTexRegion { val: [0; 4] }; 4];
+
+unsafe extern "C" fn tex_region_callback(obj: *mut GXTexObj, map_id: u8) -> *mut GXTexRegion {
+    unsafe {
+        assert!(map_id < 4);
+        &mut TEX_REGIONS[map_id as usize]
     }
 }
 
@@ -1945,6 +2002,8 @@ struct FrameTimers {
 }
 
 extern "C" fn pre_retrace_callback(_count: u32) {
+    FRAMES.fetch_add(1, Ordering::AcqRel);
+
     if DO_COPY
         .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
@@ -1958,6 +2017,8 @@ extern "C" fn pre_retrace_callback(_count: u32) {
             VIDEO_SetNextFramebuffer(next_xfb_front);
             VIDEO_Flush();
         }
+
+        LAST_FRAME_FRAMES.store(FRAMES.swap(0, Ordering::AcqRel), Ordering::Release);
     }
 }
 
