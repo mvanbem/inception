@@ -19,8 +19,8 @@ use clap::{clap_app, crate_authors, crate_description, crate_version, ArgMatches
 use fontdue::{Font, FontSettings};
 use inception_render_common::bytecode::BytecodeOp;
 use inception_render_common::map_data::{
-    BspLeaf, BspNode, ClusterGeometryTableEntry, ClusterLightmapTableEntry,
-    CommonLightmapTableEntry, DisplacementLightmapTableEntry, DisplacementTableEntry,
+    BspLeaf, BspNode, ClusterLightmapTableEntry, CommonLightmapTableEntry,
+    DisplacementLightmapTableEntry, DisplacementTableEntry, GlobalGeometryTableEntry,
     LightmapPatchTableEntry, OwnedMapData, TextureTableEntry, WriteTo,
 };
 use memmap::Mmap;
@@ -47,7 +47,7 @@ use quickcheck::Arbitrary;
 use crate::counter::Counter;
 use crate::display_list::DisplayListBuilder;
 use crate::legacy_pass_params::{DisplacementPass, Pass, ShaderParams, ShaderParamsAlpha};
-use crate::packed_material::PackedMaterial;
+use crate::packed_material::{PackedMaterial, PackedMaterialEnvMap};
 use crate::texture_key::{OwnedTextureKey, TextureIdAllocator};
 use crate::write_big_endian::WriteBigEndian;
 
@@ -245,7 +245,7 @@ fn pack_map(hl2_base: &Path, dst: Option<&str>, map_name_or_path: Option<&str>) 
         &asset_loader,
     )?;
 
-    let (cluster_geometry_table, cluster_geometry_byte_code, cluster_geometry_display_lists) =
+    let (global_geometry_table, global_geometry_byte_code, global_geometry_display_lists) =
         pack_brush_geometry(&map_geometry);
     let bsp_nodes = pack_bsp_nodes(bsp);
     let bsp_leaves = pack_bsp_leaves(bsp);
@@ -265,9 +265,9 @@ fn pack_map(hl2_base: &Path, dst: Option<&str>, map_name_or_path: Option<&str>) 
         position_data: map_geometry.position_data,
         normal_data: map_geometry.normal_data,
         texture_coord_data: map_geometry.texture_coord_data,
-        cluster_geometry_table,
-        cluster_geometry_byte_code,
-        cluster_geometry_display_lists,
+        global_geometry_table,
+        global_geometry_byte_code,
+        global_geometry_display_lists,
         bsp_nodes,
         bsp_leaves,
         visibility,
@@ -1602,26 +1602,59 @@ fn build_local_space(normal: &Vec3) -> (Vec3, Vec3) {
 
 fn pack_brush_geometry(
     map_geometry: &MapGeometry,
-) -> (Vec<ClusterGeometryTableEntry>, Vec<u32>, Vec<u8>) {
+) -> (Vec<GlobalGeometryTableEntry>, Vec<u32>, Vec<u8>) {
     // TODO: Transpose this table for potential cache friendliness?
 
-    let mut cluster_geometry_table = Vec::new();
-    let mut cluster_geometry_byte_code = Vec::new();
-    let mut cluster_geometry_display_lists = Vec::new();
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    struct Key {
+        base_texture_id: u16,
+        aux_texture_id: u16,
+        env_texture_id: u16,
+        cluster_index: u16,
+        render_mode: u8,
+    }
 
-    for cluster in &map_geometry.clusters {
-        let mut cluster_geometry_table_entry = ClusterGeometryTableEntry {
-            byte_code_index_ranges: [[0, 0]; 18],
+    let mut sorted_geometry: BTreeMap<Key, Vec<u8>> = BTreeMap::new();
+    for (cluster_index, cluster) in map_geometry.clusters.iter().enumerate() {
+        for ((pass, packed_material, material_params), a) in
+            &cluster.display_lists_by_pass_material_params
+        {
+            sorted_geometry
+                .entry(Key {
+                    base_texture_id: packed_material.base_id,
+                    aux_texture_id: packed_material.aux_id.unwrap_or(u16::MAX),
+                    env_texture_id: packed_material
+                        .env_map
+                        .map(|env_map| env_map.ids_by_plane[&material_params.plane])
+                        .unwrap_or(u16::MAX),
+                    cluster_index: cluster_index.try_into().unwrap(),
+                    render_mode: pass.as_mode(),
+                })
+                .or_default()
+                .extend_from_slice(a);
+        }
+    }
+
+    let mut global_geometry_table = Vec::new();
+    let mut global_geometry_byte_code = Vec::new();
+    let mut global_geometry_display_lists = Vec::new();
+
+    for (key, geometry) in sorted_geometry {
+        let mut global_geometry_table_entry = GlobalGeometryTableEntry {
+            base_texture_id: key.base_texture_id,
+            aux_texture_id: key.aux_texture_id,
+            env_texture_id: key.env_texture_id,
+            cluster_index: key.cluster_index,
+            render_mode: key.render_mode,
+            _padding: [0; 3],
+            byte_code_index_range: [0, 0],
         };
-        let mut display_list_offset = u32::try_from(cluster_geometry_display_lists.len()).unwrap();
+        let mut display_list_offset = u32::try_from(global_geometry_display_lists.len()).unwrap();
         for mode in 0..18 {
-            cluster_geometry_table_entry.byte_code_index_ranges[mode as usize][0] =
-                u32::try_from(cluster_geometry_byte_code.len()).unwrap();
+            global_geometry_table_entry.byte_code_index_range[0] =
+                u32::try_from(global_geometry_byte_code.len()).unwrap();
 
-            let mut prev_base_id = None;
-            let mut prev_aux_id = None;
             let mut prev_plane = None;
-            let mut prev_env_map_id = None;
             let mut prev_env_map_tint = None;
             let mut prev_alpha = None;
             for ((pass, material, params), display_list) in
@@ -1634,7 +1667,7 @@ fn pack_brush_geometry(
                         BytecodeOp::SetBaseTexture {
                             base_texture_id: material.base_id,
                         }
-                        .append_to(&mut cluster_geometry_byte_code);
+                        .append_to(&mut global_geometry_byte_code);
                     }
 
                     if let Some(aux_id) = material.aux_id {
@@ -1644,7 +1677,7 @@ fn pack_brush_geometry(
                             BytecodeOp::SetAuxTexture {
                                 aux_texture_id: aux_id,
                             }
-                            .append_to(&mut cluster_geometry_byte_code);
+                            .append_to(&mut global_geometry_byte_code);
                         }
                     }
 
@@ -1678,21 +1711,21 @@ fn pack_brush_geometry(
                             // This is a load-immediate into GX_DTTMTX0 as GX_MTX3x4.
                             let addr = 0x0500;
                             let count = 12;
-                            cluster_geometry_display_lists.push(0x10);
-                            cluster_geometry_display_lists
+                            global_geometry_display_lists.push(0x10);
+                            global_geometry_display_lists
                                 .write_u32::<BigEndian>((count - 1) << 16 | addr)
                                 .unwrap();
                             for r in 0..3 {
                                 for c in 0..4 {
-                                    cluster_geometry_display_lists
+                                    global_geometry_display_lists
                                         .write_u32::<BigEndian>(texture_matrix[(r, c)].to_bits())
                                         .unwrap();
                                 }
                             }
                             // Pad with nops. Ideally this would happen only after a run of display
                             // lists, not between them.
-                            while cluster_geometry_display_lists.len() & 31 != 0 {
-                                cluster_geometry_display_lists.push(0);
+                            while global_geometry_display_lists.len() & 31 != 0 {
+                                global_geometry_display_lists.push(0);
                             }
                         }
 
@@ -1703,7 +1736,7 @@ fn pack_brush_geometry(
                             BytecodeOp::SetEnvTexture {
                                 env_texture_id: env_map_id,
                             }
-                            .append_to(&mut cluster_geometry_byte_code);
+                            .append_to(&mut global_geometry_byte_code);
                         }
 
                         if prev_env_map_tint != Some(params.env_map_tint) {
@@ -1712,7 +1745,7 @@ fn pack_brush_geometry(
                             BytecodeOp::SetEnvMapTint {
                                 rgb: params.env_map_tint,
                             }
-                            .append_to(&mut cluster_geometry_byte_code);
+                            .append_to(&mut global_geometry_byte_code);
                         }
                     }
 
@@ -1738,12 +1771,12 @@ fn pack_brush_geometry(
                             compare_type,
                             reference,
                         }
-                        .append_to(&mut cluster_geometry_byte_code);
+                        .append_to(&mut global_geometry_byte_code);
                     }
 
-                    cluster_geometry_display_lists.extend_from_slice(display_list);
+                    global_geometry_display_lists.extend_from_slice(display_list);
                     let next_display_list_offset =
-                        u32::try_from(cluster_geometry_display_lists.len()).unwrap();
+                        u32::try_from(global_geometry_display_lists.len()).unwrap();
                     assert_eq!(next_display_list_offset & 31, 0);
                     let display_list_size = next_display_list_offset - display_list_offset;
                     assert_eq!(display_list_size & 31, 0);
@@ -1752,22 +1785,22 @@ fn pack_brush_geometry(
                         display_list_offset,
                         display_list_size,
                     }
-                    .append_to(&mut cluster_geometry_byte_code);
+                    .append_to(&mut global_geometry_byte_code);
 
                     display_list_offset = next_display_list_offset;
                 }
             }
 
-            cluster_geometry_table_entry.byte_code_index_ranges[mode as usize][1] =
-                u32::try_from(cluster_geometry_byte_code.len()).unwrap();
+            global_geometry_table_entry.byte_code_index_range[1] =
+                u32::try_from(global_geometry_byte_code.len()).unwrap();
         }
-        cluster_geometry_table.push(cluster_geometry_table_entry);
+        global_geometry_table.push(global_geometry_table_entry);
     }
 
     (
-        cluster_geometry_table,
-        cluster_geometry_byte_code,
-        cluster_geometry_display_lists,
+        global_geometry_table,
+        global_geometry_byte_code,
+        global_geometry_display_lists,
     )
 }
 

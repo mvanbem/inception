@@ -72,9 +72,9 @@ pub struct OwnedMapData {
     pub position_data: Vec<u8>,
     pub normal_data: Vec<u8>,
     pub texture_coord_data: Vec<u8>,
-    pub cluster_geometry_table: Vec<ClusterGeometryTableEntry>,
-    pub cluster_geometry_byte_code: Vec<u32>,
-    pub cluster_geometry_display_lists: Vec<u8>,
+    pub global_geometry_table: Vec<GlobalGeometryTableEntry>,
+    pub global_geometry_byte_code: Vec<u32>,
+    pub global_geometry_display_lists: Vec<u8>,
 
     pub bsp_nodes: Vec<BspNode>,
     pub bsp_leaves: Vec<BspLeaf>,
@@ -122,9 +122,9 @@ impl<W: Seek + Write> WriteTo<W> for OwnedMapData {
         write_slice_header!(position_data);
         write_slice_header!(normal_data);
         write_slice_header!(texture_coord_data);
-        write_slice_header!(cluster_geometry_table);
-        write_slice_header!(cluster_geometry_byte_code);
-        write_slice_header!(cluster_geometry_display_lists);
+        write_slice_header!(global_geometry_table);
+        write_slice_header!(global_geometry_byte_code);
+        write_slice_header!(global_geometry_display_lists);
         write_slice_header!(bsp_nodes);
         write_slice_header!(bsp_leaves);
         write_slice_header!(visibility);
@@ -188,9 +188,9 @@ impl<W: Seek + Write> WriteTo<W> for OwnedMapData {
         write_slice_bytes!(position_data, 1);
         write_slice_bytes!(normal_data, 1);
         write_slice_bytes!(texture_coord_data, 1);
-        write_slice_data!(cluster_geometry_table);
-        write_slice_data!(cluster_geometry_byte_code);
-        write_slice_bytes!(cluster_geometry_display_lists, 32);
+        write_slice_data!(global_geometry_table);
+        write_slice_data!(global_geometry_byte_code);
+        write_slice_bytes!(global_geometry_display_lists, 32);
         write_slice_data!(bsp_nodes);
         write_slice_data!(bsp_leaves);
         write_slice_bytes!(visibility);
@@ -221,12 +221,12 @@ struct PackedMapData {
     normal_data_len: usize,
     texture_coord_data_offset: usize,
     texture_coord_data_len: usize,
-    cluster_geometry_table_offset: usize,
-    cluster_geometry_table_len: usize,
-    cluster_geometry_byte_code_offset: usize,
-    cluster_geometry_byte_code_len: usize,
-    cluster_geometry_display_lists_offset: usize,
-    cluster_geometry_display_lists_len: usize,
+    global_geometry_table_offset: usize,
+    global_geometry_table_len: usize,
+    global_geometry_byte_code_offset: usize,
+    global_geometry_byte_code_len: usize,
+    global_geometry_display_lists_offset: usize,
+    global_geometry_display_lists_len: usize,
 
     bsp_nodes_offset: usize,
     bsp_nodes_len: usize,
@@ -306,32 +306,32 @@ impl<Data: Deref<Target = [u8]>> MapData<Data> {
         }
     }
 
-    pub fn cluster_geometry_table(&self) -> &[ClusterGeometryTableEntry] {
+    pub fn global_geometry_table(&self) -> &[GlobalGeometryTableEntry] {
         let packed = self.packed();
         unsafe {
             self.cast_slice(
-                packed.cluster_geometry_table_offset,
-                packed.cluster_geometry_table_len,
+                packed.global_geometry_table_offset,
+                packed.global_geometry_table_len,
             )
         }
     }
 
-    pub fn cluster_geometry_byte_code(&self) -> &[u32] {
+    pub fn global_geometry_byte_code(&self) -> &[u32] {
         let packed = self.packed();
         unsafe {
             self.cast_slice(
-                packed.cluster_geometry_byte_code_offset,
-                packed.cluster_geometry_byte_code_len,
+                packed.global_geometry_byte_code_offset,
+                packed.global_geometry_byte_code_len,
             )
         }
     }
 
-    pub fn cluster_geometry_display_lists(&self) -> &[u8] {
+    pub fn global_geometry_display_lists(&self) -> &[u8] {
         let packed = self.packed();
         unsafe {
             self.cast_slice(
-                packed.cluster_geometry_display_lists_offset,
-                packed.cluster_geometry_display_lists_len,
+                packed.global_geometry_display_lists_offset,
+                packed.global_geometry_display_lists_len,
             )
         }
     }
@@ -475,30 +475,37 @@ impl<Data: Deref<Target = [u8]>> MapData<Data> {
 
 #[derive(Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
-pub struct ClusterGeometryTableEntry {
-    pub byte_code_index_ranges: [[u32; 2]; 18],
+pub struct GlobalGeometryTableEntry {
+    pub base_texture_id: u16,
+    pub aux_texture_id: u16,
+    pub env_texture_id: u16,
+    pub cluster_index: u16,
+    pub render_mode: u8,
+    pub _padding: [u8; 3],
+    pub byte_code_index_range: [u32; 2],
 }
 
-impl ClusterGeometryTableEntry {
+impl GlobalGeometryTableEntry {
     pub fn iter_display_lists<'a>(
         &'a self,
-        cluster_geometry_byte_code: &'a [u32],
-        pass: usize,
+        global_geometry_byte_code: &'a [u32],
     ) -> impl Iterator<Item = BytecodeOp> + 'a {
-        let start = self.byte_code_index_ranges[pass][0] as usize;
-        let end = self.byte_code_index_ranges[pass][1] as usize;
-        BytecodeReader::new(&cluster_geometry_byte_code[start..end])
+        let start = self.byte_code_index_range[0] as usize;
+        let end = self.byte_code_index_range[1] as usize;
+        BytecodeReader::new(&global_geometry_byte_code[start..end])
     }
 }
 
 #[cfg(feature = "std")]
-impl<W: Seek + Write> WriteTo<W> for ClusterGeometryTableEntry {
+impl<W: Seek + Write> WriteTo<W> for GlobalGeometryTableEntry {
     fn write_to(&self, w: &mut W) -> io::Result<()> {
-        for range in self.byte_code_index_ranges.iter() {
-            for &index in range {
-                w.write_u32::<BigEndian>(index)?;
-            }
-        }
+        w.write_u16::<BigEndian>(self.base_texture_id)?;
+        w.write_u16::<BigEndian>(self.aux_texture_id)?;
+        w.write_u16::<BigEndian>(self.env_texture_id)?;
+        w.write_u16::<BigEndian>(self.cluster_index)?;
+        w.write_u8(self.render_mode)?;
+        w.write_u32::<BigEndian>(self.byte_code_index_range[0])?;
+        w.write_u32::<BigEndian>(self.byte_code_index_range[1])?;
         Ok(())
     }
 }
