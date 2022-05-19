@@ -131,9 +131,12 @@ dependencies = [
  "bytemuck",
  "derive-try-from-primitive",
  "derive_more",
+ "font-gx",
  "gamecube-dvd-driver",
  "gamecube-peripheral-access",
+ "gamecube-shader",
  "inception-render-common",
+ "include-bytes-align-as",
  "libc",
  "libm",
  "no-std-ftp",
@@ -255,6 +258,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "font-gx"
+version = "0.1.0"
+dependencies = [
+ "gamecube-shader",
+ "ogc-sys",
+]
+
+[[package]]
 name = "funty"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -277,6 +288,16 @@ version = "0.1.0"
 dependencies = [
  "bare-metal",
  "vcell",
+]
+
+[[package]]
+name = "gamecube-shader"
+version = "0.1.0"
+dependencies = [
+ "derive_more",
+ "ogc-sys",
+ "paste",
+ "seq-macro",
 ]
 
 [[package]]
@@ -316,6 +337,10 @@ dependencies = [
  "bytemuck",
  "nalgebra-glm",
 ]
+
+[[package]]
+name = "include-bytes-align-as"
+version = "0.1.0"
 
 [[package]]
 name = "lazy_static"

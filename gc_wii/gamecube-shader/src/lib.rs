@@ -1,10 +1,17 @@
+#![no_std]
 #![allow(dead_code)]
+#![feature(const_fn_trait_bound)]
 
 use ogc_sys::*;
 use paste::paste;
 use seq_macro::seq;
 
 use crate::gx::*;
+
+mod flat_textured;
+pub mod gx;
+
+pub use crate::flat_textured::FLAT_TEXTURED_SHADER;
 
 macro_rules! tev_builder {
     (all) => {

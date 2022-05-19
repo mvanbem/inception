@@ -1,5 +1,5 @@
-use crate::gx::*;
-use crate::shader::*;
+use gamecube_shader::gx::*;
+use gamecube_shader::*;
 
 /// LightmappedGeneric, base alpha packed as aux alpha.
 pub static LIGHTMAPPED_BAAA_SHADER: Shader = Shader {

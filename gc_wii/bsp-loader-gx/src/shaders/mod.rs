@@ -1,4 +1,3 @@
-pub mod flat_textured;
 pub mod flat_vertex_color;
 pub mod lightmapped;
 pub mod lightmapped_baaa;

@@ -1,0 +1,13 @@
+[package]
+name = "gamecube-shader"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+derive_more = "0.99"
+ogc-sys = { path = "../ogc-sys", default-features = false }
+paste = "1"
+seq-macro = "0.2"

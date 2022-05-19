@@ -1,5 +1,5 @@
-use crate::gx::*;
-use crate::shader::*;
+use gamecube_shader::gx::*;
+use gamecube_shader::*;
 
 /// LightmappedGeneric, env mapped, env map mask packed as auxiliary intensity.
 pub static LIGHTMAPPED_ENV_EMAI_SHADER: Shader = Shader {

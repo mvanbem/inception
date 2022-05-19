@@ -1,5 +1,4 @@
-use crate::gx::*;
-use crate::shader::*;
+use crate::*;
 
 pub static FLAT_TEXTURED_SHADER: Shader = Shader {
     tev_stages: tev_builder()

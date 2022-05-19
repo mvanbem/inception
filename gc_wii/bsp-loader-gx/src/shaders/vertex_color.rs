@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
-use crate::gx::*;
-use crate::shader::*;
+use gamecube_shader::gx::*;
+use gamecube_shader::*;
 
 pub static VERTEX_COLOR_SHADER: Shader = Shader {
     tev_stages: tev_builder()

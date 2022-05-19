@@ -14,7 +14,8 @@
     "os": "none",
     "pre-link-args": {
         "gcc": [
-            "-mrvl",
+            "-mogc",
+            "-mcpu=750",
             "-meabi",
             "-mhard-float"
         ]

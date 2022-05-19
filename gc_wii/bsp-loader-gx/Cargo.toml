@@ -28,9 +28,12 @@ aligned = "0.4"
 bytemuck = "1"
 derive_more = "0.99"
 derive-try-from-primitive = "1"
+font-gx = { path = "../font-gx" }
 gamecube-dvd-driver = { path = "../gamecube-dvd-driver" }
 gamecube-peripheral-access = { path = "../gamecube-peripheral-access" }
+gamecube-shader = { path = "../gamecube-shader" }
 inception-render-common = { path = "../../shared/inception-render-common" }
+include-bytes-align-as = { path = "../include-bytes-align-as" }
 libc = "0.2"
 libm = "0.2"
 no-std-ftp = { path = "../../shared/no-std-ftp" }

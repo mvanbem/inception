@@ -10,6 +10,8 @@
 extern crate alloc;
 #[cfg(test)]
 extern crate std;
+#[macro_use(include_bytes_align_as)]
+extern crate include_bytes_align_as;
 
 use core::ffi::c_void;
 use core::mem::zeroed;
@@ -23,6 +25,8 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use derive_try_from_primitive::TryFromPrimitive;
+use font_gx::TextRenderer;
+use gamecube_shader::FLAT_TEXTURED_SHADER;
 use inception_render_common::bytecode::{BytecodeOp, BytecodeReader};
 use inception_render_common::map_data::{MapData, TextureTableEntry};
 use num_traits::float::FloatCore;
@@ -30,7 +34,6 @@ use ogc_sys::*;
 
 use crate::lightmap::Lightmap;
 use crate::loader::Loader;
-use crate::shaders::flat_textured::FLAT_TEXTURED_SHADER;
 use crate::shaders::flat_vertex_color::FLAT_VERTEX_COLOR_SHADER;
 use crate::shaders::lightmapped::LIGHTMAPPED_SHADER;
 use crate::shaders::lightmapped_baaa::LIGHTMAPPED_BAAA_SHADER;
@@ -43,14 +46,10 @@ use crate::shaders::unlit_generic::UNLIT_GENERIC_SHADER;
 use crate::shaders::world_vertex_transition::WORLD_VERTEX_TRANSITION_SHADER;
 use crate::visibility::{ClusterIndex, Visibility};
 
-mod gx;
-#[macro_use]
-mod include_bytes_align;
 mod iso9660;
 mod lightmap;
 mod loader;
 mod net;
-mod shader;
 mod shaders;
 mod visibility;
 
@@ -1757,88 +1756,6 @@ fn do_debug_draw(
         r.y = 480 - 28;
         let buf = format!("{}", last_frame_frames);
         r.draw_str(buf.as_bytes());
-    }
-}
-
-struct TextRenderer {
-    x: u16,
-    y: u16,
-    left_margin: u16,
-}
-
-impl TextRenderer {
-    fn prepare(ui_font: &GXTexObj) {
-        unsafe {
-            GX_ClearVtxDesc();
-            GX_SetVtxDesc(GX_VA_POS as u8, GX_DIRECT as u8);
-            GX_SetVtxDesc(GX_VA_TEX0 as u8, GX_DIRECT as u8);
-            GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_POS, GX_POS_XY, GX_U16, 0);
-            GX_SetVtxAttrFmt(GX_VTXFMT0 as u8, GX_VA_TEX0, GX_TEX_ST, GX_U8, 6);
-            GX_InvVtxCache();
-
-            FLAT_TEXTURED_SHADER.apply();
-            GX_LoadTexObj(
-                ui_font as *const GXTexObj as *mut GXTexObj,
-                GX_TEXMAP0 as u8,
-            );
-        }
-    }
-
-    fn new_line(&mut self) {
-        self.x = self.left_margin;
-        self.y += 16;
-    }
-
-    fn draw_char(&mut self, c: u8) {
-        if c == b'\n' {
-            self.new_line();
-            return;
-        }
-
-        let x0 = self.x;
-        let x1 = x0 + 8;
-        let y0 = self.y;
-        let y1 = y0 + 16;
-
-        let s0 = ((c & 0xf) << 2) + 1;
-        let s1 = s0 + 2;
-        let t0 = (c >> 4) << 2;
-        let t1 = t0 + 4;
-
-        unsafe {
-            GX_Begin(GX_QUADS as u8, GX_VTXFMT0 as u8, 4);
-
-            (*wgPipe).U16 = x0;
-            (*wgPipe).U16 = y0;
-            (*wgPipe).U8 = s0;
-            (*wgPipe).U8 = t0;
-
-            (*wgPipe).U16 = x1;
-            (*wgPipe).U16 = y0;
-            (*wgPipe).U8 = s1;
-            (*wgPipe).U8 = t0;
-
-            (*wgPipe).U16 = x1;
-            (*wgPipe).U16 = y1;
-            (*wgPipe).U8 = s1;
-            (*wgPipe).U8 = t1;
-
-            (*wgPipe).U16 = x0;
-            (*wgPipe).U16 = y1;
-            (*wgPipe).U8 = s0;
-            (*wgPipe).U8 = t1;
-        }
-
-        self.x += 8;
-        if self.x + 8 > 640 {
-            self.new_line();
-        }
-    }
-
-    fn draw_str(&mut self, s: &[u8]) {
-        for &c in s {
-            self.draw_char(c);
-        }
     }
 }
 
