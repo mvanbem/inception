@@ -5,5 +5,6 @@ pub mod bsp;
 pub mod file;
 pub mod geometry;
 pub mod lightmap;
+pub mod model;
 mod properties;
 pub mod vpk;

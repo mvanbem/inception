@@ -15,7 +15,7 @@ nalgebra-glm = "0.15"
 nom = "7"
 png = "0.17"
 recursive-iter = { path = "../../shared/recursive-iter" }
-source-reader = { path = "../../shared/source-reader" }
+source-reader = { path = "../../shared/source-reader", features = ["glium"] }
 texture-atlas = { path = "../../shared/texture-atlas" }
 texture-format = { path = "../../shared/texture-format" }
 try-insert-ext = "0.1"

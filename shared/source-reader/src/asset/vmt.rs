@@ -113,11 +113,14 @@ impl Asset for Vmt {
 
 #[derive(Debug)]
 pub enum Shader {
-    // Regular shaders.
+    // World shaders.
     LightmappedGeneric(LightmappedGeneric),
     UnlitGeneric(UnlitGeneric),
     WorldVertexTransition(WorldVertexTransition),
     Sky(Sky),
+
+    // Model shaders.
+    VertexLitGeneric(VertexLitGeneric),
 
     // Compile flags represented as shaders.
     CompileSky,
@@ -133,6 +136,7 @@ impl Shader {
             Shader::UnlitGeneric(_) => "UnlitGeneric",
             Shader::WorldVertexTransition(_) => "WorldVertexTransition",
             Shader::Sky(_) => "Sky",
+            Shader::VertexLitGeneric(_) => "VertexLitGeneric",
 
             Shader::CompileSky => "%compilesky",
 
@@ -158,6 +162,7 @@ fn create_shader_builder<'a>(
         "unlitgeneric" => Box::new(UnlitGenericBuilder::default()),
         "worldvertextransition" => Box::new(WorldVertexTransitionBuilder::default()),
         "sky" => Box::new(SkyBuilder::default()),
+        "vertexlitgeneric" => Box::new(VertexLitGenericBuilder::default()),
         "patch" => Box::new(PatchBuilder::default()),
         shader => {
             eprintln!("WARNING: Unimplemented shader {} in {}", shader, path);
@@ -596,6 +601,59 @@ impl<'a> ShaderBuilder<'a> for SkyBuilder {
 
 #[derive(Debug)]
 pub struct Sky {
+    pub base_texture_path: VpkPath,
+}
+
+#[derive(Debug)]
+pub struct VertexLitGenericBuilder {
+    pub base_texture_path: Option<VpkPath>,
+}
+
+impl Default for VertexLitGenericBuilder {
+    fn default() -> Self {
+        Self {
+            base_texture_path: None,
+        }
+    }
+}
+
+impl<'a> ShaderBuilder<'a> for VertexLitGenericBuilder {
+    fn parse(&mut self, material_path: &VpkPath, entry: Entry<'a>) -> Result<()> {
+        match entry {
+            Entry::KeyValue(KeyValue { key, value }) => match key.to_ascii_lowercase().as_str() {
+                "$basetexture" => {
+                    self.base_texture_path = parse_vtf_path(value).context("$basetexture")?
+                }
+                x if x.starts_with("%") => (),
+                _ => eprintln!(
+                    "WARNING: Unimplemented VertexLitGeneric key {} in {}",
+                    key, material_path,
+                ),
+            },
+            Entry::Object(Object { name, entries: _ }) => {
+                match name.to_ascii_lowercase().as_str() {
+                    _ => eprintln!(
+                        "WARNING: Unexpected VertexLitGeneric object {} in {}",
+                        name, material_path,
+                    ),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn build(self: Box<Self>, _loader: &AssetLoader, _material_path: &VpkPath) -> Result<Shader> {
+        Ok(Shader::VertexLitGeneric(VertexLitGeneric {
+            base_texture_path: match self.base_texture_path {
+                Some(x) => x,
+                None => bail!("VertexLitGeneric $basetexture was unset"),
+            },
+        }))
+    }
+}
+
+#[derive(Debug)]
+pub struct VertexLitGeneric {
     pub base_texture_path: VpkPath,
 }
 

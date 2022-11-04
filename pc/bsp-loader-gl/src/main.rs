@@ -4,11 +4,11 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs::File;
 use std::hash::Hash;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use glium::glutin::dpi::LogicalSize;
 use glium::glutin::event::{DeviceEvent, Event, WindowEvent};
 use glium::glutin::event_loop::{ControlFlow, EventLoop};
@@ -23,7 +23,7 @@ use glium::{
 };
 use memmap::Mmap;
 use nalgebra_glm::{look_at, perspective, radians, rotate, translate, vec1, vec3};
-use source_reader::asset::vmt::{LightmappedGeneric, Shader};
+use source_reader::asset::vmt::{LightmappedGeneric, Shader, VertexLitGeneric};
 use source_reader::asset::AssetLoader;
 use source_reader::bsp::{self, Bsp};
 use source_reader::file::zip::ZipArchiveLoader;
@@ -69,19 +69,37 @@ struct GraphicsData {
 }
 
 fn main() -> Result<()> {
-    let hl2_base: &Path =
-        Path::new("C:\\Program Files (x86)\\Steam\\steamapps\\common\\Half-Life 2\\hl2");
-    let bsp_file = File::open(hl2_base.join("maps\\d1_trainstation_01.bsp"))?;
+    let hl2_base = {
+        let mut hl2_base = PathBuf::from(std::env::var("HOME").unwrap());
+        hl2_base.extend([
+            ".steam",
+            "steam",
+            "steamapps",
+            "common",
+            "Half-Life 2",
+            "hl2",
+        ]);
+        hl2_base
+    };
+    let hl2_misc = Rc::new(Vpk::new(hl2_base.join("hl2_misc"))?);
+
+    let map_path = {
+        let mut map_path = hl2_base.clone();
+        map_path.push("maps");
+        map_path.push("d1_trainstation_01.bsp");
+        map_path
+    };
+    let bsp_file = File::open(map_path)?;
     let bsp_data = unsafe { Mmap::map(&bsp_file) }?;
     let bsp = Bsp::new(&bsp_data);
-    let asset_loader = build_asset_loader(hl2_base, bsp)?;
+    let asset_loader = build_asset_loader(&hl2_base, bsp, Rc::clone(&hl2_misc))?;
 
     let events_loop = EventLoop::new();
     let display = Display::new(
         WindowBuilder::new()
             .with_inner_size(LogicalSize::new(1024.0, 768.0))
             .with_title("bsp-loader-gl"),
-        glium::glutin::ContextBuilder::new().with_double_buffer(Some(true)),
+        glium::glutin::ContextBuilder::new(),
         &events_loop,
     )
     .unwrap();
@@ -94,13 +112,52 @@ fn main() -> Result<()> {
 
     let program = build_shaders(&display)?;
     let vertex_buffer = VertexBuffer::new(&display, &vertices)?;
-    let textures_by_path = load_textures(&display, &asset_loader, &indices_by_cluster_material)?;
+    let mut textures_by_path =
+        load_textures(&display, &asset_loader, &indices_by_cluster_material)?;
     let batches_by_cluster = build_batches_by_cluster(
         &display,
-        asset_loader,
+        &asset_loader,
         indices_by_cluster_material,
         &textures_by_path,
     )?;
+
+    // Begin model hack stuff.
+
+    let mdl_path = VpkPath::new_with_prefix_and_extension("police", "models", "mdl");
+    let mdl_data = match hl2_misc.load_file(&mdl_path)? {
+        Some(data) => data,
+        None => bail!("asset not found: {}", mdl_path),
+    };
+    let mdl = source_reader::model::mdl::Mdl::new(&mdl_data);
+    let vtx_path = VpkPath::new_with_prefix_and_extension("police", "models", "dx90.vtx");
+    let vtx_data = match hl2_misc.load_file(&vtx_path)? {
+        Some(data) => data,
+        None => bail!("asset not found: {}", vtx_path),
+    };
+    let vtx = source_reader::model::vtx::Vtx::new(&vtx_data);
+    let vvd_path = VpkPath::new_with_prefix_and_extension("police", "models", "vvd");
+    let vvd_data = match hl2_misc.load_file(&vvd_path)? {
+        Some(data) => data,
+        None => bail!("asset not found: {}", vvd_path),
+    };
+    let vvd = source_reader::model::vvd::Vvd::new(&vvd_data);
+
+    let model_program = build_model_shaders(&display)?;
+    let (model_vertex_data, model_batches) =
+        source_reader::model::glium::build_vertex_buffer(&display, &asset_loader, mdl, vtx, vvd);
+    let model_vertex_buffer = VertexBuffer::new(&display, &model_vertex_data)?;
+    load_model_textures(
+        &display,
+        &asset_loader,
+        &mut textures_by_path,
+        &model_batches,
+    )?;
+    let model_batches = model_batches
+        .into_iter()
+        .filter_map(ModelBatch::new)
+        .collect::<Vec<_>>();
+
+    // End model hack stuff.
 
     let mut game_state = GameState::new();
     events_loop.run(move |event, _target, control_flow| match event {
@@ -131,6 +188,9 @@ fn main() -> Result<()> {
                 &program,
                 &textures_by_path,
                 &cluster_lightmap_textures,
+                &model_vertex_buffer,
+                &model_batches,
+                &model_program,
             );
 
             let next_frame_time = Instant::now();
@@ -140,11 +200,15 @@ fn main() -> Result<()> {
     })
 }
 
-fn build_asset_loader<'a>(hl2_base: &Path, bsp: Bsp<'a>) -> Result<AssetLoader<'a>> {
+fn build_asset_loader<'a>(
+    hl2_base: &Path,
+    bsp: Bsp<'a>,
+    hl2_misc: Rc<Vpk>,
+) -> Result<AssetLoader<'a>> {
     let pak_loader = Rc::new(ZipArchiveLoader::new(bsp.pak_file()));
     let material_loader = Rc::new(FallbackFileLoader::new(vec![
         Rc::clone(&pak_loader) as Rc<dyn FileLoader>,
-        Rc::new(Vpk::new(hl2_base.join("hl2_misc"))?),
+        hl2_misc,
     ]));
     let texture_loader = Rc::new(FallbackFileLoader::new(vec![
         Rc::clone(&pak_loader) as Rc<dyn FileLoader>,
@@ -158,7 +222,8 @@ fn load_graphics_data(
     bsp: Bsp,
     asset_loader: &AssetLoader,
 ) -> Result<GraphicsData> {
-    let cluster_lightmaps = build_lightmaps(bsp)?;
+    let (cluster_lightmaps, _displacement_lightmaps) = build_lightmaps(bsp)?;
+    // TODO: Render displacements.
 
     #[derive(Clone, Copy, PartialEq, Eq, Hash)]
     struct VertexKey {
@@ -175,7 +240,11 @@ fn load_graphics_data(
             // Leaf is not potentially visible from anywhere.
             continue;
         }
-        let cluster_lightmap = &cluster_lightmaps[&cluster];
+        let cluster_lightmap = match cluster_lightmaps.get(&cluster) {
+            Some(lightmap) => lightmap,
+            // TODO: Render non-lightmapped geometry.
+            None => continue,
+        };
         let lightmap_texture_data = cluster_lightmap_texture_data
             .entry(cluster)
             .or_insert_with(|| vec![0u8; 3 * cluster_lightmap.width * cluster_lightmap.height]);
@@ -246,14 +315,8 @@ fn load_graphics_data(
                 let remapped_index = if emitted_vertices_by_source.contains_key(&key) {
                     *emitted_vertices_by_source.get(&key).unwrap()
                 } else {
-                    let vertex = convert_vertex(
-                        bsp,
-                        (cluster_lightmap.width, cluster_lightmap.height),
-                        lightmap_metadata,
-                        face,
-                        tex_info,
-                        vertex_index,
-                    );
+                    let vertex =
+                        convert_vertex(bsp, Some(cluster_lightmap), face, tex_info, vertex_index);
 
                     // Emit the vertex.
                     let remapped_index = u16::try_from(vertices.len()).unwrap();
@@ -365,6 +428,56 @@ fn build_shaders(display: &Display) -> Result<Program> {
     )?)
 }
 
+fn build_model_shaders(display: &Display) -> Result<Program> {
+    const VERTEX_SHADER_SOURCE: &str = r#"
+        #version 330
+
+        uniform mat4 mvp_matrix;
+
+        in vec3 position;
+        in vec3 normal;
+        in vec2 tex_coord;
+
+        out vec3 interpolated_normal;
+        out vec2 interpolated_tex_coord;
+
+        void main() {
+            gl_Position = mvp_matrix * vec4(position, 1.0);
+            interpolated_normal = normal;
+            interpolated_tex_coord = tex_coord;
+        }
+    "#;
+    const FRAGMENT_SHADER_SOURCE: &str = r#"
+        #version 330
+
+        uniform sampler2D base_map;
+
+        in vec3 interpolated_normal;
+        in vec2 interpolated_tex_coord;
+
+        out vec4 rendered_color;
+
+        void main() {
+            rendered_color = vec4(
+                texture(base_map, interpolated_tex_coord).rgb,
+                1.0);
+        }
+    "#;
+    Ok(Program::new(
+        display,
+        ProgramCreationInput::SourceCode {
+            vertex_shader: VERTEX_SHADER_SOURCE,
+            tessellation_control_shader: None,
+            tessellation_evaluation_shader: None,
+            geometry_shader: None,
+            fragment_shader: FRAGMENT_SHADER_SOURCE,
+            transform_feedback_varyings: None,
+            outputs_srgb: false,
+            uses_point_size: false,
+        },
+    )?)
+}
+
 fn load_textures(
     display: &Display,
     asset_loader: &AssetLoader,
@@ -379,30 +492,67 @@ fn load_textures(
             }) = material.shader()
             {
                 if !textures_by_path.contains_key(base_texture_path) {
-                    // Load this texture.
-                    let base_texture = asset_loader.get_texture(base_texture_path)?;
-                    let gl_texture = match base_texture.format() {
-                        TextureFormat::Bgr8 => create_texture_encoded::<CreateSrgbTexture2dRgba8>(
-                            display,
-                            &base_texture,
-                            TextureFormat::Rgb8,
-                        )?,
-                        TextureFormat::Dxt1 => create_texture::<CreateCompressedSrgbTexture2dDxt1>(
-                            display,
-                            &base_texture,
-                        )?,
-                        TextureFormat::Dxt5 => create_texture::<CreateCompressedSrgbTexture2dDxt5>(
-                            display,
-                            &base_texture,
-                        )?,
-                        format => panic!("unexpected texture format: {:?}", format),
-                    };
-                    textures_by_path.insert(base_texture_path.to_owned(), gl_texture);
+                    load_texture(
+                        display,
+                        asset_loader,
+                        &mut textures_by_path,
+                        base_texture_path,
+                    )?;
                 }
             }
         }
     }
     Ok(textures_by_path)
+}
+
+fn load_texture(
+    display: &Display,
+    asset_loader: &AssetLoader,
+    textures_by_path: &mut HashMap<VpkPath, AnyTexture2d>,
+    texture_path: &VpkPath,
+) -> Result<()> {
+    let base_texture = asset_loader.get_texture(texture_path)?;
+    let gl_texture = match base_texture.format() {
+        TextureFormat::Bgr8 => create_texture_encoded::<CreateSrgbTexture2dRgba8>(
+            display,
+            &base_texture,
+            TextureFormat::Rgb8,
+        )?,
+        TextureFormat::Dxt1 => {
+            create_texture::<CreateCompressedSrgbTexture2dDxt1>(display, &base_texture)?
+        }
+        TextureFormat::Dxt5 => {
+            create_texture::<CreateCompressedSrgbTexture2dDxt5>(display, &base_texture)?
+        }
+        format => panic!("unexpected texture format: {:?}", format),
+    };
+    textures_by_path.insert(texture_path.to_owned(), gl_texture);
+    Ok(())
+}
+
+fn load_model_textures(
+    display: &Display,
+    asset_loader: &AssetLoader,
+    textures_by_path: &mut HashMap<VpkPath, AnyTexture2d>,
+    batches: &[source_reader::model::glium::Batch],
+) -> Result<()> {
+    for batch in batches {
+        let base_map = match batch.base_map.as_ref() {
+            Some(base_map) => base_map,
+            None => continue,
+        };
+        match base_map.shader() {
+            Shader::VertexLitGeneric(VertexLitGeneric {
+                base_texture_path, ..
+            }) => {
+                if !textures_by_path.contains_key(base_texture_path) {
+                    load_texture(display, asset_loader, textures_by_path, base_texture_path)?;
+                }
+            }
+            shader => panic!("unexpected model shader: {:?}", shader),
+        }
+    }
+    Ok(())
 }
 
 struct Batch {
@@ -413,7 +563,7 @@ struct Batch {
 
 fn build_batches_by_cluster(
     display: &Display,
-    asset_loader: AssetLoader,
+    asset_loader: &AssetLoader,
     indices_by_cluster_material: HashMap<i16, HashMap<VpkPath, Vec<u16>>>,
     textures_by_path: &HashMap<VpkPath, AnyTexture2d>,
 ) -> Result<HashMap<i16, Vec<Batch>>> {
@@ -445,6 +595,25 @@ fn build_batches_by_cluster(
     Ok(batches_by_cluster)
 }
 
+struct ModelBatch {
+    index_buffer: IndexBuffer<u16>,
+    base_map_path: VpkPath,
+}
+
+impl ModelBatch {
+    fn new(batch: source_reader::model::glium::Batch) -> Option<Self> {
+        match batch.base_map?.shader() {
+            Shader::VertexLitGeneric(VertexLitGeneric {
+                base_texture_path, ..
+            }) => Some(ModelBatch {
+                index_buffer: batch.index_buffer,
+                base_map_path: base_texture_path.to_owned(),
+            }),
+            shader => panic!("unexpected model shader: {:?}", shader),
+        }
+    }
+}
+
 fn draw(
     display: &Display,
     game_state: &GameState,
@@ -453,6 +622,9 @@ fn draw(
     program: &Program,
     textures_by_path: &HashMap<VpkPath, AnyTexture2d>,
     cluster_lightmap_textures: &HashMap<i16, SrgbTexture2d>,
+    model_vertex_buffer: &VertexBuffer<source_reader::model::glium::Vertex>,
+    model_batches: &[ModelBatch],
+    model_program: &Program,
 ) {
     let dimensions = display.get_framebuffer_dimensions();
     let proj = perspective(
@@ -472,7 +644,7 @@ fn draw(
     let mvp_matrix = proj * view;
 
     let mut target = display.draw();
-    target.clear_color_and_depth((0.5, 0.5, 0.5, 0.0), 1.0);
+    target.clear_color_and_depth((0.5, 0.5, 0.5, 1.0), 1.0);
     for (cluster_index, batches) in batches_by_cluster {
         for batch in batches {
             let base_texture = &textures_by_path[&batch.base_map_path];
@@ -596,5 +768,108 @@ fn draw(
             }
         }
     }
+
+    for batch in model_batches {
+        let base_texture = &textures_by_path[&batch.base_map_path];
+        match base_texture {
+            AnyTexture2d::Texture2d(x) => target
+                .draw(
+                    model_vertex_buffer,
+                    &batch.index_buffer,
+                    &model_program,
+                    &uniform! {
+                        mvp_matrix: mvp_matrix.data.0,
+                        base_map: Sampler::new(x)
+                            .wrap_function(SamplerWrapFunction::Repeat)
+                            .magnify_filter(MagnifySamplerFilter::Linear)
+                            .minify_filter(MinifySamplerFilter::LinearMipmapLinear)
+                            .anisotropy(16),
+                    },
+                    &DrawParameters {
+                        depth: Depth {
+                            test: DepthTest::IfLess,
+                            write: true,
+                            ..Default::default()
+                        },
+                        backface_culling: BackfaceCullingMode::CullCounterClockwise,
+                        ..Default::default()
+                    },
+                )
+                .unwrap(),
+            AnyTexture2d::SrgbTexture2d(x) => target
+                .draw(
+                    model_vertex_buffer,
+                    &batch.index_buffer,
+                    &model_program,
+                    &uniform! {
+                        mvp_matrix: mvp_matrix.data.0,
+                        base_map: Sampler::new(x)
+                            .wrap_function(SamplerWrapFunction::Repeat)
+                            .magnify_filter(MagnifySamplerFilter::Linear)
+                            .minify_filter(MinifySamplerFilter::LinearMipmapLinear)
+                            .anisotropy(16),
+                    },
+                    &DrawParameters {
+                        depth: Depth {
+                            test: DepthTest::IfLess,
+                            write: true,
+                            ..Default::default()
+                        },
+                        backface_culling: BackfaceCullingMode::CullCounterClockwise,
+                        ..Default::default()
+                    },
+                )
+                .unwrap(),
+            AnyTexture2d::CompressedTexture2d(x) => target
+                .draw(
+                    model_vertex_buffer,
+                    &batch.index_buffer,
+                    &model_program,
+                    &uniform! {
+                        mvp_matrix: mvp_matrix.data.0,
+                        base_map: Sampler::new(x)
+                            .wrap_function(SamplerWrapFunction::Repeat)
+                            .magnify_filter(MagnifySamplerFilter::Linear)
+                            .minify_filter(MinifySamplerFilter::LinearMipmapLinear)
+                            .anisotropy(16),
+                    },
+                    &DrawParameters {
+                        depth: Depth {
+                            test: DepthTest::IfLess,
+                            write: true,
+                            ..Default::default()
+                        },
+                        backface_culling: BackfaceCullingMode::CullCounterClockwise,
+                        ..Default::default()
+                    },
+                )
+                .unwrap(),
+            AnyTexture2d::CompressedSrgbTexture2d(x) => target
+                .draw(
+                    model_vertex_buffer,
+                    &batch.index_buffer,
+                    &model_program,
+                    &uniform! {
+                        mvp_matrix: mvp_matrix.data.0,
+                        base_map: Sampler::new(x)
+                            .wrap_function(SamplerWrapFunction::Repeat)
+                            .magnify_filter(MagnifySamplerFilter::Linear)
+                            .minify_filter(MinifySamplerFilter::LinearMipmapLinear)
+                            .anisotropy(16),
+                    },
+                    &DrawParameters {
+                        depth: Depth {
+                            test: DepthTest::IfLess,
+                            write: true,
+                            ..Default::default()
+                        },
+                        backface_culling: BackfaceCullingMode::CullCounterClockwise,
+                        ..Default::default()
+                    },
+                )
+                .unwrap(),
+        }
+    }
+
     target.finish().unwrap();
 }

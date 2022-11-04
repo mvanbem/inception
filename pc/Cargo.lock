@@ -1709,8 +1709,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "approx",
+ "bytemuck",
  "byteorder",
  "fully-occupied",
+ "glium",
  "memmap",
  "nalgebra-glm 0.15.0",
  "nom",

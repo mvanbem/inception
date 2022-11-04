@@ -79,6 +79,11 @@ fn main() -> Result<()> {
             (@arg MAP: "Map name (example: d1_trainstation_01)")
             (@arg LUMP: "Lump index (example: 40)")
         )
+        (@subcommand pack_model =>
+            (about: "Packs a single model for use on GC/Wii")
+            (@arg MODEL: "Model name (default: police)")
+            (@arg dst: --dst [PATH] "Path to write packed outputs (default: .)")
+        )
         (@subcommand cat_material =>
             (about: "Prints a material definition to stdout")
             (@arg NAME: ... "Material name (example: tile/tilefloor013a)")
@@ -100,6 +105,9 @@ fn main() -> Result<()> {
         }
         ("pack_all_maps", Some(matches)) => pack_all_maps(hl2_base, matches.value_of("dst"))?,
         ("cat_lump", Some(matches)) => cat_lump(hl2_base, matches)?,
+        ("pack_model", Some(matches)) => {
+            pack_model(hl2_base, matches.value_of("dst"), matches.value_of("MODEL"))?
+        }
         ("cat_material", Some(matches)) => cat_material(hl2_base, matches)?,
         ("describe_texture", Some(matches)) => describe_texture(hl2_base, matches)?,
         ("build_ui_font", _) => build_ui_font()?,
@@ -286,6 +294,83 @@ fn pack_map(hl2_base: &Path, dst: Option<&str>, map_name_or_path: Option<&str>) 
     }
     .write_to(&mut file)?;
     file.flush()?;
+
+    Ok(())
+}
+
+fn pack_model(hl2_base: &Path, dst: Option<&str>, model_name: Option<&str>) -> Result<()> {
+    let file_loader = Vpk::new(hl2_base.join("hl2_misc"))?;
+
+    let mdl_path =
+        VpkPath::new_with_prefix_and_extension(model_name.unwrap_or("police"), "models", "mdl");
+    let mdl_data = match file_loader.load_file(&mdl_path)? {
+        Some(data) => data,
+        None => bail!("asset not found: {}", mdl_path),
+    };
+    let mdl = source_reader::model::mdl::Mdl::new(&mdl_data);
+    println!("MDL Header: {:?}", mdl.header());
+    println!("Name: {}", mdl.header().name());
+    for (index, bone) in mdl.bones().iter().enumerate() {
+        println!("Bone {}: {:?}", index, bone);
+    }
+
+    let vtx_path = VpkPath::new_with_prefix_and_extension(
+        model_name.unwrap_or("police"),
+        "models",
+        "dx80.vtx",
+    );
+    let vtx_data = match file_loader.load_file(&vtx_path)? {
+        Some(data) => data,
+        None => bail!("asset not found: {}", vtx_path),
+    };
+    let vtx = source_reader::model::vtx::Vtx::new(&vtx_data);
+    println!("VTX Header: {:?}", vtx.header());
+    for (body_part_index, body_part) in vtx.body_parts().iter().enumerate() {
+        println!("vtx.body_parts[{}]: {:?}", body_part_index, body_part);
+        for (model_index, model) in body_part.models(vtx).iter().enumerate() {
+            println!(
+                "vtx.body_parts[{}].models[{}]: {:?}",
+                body_part_index, model_index, model,
+            );
+            for (lod_index, lod) in model.lods(vtx).iter().enumerate() {
+                println!(
+                    "vtx.body_parts[{}].models[{}].lods[{}]: {:?}",
+                    body_part_index, model_index, lod_index, lod,
+                );
+                for (mesh_index, mesh) in lod.iter_meshes(vtx).enumerate() {
+                    println!(
+                        "vtx.body_parts[{}].models[{}].lods[{}].meshes[{}]: {:?}",
+                        body_part_index, model_index, lod_index, mesh_index, mesh,
+                    );
+                    for (strip_group_index, strip_group) in mesh.iter_strip_groups().enumerate() {
+                        println!(
+                            "vtx.body_parts[{}].models[{}].lods[{}].meshes[{}].strip_groups[{}]: {:?}",
+                            body_part_index, model_index, lod_index, mesh_index, strip_group_index,
+                            strip_group,
+                        );
+                        for (strip_index, strip) in strip_group.iter_strips().enumerate() {
+                            println!(
+                                "vtx.body_parts[{}].models[{}].lods[{}].meshes[{}].strip_groups[{}].strips[{}]: {:?}",
+                                body_part_index, model_index, lod_index, mesh_index,
+                                strip_group_index, strip_index, strip,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let vvd_path =
+        VpkPath::new_with_prefix_and_extension(model_name.unwrap_or("police"), "models", "vvd");
+    let vvd_data = match file_loader.load_file(&vvd_path)? {
+        Some(data) => data,
+        None => bail!("asset not found: {}", vvd_path),
+    };
+    let vvd = source_reader::model::vvd::Vvd::new(&vvd_data);
+    println!("VVD Header: {:?}", vvd.header());
+
+    let _vertex_data = source_reader::model::build_vertex_buffer(mdl, vtx, vvd);
 
     Ok(())
 }
