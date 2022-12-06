@@ -1,11 +1,9 @@
 #![no_std]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![feature(allocator_api)]
-#![feature(const_fn_trait_bound)]
 #![feature(core_intrinsics)]
 #![feature(default_alloc_error_handler)]
 #![feature(start)]
-#![feature(vec_spare_capacity)]
 
 extern crate alloc;
 #[cfg(test)]

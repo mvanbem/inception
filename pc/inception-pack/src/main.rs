@@ -45,7 +45,7 @@ use texture_format::{TextureBuf, TextureFormat};
 use quickcheck::Arbitrary;
 
 use crate::counter::Counter;
-use crate::display_list::DisplayListBuilder;
+use crate::display_list::{DisplayListBuilder, DisplayListBuilderDraw, GxPrimitive};
 use crate::legacy_pass_params::{DisplacementPass, Pass, ShaderParams, ShaderParamsAlpha};
 use crate::packed_material::PackedMaterial;
 use crate::texture_key::{OwnedTextureKey, TextureIdAllocator};
@@ -370,8 +370,6 @@ fn pack_model(hl2_base: &Path, dst: Option<&str>, model_name: Option<&str>) -> R
     let vvd = source_reader::model::vvd::Vvd::new(&vvd_data);
     println!("VVD Header: {:?}", vvd.header());
 
-    let _vertex_data = source_reader::model::build_vertex_buffer(mdl, vtx, vvd);
-
     Ok(())
 }
 
@@ -418,11 +416,11 @@ impl<Value: Copy + Eq + Hash + WriteBigEndian, Index: PrimInt> AttributeBuilder<
 struct PolygonBuilder<'a, Vertex> {
     first_vertex: Option<Vertex>,
     prev_vertex: Option<Vertex>,
-    display_list: &'a mut DisplayListBuilder,
+    display_list: &'a mut DisplayListBuilderDraw,
 }
 
 impl<'a, Vertex: Copy + WriteBigEndian> PolygonBuilder<'a, Vertex> {
-    pub fn new(display_list: &'a mut DisplayListBuilder) -> Self {
+    pub fn new(display_list: &'a mut DisplayListBuilderDraw) -> Self {
         Self {
             first_vertex: None,
             prev_vertex: None,
@@ -454,7 +452,7 @@ struct ClusterGeometry {
 #[derive(Default)]
 struct ClusterGeometryBuilder {
     display_lists_by_pass_material_params:
-        BTreeMap<(Pass, PackedMaterial, ShaderParams), DisplayListBuilder>,
+        BTreeMap<(Pass, PackedMaterial, ShaderParams), DisplayListBuilderDraw>,
 }
 
 impl ClusterGeometryBuilder {
@@ -463,10 +461,10 @@ impl ClusterGeometryBuilder {
         pass: Pass,
         material: PackedMaterial,
         params: ShaderParams,
-    ) -> &mut DisplayListBuilder {
+    ) -> &mut DisplayListBuilderDraw {
         self.display_lists_by_pass_material_params
             .entry((pass, material, params))
-            .or_insert_with(|| DisplayListBuilder::new(DisplayListBuilder::TRIANGLES))
+            .or_insert_with(|| DisplayListBuilder::new().into_draw(GxPrimitive::Triangles))
     }
 
     pub fn build(self) -> ClusterGeometry {
@@ -474,7 +472,7 @@ impl ClusterGeometryBuilder {
             display_lists_by_pass_material_params: self
                 .display_lists_by_pass_material_params
                 .into_iter()
-                .map(|(key, display_list)| (key, display_list.build()))
+                .map(|(key, display_list)| (key, display_list.finish().build()))
                 .filter(|(_, display_list)| !display_list.is_empty())
                 .collect(),
         }
@@ -582,7 +580,7 @@ fn process_geometry(
     let displacement_display_lists_by_pass_face_material =
         displacement_display_list_builders_by_pass_face_material
             .into_iter()
-            .map(|(key, builder)| (key, builder.build()))
+            .map(|(key, builder)| (key, builder.finish().build()))
             .collect();
 
     Ok(MapGeometry {
@@ -645,7 +643,7 @@ fn process_displacement(
     texture_coordinates: &mut AttributeBuilder<[u16; 2], u16>,
     display_list_builders_by_pass_face_material: &mut BTreeMap<
         (DisplacementPass, u16, PackedMaterial),
-        DisplayListBuilder,
+        DisplayListBuilderDraw,
     >,
     lightmap: Option<&Lightmap>,
     disp_info: &DispInfo,
@@ -721,7 +719,7 @@ fn process_displacement(
     };
     let display_list_builder = display_list_builders_by_pass_face_material
         .entry((pass, disp_info.map_face, packed_material))
-        .or_insert_with(|| DisplayListBuilder::new(DisplayListBuilder::QUADS));
+        .or_insert_with(|| DisplayListBuilder::new().into_draw(GxPrimitive::Quads));
 
     struct DisplacementVertex {
         position: Vec3,
