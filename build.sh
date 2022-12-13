@@ -109,7 +109,7 @@ function subcommand_build_gcm {
 
     cargo build -p apploader --release
 
-    cp target/powerpc-none-eabi/release/apploader ../build/
+    powerpc-eabi-objcopy -O binary target/powerpc-none-eabi/release/apploader ../build/apploader
 
     popd >/dev/null
 

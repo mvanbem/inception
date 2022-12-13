@@ -75,6 +75,7 @@ pub struct OwnedMapData {
     pub cluster_geometry_table: Vec<ClusterGeometryTableEntry>,
     pub cluster_geometry_byte_code: Vec<u32>,
     pub cluster_geometry_display_lists: Vec<u8>,
+    pub cluster_geometry_references: Vec<ClusterGeometryReferencesEntry>,
 
     pub bsp_nodes: Vec<BspNode>,
     pub bsp_leaves: Vec<BspLeaf>,
@@ -125,6 +126,7 @@ impl<W: Seek + Write> WriteTo<W> for OwnedMapData {
         write_slice_header!(cluster_geometry_table);
         write_slice_header!(cluster_geometry_byte_code);
         write_slice_header!(cluster_geometry_display_lists);
+        write_slice_header!(cluster_geometry_references);
         write_slice_header!(bsp_nodes);
         write_slice_header!(bsp_leaves);
         write_slice_header!(visibility);
@@ -191,6 +193,7 @@ impl<W: Seek + Write> WriteTo<W> for OwnedMapData {
         write_slice_data!(cluster_geometry_table);
         write_slice_data!(cluster_geometry_byte_code);
         write_slice_bytes!(cluster_geometry_display_lists, 32);
+        write_slice_data!(cluster_geometry_references);
         write_slice_data!(bsp_nodes);
         write_slice_data!(bsp_leaves);
         write_slice_bytes!(visibility);
@@ -227,6 +230,8 @@ struct PackedMapData {
     cluster_geometry_byte_code_len: usize,
     cluster_geometry_display_lists_offset: usize,
     cluster_geometry_display_lists_len: usize,
+    cluster_geometry_references_offset: usize,
+    cluster_geometry_references_len: usize,
 
     bsp_nodes_offset: usize,
     bsp_nodes_len: usize,
@@ -332,6 +337,16 @@ impl<Data: Deref<Target = [u8]>> MapData<Data> {
             self.cast_slice(
                 packed.cluster_geometry_display_lists_offset,
                 packed.cluster_geometry_display_lists_len,
+            )
+        }
+    }
+
+    pub fn cluster_geometry_references(&self) -> &[ClusterGeometryReferencesEntry] {
+        let packed = self.packed();
+        unsafe {
+            self.cast_slice(
+                packed.cluster_geometry_references_offset,
+                packed.cluster_geometry_references_len,
             )
         }
     }
@@ -499,6 +514,24 @@ impl<W: Seek + Write> WriteTo<W> for ClusterGeometryTableEntry {
                 w.write_u32::<BigEndian>(index)?;
             }
         }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+pub struct ClusterGeometryReferencesEntry {
+    pub display_list_offset: u32,
+    pub texture_id: u16,
+    pub _padding: u16,
+}
+
+#[cfg(feature = "std")]
+impl<W: Seek + Write> WriteTo<W> for ClusterGeometryReferencesEntry {
+    fn write_to(&self, w: &mut W) -> io::Result<()> {
+        w.write_u32::<BigEndian>(self.display_list_offset)?;
+        w.write_u16::<BigEndian>(self.texture_id)?;
+        w.write_u16::<BigEndian>(self._padding)?;
         Ok(())
     }
 }

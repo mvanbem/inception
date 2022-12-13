@@ -1,4 +1,4 @@
 [toolchain]
-channel = "nightly-2022-11-04"
+channel = "nightly-2022-12-06"
 components = ["rustc", "rust-src"]
 targets = ["powerpc-none-eabi"]

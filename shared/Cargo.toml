@@ -1,0 +1,13 @@
+[workspace]
+members = [
+    "fully-occupied",
+    "gx",
+    "inception-render-common",
+    "no-std-ftp",
+    "no-std-io",
+    "recursive-iter",
+    "relocation",
+    "source-reader",
+    "texture-atlas",
+    "texture-format",
+]

@@ -12,6 +12,7 @@
 		"rust-analyzer.linkedProjects": [
 			"gc_wii/Cargo.toml",
 			"pc/Cargo.toml",
+			"shared/Cargo.toml",
 		],
 	}
 }

@@ -17,11 +17,17 @@ use anyhow::{anyhow, bail, Context, Result};
 use byteorder::{BigEndian, WriteBytesExt};
 use clap::{clap_app, crate_authors, crate_description, crate_version, ArgMatches};
 use fontdue::{Font, FontSettings};
+use gx::bp::{
+    BpInterleavedTexReg, BpTexCoordRegA, BpTexCoordRegB, BpTexImageRegA, BpTexImageRegB,
+    BpTexImageRegC, BpTexModeRegA, BpTexModeRegB, CacheSize, DiagLod, ImageType, MagFilter,
+    MaxAniso, MinFilter, Wrap,
+};
+use gx::display_list::{Command, DisplayList, GxPrimitive};
 use inception_render_common::bytecode::BytecodeOp;
 use inception_render_common::map_data::{
-    BspLeaf, BspNode, ClusterGeometryTableEntry, ClusterLightmapTableEntry,
-    CommonLightmapTableEntry, DisplacementLightmapTableEntry, DisplacementTableEntry,
-    LightmapPatchTableEntry, OwnedMapData, TextureTableEntry, WriteTo,
+    BspLeaf, BspNode, ClusterGeometryReferencesEntry, ClusterGeometryTableEntry,
+    ClusterLightmapTableEntry, CommonLightmapTableEntry, DisplacementLightmapTableEntry,
+    DisplacementTableEntry, LightmapPatchTableEntry, OwnedMapData, TextureTableEntry, WriteTo,
 };
 use memmap::Mmap;
 use nalgebra_glm::{lerp, mat3_to_mat4, vec2, vec3, vec4, Mat2x3, Mat3, Mat3x4, Mat4, Vec2, Vec3};
@@ -45,14 +51,14 @@ use texture_format::{TextureBuf, TextureFormat};
 use quickcheck::Arbitrary;
 
 use crate::counter::Counter;
-use crate::display_list::{DisplayListBuilder, DisplayListBuilderDraw, GxPrimitive};
+use crate::draw_builder::DrawBuilder;
 use crate::legacy_pass_params::{DisplacementPass, Pass, ShaderParams, ShaderParamsAlpha};
 use crate::packed_material::PackedMaterial;
 use crate::texture_key::{OwnedTextureKey, TextureIdAllocator};
 use crate::write_big_endian::WriteBigEndian;
 
 mod counter;
-mod display_list;
+mod draw_builder;
 mod legacy_pass_params;
 mod packed_material;
 mod texture_key;
@@ -253,12 +259,16 @@ fn pack_map(hl2_base: &Path, dst: Option<&str>, map_name_or_path: Option<&str>) 
         &asset_loader,
     )?;
 
-    let (cluster_geometry_table, cluster_geometry_byte_code, cluster_geometry_display_lists) =
-        pack_brush_geometry(&map_geometry);
+    let (texture_table, texture_data) = pack_textures(&asset_loader, &map_geometry)?;
+    let (
+        cluster_geometry_table,
+        cluster_geometry_byte_code,
+        cluster_geometry_display_lists,
+        cluster_geometry_references,
+    ) = pack_brush_geometry(&map_geometry, &texture_table);
     let bsp_nodes = pack_bsp_nodes(bsp);
     let bsp_leaves = pack_bsp_leaves(bsp);
     let visibility = pack_visibility(bsp);
-    let (texture_table, texture_data) = pack_textures(&asset_loader, &map_geometry)?;
     let (lightmap_cluster_table, lightmap_displacement_table, lightmap_patch_table, lightmap_data) =
         pack_lightmaps(bsp, &cluster_lightmaps, &displacement_lightmaps);
     let (displacement_table, displacement_byte_code, displacement_display_lists) =
@@ -276,6 +286,7 @@ fn pack_map(hl2_base: &Path, dst: Option<&str>, map_name_or_path: Option<&str>) 
         cluster_geometry_table,
         cluster_geometry_byte_code,
         cluster_geometry_display_lists,
+        cluster_geometry_references,
         bsp_nodes,
         bsp_leaves,
         visibility,
@@ -382,7 +393,7 @@ struct MapGeometry {
     displacement_vertex_color_data: Vec<u8>,
     displacement_texture_coordinate_data: Vec<u8>,
     displacement_display_lists_by_pass_face_material:
-        BTreeMap<(DisplacementPass, u16, PackedMaterial), Vec<u8>>,
+        BTreeMap<(DisplacementPass, u16, PackedMaterial), DisplayList>,
     texture_keys: Vec<OwnedTextureKey>,
 }
 
@@ -416,15 +427,15 @@ impl<Value: Copy + Eq + Hash + WriteBigEndian, Index: PrimInt> AttributeBuilder<
 struct PolygonBuilder<'a, Vertex> {
     first_vertex: Option<Vertex>,
     prev_vertex: Option<Vertex>,
-    display_list: &'a mut DisplayListBuilderDraw,
+    draw_builder: &'a mut DrawBuilder,
 }
 
 impl<'a, Vertex: Copy + WriteBigEndian> PolygonBuilder<'a, Vertex> {
-    pub fn new(display_list: &'a mut DisplayListBuilderDraw) -> Self {
+    pub fn new(draw_builder: &'a mut DrawBuilder) -> Self {
         Self {
             first_vertex: None,
             prev_vertex: None,
-            display_list,
+            draw_builder,
         }
     }
 
@@ -438,7 +449,7 @@ impl<'a, Vertex: Copy + WriteBigEndian> PolygonBuilder<'a, Vertex> {
             first_vertex.write_big_endian_to(&mut data)?;
             prev_vertex.write_big_endian_to(&mut data)?;
             vertex.write_big_endian_to(&mut data)?;
-            self.display_list.emit_vertices(3, &data);
+            self.draw_builder.emit_vertices(3, &data);
         }
         self.prev_vertex = Some(vertex);
         Ok(())
@@ -446,34 +457,39 @@ impl<'a, Vertex: Copy + WriteBigEndian> PolygonBuilder<'a, Vertex> {
 }
 
 struct ClusterGeometry {
-    display_lists_by_pass_material_params: BTreeMap<(Pass, PackedMaterial, ShaderParams), Vec<u8>>,
+    display_lists_by_pass_material_params:
+        BTreeMap<(Pass, PackedMaterial, ShaderParams), DisplayList>,
 }
 
 #[derive(Default)]
 struct ClusterGeometryBuilder {
-    display_lists_by_pass_material_params:
-        BTreeMap<(Pass, PackedMaterial, ShaderParams), DisplayListBuilderDraw>,
+    draw_builders_by_pass_material_params:
+        BTreeMap<(Pass, PackedMaterial, ShaderParams), DrawBuilder>,
 }
 
 impl ClusterGeometryBuilder {
-    pub fn display_list_builder(
+    pub fn draw_builder(
         &mut self,
         pass: Pass,
         material: PackedMaterial,
         params: ShaderParams,
-    ) -> &mut DisplayListBuilderDraw {
-        self.display_lists_by_pass_material_params
+    ) -> &mut DrawBuilder {
+        self.draw_builders_by_pass_material_params
             .entry((pass, material, params))
-            .or_insert_with(|| DisplayListBuilder::new().into_draw(GxPrimitive::Triangles))
+            .or_insert_with(|| DrawBuilder::new(GxPrimitive::Triangles, 0))
     }
 
     pub fn build(self) -> ClusterGeometry {
         ClusterGeometry {
             display_lists_by_pass_material_params: self
-                .display_lists_by_pass_material_params
+                .draw_builders_by_pass_material_params
                 .into_iter()
-                .map(|(key, display_list)| (key, display_list.finish().build()))
-                .filter(|(_, display_list)| !display_list.is_empty())
+                .map(|(key, draw_builder)| {
+                    let mut display_list = draw_builder.build();
+                    display_list.pad_to_alignment();
+                    (key, display_list)
+                })
+                .filter(|(_, display_list)| !display_list.commands.is_empty())
                 .collect(),
         }
     }
@@ -562,7 +578,7 @@ fn process_geometry(
     let mut displacement_positions = AttributeBuilder::new();
     let mut displacement_vertex_colors = AttributeBuilder::new();
     let mut displacement_texture_coordinates = AttributeBuilder::new();
-    let mut displacement_display_list_builders_by_pass_face_material = BTreeMap::new();
+    let mut displacement_draw_builders_by_pass_face_material = BTreeMap::new();
     for disp_info in bsp.disp_infos() {
         let lightmap = displacement_lightmaps.get(&disp_info.map_face);
         process_displacement(
@@ -572,15 +588,19 @@ fn process_geometry(
             &mut displacement_positions,
             &mut displacement_vertex_colors,
             &mut displacement_texture_coordinates,
-            &mut displacement_display_list_builders_by_pass_face_material,
+            &mut displacement_draw_builders_by_pass_face_material,
             lightmap,
             disp_info,
         )?;
     }
     let displacement_display_lists_by_pass_face_material =
-        displacement_display_list_builders_by_pass_face_material
+        displacement_draw_builders_by_pass_face_material
             .into_iter()
-            .map(|(key, builder)| (key, builder.finish().build()))
+            .map(|(key, builder)| {
+                let mut display_list = builder.build();
+                display_list.pad_to_alignment();
+                (key, display_list)
+            })
             .collect();
 
     Ok(MapGeometry {
@@ -641,9 +661,9 @@ fn process_displacement(
     positions: &mut AttributeBuilder<[FloatByBits; 3], u16>,
     vertex_colors: &mut AttributeBuilder<[u8; 3], u16>,
     texture_coordinates: &mut AttributeBuilder<[u16; 2], u16>,
-    display_list_builders_by_pass_face_material: &mut BTreeMap<
+    draw_builders_by_pass_face_material: &mut BTreeMap<
         (DisplacementPass, u16, PackedMaterial),
-        DisplayListBuilderDraw,
+        DrawBuilder,
     >,
     lightmap: Option<&Lightmap>,
     disp_info: &DispInfo,
@@ -717,9 +737,9 @@ fn process_displacement(
         ),
         shader => panic!("Unexpected shader: {:?}", shader.name()),
     };
-    let display_list_builder = display_list_builders_by_pass_face_material
+    let display_list_builder = draw_builders_by_pass_face_material
         .entry((pass, disp_info.map_face, packed_material))
-        .or_insert_with(|| DisplayListBuilder::new().into_draw(GxPrimitive::Quads));
+        .or_insert_with(|| DrawBuilder::new(GxPrimitive::Quads, 0));
 
     struct DisplacementVertex {
         position: Vec3,
@@ -961,7 +981,7 @@ fn process_textured_brush_face(
         false,
     )?
     .unwrap();
-    let mut polygon_builder = PolygonBuilder::new(cluster_builder.display_list_builder(
+    let mut polygon_builder = PolygonBuilder::new(cluster_builder.draw_builder(
         Pass::from_material(&material, &packed_material),
         packed_material,
         ShaderParams::from_material_plane(&material, plane),
@@ -1685,12 +1705,19 @@ fn build_local_space(normal: &Vec3) -> (Vec3, Vec3) {
 
 fn pack_brush_geometry(
     map_geometry: &MapGeometry,
-) -> (Vec<ClusterGeometryTableEntry>, Vec<u32>, Vec<u8>) {
+    texture_table: &[TextureTableEntry],
+) -> (
+    Vec<ClusterGeometryTableEntry>,
+    Vec<u32>,
+    Vec<u8>,
+    Vec<ClusterGeometryReferencesEntry>,
+) {
     // TODO: Transpose this table for potential cache friendliness?
 
     let mut cluster_geometry_table = Vec::new();
     let mut cluster_geometry_byte_code = Vec::new();
     let mut cluster_geometry_display_lists = Vec::new();
+    let mut cluster_geometry_references = Vec::new();
 
     for cluster in &map_geometry.clusters {
         let mut cluster_geometry_table_entry = ClusterGeometryTableEntry {
@@ -1701,23 +1728,114 @@ fn pack_brush_geometry(
             cluster_geometry_table_entry.byte_code_index_ranges[mode as usize][0] =
                 u32::try_from(cluster_geometry_byte_code.len()).unwrap();
 
-            let mut prev_base_id = None;
             let mut prev_aux_id = None;
             let mut prev_plane = None;
             let mut prev_env_map_id = None;
             let mut prev_env_map_tint = None;
             let mut prev_alpha = None;
-            for ((pass, material, params), display_list) in
+            for ((pass, material, params), draw_display_list) in
                 &cluster.display_lists_by_pass_material_params
             {
+                let mut display_list = DisplayList::new();
                 if pass.as_mode() == mode {
-                    if prev_base_id != Some(material.base_id) {
-                        prev_base_id = Some(material.base_id);
-
-                        BytecodeOp::SetBaseTexture {
-                            base_texture_id: material.base_id,
-                        }
-                        .append_to(&mut cluster_geometry_byte_code);
+                    // Bind the base texture as TEXMAP1.
+                    {
+                        let params = &texture_table[material.base_id as usize];
+                        const TEXMAP1: u8 = 1;
+                        display_list.commands.push(Command::WriteBpReg {
+                            packed_addr_and_value: BpTexCoordRegA::new()
+                                .with_addr(BpTexCoordRegA::addr_for_image(TEXMAP1).unwrap())
+                                .with_s_scale_minus_one(params.width - 1)
+                                .with_s_range_bias(false)
+                                .with_s_cylindrical_wrapping(false)
+                                .with_offset_for_lines(false)
+                                .with_offset_for_points(false)
+                                .into(),
+                            reference: None,
+                        });
+                        display_list.commands.push(Command::WriteBpReg {
+                            packed_addr_and_value: BpTexCoordRegB::new()
+                                .with_addr(BpTexCoordRegB::addr_for_image(TEXMAP1).unwrap())
+                                .with_t_scale_minus_one(params.height - 1)
+                                .with_t_range_bias(false)
+                                .with_t_cylindrical_wrapping(false)
+                                .into(),
+                            reference: None,
+                        });
+                        display_list.commands.push(Command::WriteBpReg {
+                            packed_addr_and_value: BpTexModeRegA::new()
+                                .with_addr(BpTexModeRegA::addr_for_image(TEXMAP1).unwrap())
+                                .with_wrap_s(
+                                    if params.flags & TextureTableEntry::FLAG_CLAMP_S != 0 {
+                                        Wrap::Clamp
+                                    } else {
+                                        Wrap::Repeat
+                                    },
+                                )
+                                .with_wrap_t(
+                                    if params.flags & TextureTableEntry::FLAG_CLAMP_T != 0 {
+                                        Wrap::Clamp
+                                    } else {
+                                        Wrap::Repeat
+                                    },
+                                )
+                                .with_mag_filter(MagFilter::Linear)
+                                .with_min_filter(if params.mip_count > 1 {
+                                    MinFilter::LinearMipLinear
+                                } else {
+                                    MinFilter::Linear
+                                })
+                                .with_diag_lod(DiagLod::EdgeLod)
+                                .with_lod_bias(0)
+                                .with_max_aniso(MaxAniso::_1)
+                                .with_lod_clamp(true)
+                                .into(),
+                            reference: None,
+                        });
+                        display_list.commands.push(Command::WriteBpReg {
+                            packed_addr_and_value: BpTexModeRegB::new()
+                                .with_addr(BpTexModeRegB::addr_for_image(TEXMAP1).unwrap())
+                                .with_min_lod(0)
+                                .with_max_lod((params.mip_count - 1) << 4)
+                                .into(),
+                            reference: None,
+                        });
+                        display_list.commands.push(Command::WriteBpReg {
+                            packed_addr_and_value: BpTexImageRegA::new()
+                                .with_addr(BpTexImageRegA::addr_for_image(TEXMAP1).unwrap())
+                                .with_width_minus_one(params.width - 1)
+                                .with_height_minus_one(params.height - 1)
+                                .with_format(match params.format {
+                                    6 => gx::bp::TextureFormat::Rgba8,
+                                    14 => gx::bp::TextureFormat::Cmp,
+                                    x => panic!("unexpected texture format {x}"),
+                                })
+                                .into(),
+                            reference: None,
+                        });
+                        display_list.commands.push(Command::WriteBpReg {
+                            packed_addr_and_value: BpTexImageRegB::new()
+                                .with_addr(BpTexImageRegB::addr_for_image(TEXMAP1).unwrap())
+                                .with_tmem_offset(((128 * 1024) >> 5) as u16)
+                                .with_cache_width(CacheSize::_128KB)
+                                .with_cache_height(CacheSize::_128KB)
+                                .with_image_type(ImageType::Cached)
+                                .into(),
+                            reference: None,
+                        });
+                        display_list.commands.push(Command::WriteBpReg {
+                            packed_addr_and_value: BpTexImageRegC::new()
+                                .with_addr(BpTexImageRegC::addr_for_image(TEXMAP1).unwrap())
+                                .with_tmem_offset(((640 * 1024) >> 5) as u16)
+                                .with_cache_width(CacheSize::_128KB)
+                                .with_cache_height(CacheSize::_128KB)
+                                .into(),
+                            reference: None,
+                        });
+                        display_list.commands.push(
+                            Command::write_bp_tex_image_reg_d_reference(TEXMAP1, material.base_id)
+                                .unwrap(),
+                        );
                     }
 
                     if let Some(aux_id) = material.aux_id {
@@ -1824,7 +1942,27 @@ fn pack_brush_geometry(
                         .append_to(&mut cluster_geometry_byte_code);
                     }
 
-                    cluster_geometry_display_lists.extend_from_slice(display_list);
+                    display_list
+                        .commands
+                        .extend_from_slice(&draw_display_list.commands);
+                    display_list.pad_to_alignment();
+                    display_list
+                        .write_to(
+                            &mut cluster_geometry_display_lists,
+                            |cluster_geometry_display_lists, reference| {
+                                cluster_geometry_references.push(ClusterGeometryReferencesEntry {
+                                    display_list_offset: cluster_geometry_display_lists
+                                        .len()
+                                        .try_into()
+                                        .unwrap(),
+                                    texture_id: match reference {
+                                        gx::display_list::Reference::Texture(x) => x,
+                                    },
+                                    _padding: 0,
+                                });
+                            },
+                        )
+                        .unwrap();
                     let next_display_list_offset =
                         u32::try_from(cluster_geometry_display_lists.len()).unwrap();
                     assert_eq!(next_display_list_offset & 31, 0);
@@ -1851,6 +1989,7 @@ fn pack_brush_geometry(
         cluster_geometry_table,
         cluster_geometry_byte_code,
         cluster_geometry_display_lists,
+        cluster_geometry_references,
     )
 }
 
@@ -1872,7 +2011,9 @@ fn pack_displacement_geometry(
             }
 
             let display_list_offset = u32::try_from(displacement_display_lists.len()).unwrap();
-            displacement_display_lists.extend_from_slice(display_list);
+            display_list
+                .write_to(&mut displacement_display_lists, |_, _| panic!())
+                .unwrap();
             let display_list_size = u32::try_from(display_list.len()).unwrap();
 
             BytecodeOp::SetFaceIndex {

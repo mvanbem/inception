@@ -176,6 +176,34 @@ fn select_map(loader: &mut impl Loader) -> String {
     }
 }
 
+/// # SAFETY
+///
+/// This function writes to memory that aliases `map_data` and so is fundamentally unsound. That
+/// said, the memory in question is a GX display list that the CPU will never read. Let's hope the
+/// optimizer doesn't strip out these writes.
+unsafe fn relocate_references<Data: Deref<Target = [u8]>>(map_data: &MapData<Data>) {
+    unsafe {
+        for entry in map_data.cluster_geometry_references() {
+            let display_list_ptr: *mut u32 = map_data
+                .cluster_geometry_display_lists()
+                .as_ptr()
+                .cast_mut()
+                .offset(entry.display_list_offset as isize)
+                .cast();
+            let image_ptr = map_data
+                .texture_data()
+                .as_ptr()
+                .offset(map_data.texture_table()[entry.texture_id as usize].start_offset as isize);
+            let image_reg_value = ((image_ptr as u32) >> 5) & 0x00ffffff;
+            display_list_ptr.write(display_list_ptr.read() & 0xff000000 | image_reg_value);
+        }
+        DCFlushRange(
+            map_data.cluster_geometry_display_lists().as_ptr() as _,
+            map_data.cluster_geometry_display_lists().len() as u32,
+        );
+    }
+}
+
 #[start]
 fn main(_argc: isize, _argv: *const *const u8) -> isize {
     unsafe {
@@ -194,6 +222,8 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
             let map = select_map(&mut loader);
             libc::printf(b"Loading map...\n\0".as_ptr());
             let map_data = loader.load_map(&map);
+
+            relocate_references(&map_data);
 
             init_for_3d(&*rmode);
 
