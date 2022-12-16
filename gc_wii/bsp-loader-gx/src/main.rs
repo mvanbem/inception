@@ -932,15 +932,19 @@ fn draw_visible_clusters<Data: Deref<Target = [u8]>>(
         let cluster_geometry_byte_code = map_data.cluster_geometry_byte_code();
         let cluster_geometry_display_lists = map_data.cluster_geometry_display_lists();
 
-        let draw_cluster = move |cluster, pass| {
-            match cluster_lightmaps.get(cluster as usize) {
-                Some(lightmap) => {
-                    GX_LoadTexObj(lightmap.texobj(), GX_TEXMAP0 as u8);
-                }
-                None => return,
-            }
-
+        let draw_cluster = move |cluster: u16, pass: usize| {
             let cluster_geometry = cluster_geometry_table[cluster as usize];
+            // Bind the lightmap, but only if there's rendering to be done.
+            if cluster_geometry.byte_code_index_ranges[pass][0]
+                != cluster_geometry.byte_code_index_ranges[pass][1]
+            {
+                match cluster_lightmaps.get(cluster as usize) {
+                    Some(lightmap) => {
+                        GX_LoadTexObj(lightmap.texobj(), GX_TEXMAP0 as u8);
+                    }
+                    None => return,
+                }
+            }
             for entry in cluster_geometry.iter_display_lists(cluster_geometry_byte_code, pass) {
                 match entry {
                     BytecodeOp::Draw {
@@ -952,7 +956,6 @@ fn draw_visible_clusters<Data: Deref<Target = [u8]>>(
                                 .offset(display_list_offset as isize),
                             display_list_size,
                         );
-                        GX_Flush();
                     }
                     BytecodeOp::SetVertexDesc { attr_list_offset } => {
                         panic!();
