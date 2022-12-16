@@ -39,9 +39,9 @@ impl_from!(BpTexCoordRegA, u32);
 impl BpTexCoordRegA {
     const BASE_ADDR: u8 = 0x30;
 
-    pub fn addr_for_image(image: u8) -> Option<u8> {
-        if image <= 7 {
-            Some(Self::BASE_ADDR + (image << 1))
+    pub fn addr_for_texcoord(texcoord: u8) -> Option<u8> {
+        if texcoord <= 7 {
+            Some(Self::BASE_ADDR + (texcoord << 1))
         } else {
             None
         }
@@ -64,9 +64,9 @@ impl_from!(BpTexCoordRegB, u32);
 impl BpTexCoordRegB {
     const BASE_ADDR: u8 = 0x31;
 
-    pub fn addr_for_image(image: u8) -> Option<u8> {
-        if image <= 7 {
-            Some(Self::BASE_ADDR + (image << 1))
+    pub fn addr_for_texcoord(texcoord: u8) -> Option<u8> {
+        if texcoord <= 7 {
+            Some(Self::BASE_ADDR + (texcoord << 1))
         } else {
             None
         }

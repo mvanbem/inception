@@ -484,11 +484,7 @@ impl ClusterGeometryBuilder {
             display_lists_by_pass_material_params: self
                 .draw_builders_by_pass_material_params
                 .into_iter()
-                .map(|(key, draw_builder)| {
-                    let mut display_list = draw_builder.build();
-                    display_list.pad_to_alignment();
-                    (key, display_list)
-                })
+                .map(|(key, draw_builder)| (key, draw_builder.build()))
                 .filter(|(_, display_list)| !display_list.commands.is_empty())
                 .collect(),
         }
@@ -1703,6 +1699,115 @@ fn build_local_space(normal: &Vec3) -> (Vec3, Vec3) {
     (s, t)
 }
 
+fn append_texcoord_scale(
+    display_list: &mut DisplayList,
+    texcoord: u8,
+    texture_id: u16,
+    texture_table: &[TextureTableEntry],
+) {
+    let entry = &texture_table[texture_id as usize];
+    display_list.commands.push(Command::WriteBpReg {
+        packed_addr_and_value: BpTexCoordRegA::new()
+            .with_addr(BpTexCoordRegA::addr_for_texcoord(texcoord).unwrap())
+            .with_s_scale_minus_one(entry.width - 1)
+            .with_s_range_bias(false)
+            .with_s_cylindrical_wrapping(false)
+            .with_offset_for_lines(false)
+            .with_offset_for_points(false)
+            .into(),
+        reference: None,
+    });
+    display_list.commands.push(Command::WriteBpReg {
+        packed_addr_and_value: BpTexCoordRegB::new()
+            .with_addr(BpTexCoordRegB::addr_for_texcoord(texcoord).unwrap())
+            .with_t_scale_minus_one(entry.height - 1)
+            .with_t_range_bias(false)
+            .with_t_cylindrical_wrapping(false)
+            .into(),
+        reference: None,
+    });
+}
+
+fn append_bind_texture(
+    display_list: &mut DisplayList,
+    image: u8,
+    texture_id: u16,
+    texture_table: &[TextureTableEntry],
+) {
+    let entry = &texture_table[texture_id as usize];
+    display_list.commands.push(Command::WriteBpReg {
+        packed_addr_and_value: BpTexModeRegA::new()
+            .with_addr(BpTexModeRegA::addr_for_image(image).unwrap())
+            .with_wrap_s(if entry.flags & TextureTableEntry::FLAG_CLAMP_S != 0 {
+                Wrap::Clamp
+            } else {
+                Wrap::Repeat
+            })
+            .with_wrap_t(if entry.flags & TextureTableEntry::FLAG_CLAMP_T != 0 {
+                Wrap::Clamp
+            } else {
+                Wrap::Repeat
+            })
+            .with_mag_filter(MagFilter::Linear)
+            .with_min_filter(if entry.mip_count > 1 {
+                MinFilter::LinearMipLinear
+            } else {
+                MinFilter::Linear
+            })
+            .with_diag_lod(DiagLod::EdgeLod)
+            .with_lod_bias(0)
+            .with_max_aniso(MaxAniso::_1)
+            .with_lod_clamp(true)
+            .into(),
+        reference: None,
+    });
+    display_list.commands.push(Command::WriteBpReg {
+        packed_addr_and_value: BpTexModeRegB::new()
+            .with_addr(BpTexModeRegB::addr_for_image(image).unwrap())
+            .with_min_lod(0)
+            .with_max_lod((entry.mip_count - 1) << 4)
+            .into(),
+        reference: None,
+    });
+    display_list.commands.push(Command::WriteBpReg {
+        packed_addr_and_value: BpTexImageRegA::new()
+            .with_addr(BpTexImageRegA::addr_for_image(image).unwrap())
+            .with_width_minus_one(entry.width - 1)
+            .with_height_minus_one(entry.height - 1)
+            .with_format(match entry.format {
+                1 => gx::bp::TextureFormat::I8,
+                3 => gx::bp::TextureFormat::Ia8,
+                6 => gx::bp::TextureFormat::Rgba8,
+                14 => gx::bp::TextureFormat::Cmp,
+                x => panic!("unexpected texture format {x}"),
+            })
+            .into(),
+        reference: None,
+    });
+    display_list.commands.push(Command::WriteBpReg {
+        packed_addr_and_value: BpTexImageRegB::new()
+            .with_addr(BpTexImageRegB::addr_for_image(image).unwrap())
+            .with_tmem_offset(((image as u32 * 128 * 1024) >> 5) as u16)
+            .with_cache_width(CacheSize::_128KB)
+            .with_cache_height(CacheSize::_128KB)
+            .with_image_type(ImageType::Cached)
+            .into(),
+        reference: None,
+    });
+    display_list.commands.push(Command::WriteBpReg {
+        packed_addr_and_value: BpTexImageRegC::new()
+            .with_addr(BpTexImageRegC::addr_for_image(image).unwrap())
+            .with_tmem_offset((((image as u32 * 128 + 512) * 1024) >> 5) as u16)
+            .with_cache_width(CacheSize::_128KB)
+            .with_cache_height(CacheSize::_128KB)
+            .into(),
+        reference: None,
+    });
+    display_list
+        .commands
+        .push(Command::write_bp_tex_image_reg_d_reference(image, texture_id).unwrap());
+}
+
 fn pack_brush_geometry(
     map_geometry: &MapGeometry,
     texture_table: &[TextureTableEntry],
@@ -1728,7 +1833,8 @@ fn pack_brush_geometry(
             cluster_geometry_table_entry.byte_code_index_ranges[mode as usize][0] =
                 u32::try_from(cluster_geometry_byte_code.len()).unwrap();
 
-            let mut prev_aux_id = None;
+            let mut prev_base_map_id = None;
+            let mut prev_aux_map_id = None;
             let mut prev_plane = None;
             let mut prev_env_map_id = None;
             let mut prev_env_map_tint = None;
@@ -1738,114 +1844,26 @@ fn pack_brush_geometry(
             {
                 let mut display_list = DisplayList::new();
                 if pass.as_mode() == mode {
-                    // Bind the base texture as TEXMAP1.
-                    {
-                        let params = &texture_table[material.base_id as usize];
-                        const TEXMAP1: u8 = 1;
-                        display_list.commands.push(Command::WriteBpReg {
-                            packed_addr_and_value: BpTexCoordRegA::new()
-                                .with_addr(BpTexCoordRegA::addr_for_image(TEXMAP1).unwrap())
-                                .with_s_scale_minus_one(params.width - 1)
-                                .with_s_range_bias(false)
-                                .with_s_cylindrical_wrapping(false)
-                                .with_offset_for_lines(false)
-                                .with_offset_for_points(false)
-                                .into(),
-                            reference: None,
-                        });
-                        display_list.commands.push(Command::WriteBpReg {
-                            packed_addr_and_value: BpTexCoordRegB::new()
-                                .with_addr(BpTexCoordRegB::addr_for_image(TEXMAP1).unwrap())
-                                .with_t_scale_minus_one(params.height - 1)
-                                .with_t_range_bias(false)
-                                .with_t_cylindrical_wrapping(false)
-                                .into(),
-                            reference: None,
-                        });
-                        display_list.commands.push(Command::WriteBpReg {
-                            packed_addr_and_value: BpTexModeRegA::new()
-                                .with_addr(BpTexModeRegA::addr_for_image(TEXMAP1).unwrap())
-                                .with_wrap_s(
-                                    if params.flags & TextureTableEntry::FLAG_CLAMP_S != 0 {
-                                        Wrap::Clamp
-                                    } else {
-                                        Wrap::Repeat
-                                    },
-                                )
-                                .with_wrap_t(
-                                    if params.flags & TextureTableEntry::FLAG_CLAMP_T != 0 {
-                                        Wrap::Clamp
-                                    } else {
-                                        Wrap::Repeat
-                                    },
-                                )
-                                .with_mag_filter(MagFilter::Linear)
-                                .with_min_filter(if params.mip_count > 1 {
-                                    MinFilter::LinearMipLinear
-                                } else {
-                                    MinFilter::Linear
-                                })
-                                .with_diag_lod(DiagLod::EdgeLod)
-                                .with_lod_bias(0)
-                                .with_max_aniso(MaxAniso::_1)
-                                .with_lod_clamp(true)
-                                .into(),
-                            reference: None,
-                        });
-                        display_list.commands.push(Command::WriteBpReg {
-                            packed_addr_and_value: BpTexModeRegB::new()
-                                .with_addr(BpTexModeRegB::addr_for_image(TEXMAP1).unwrap())
-                                .with_min_lod(0)
-                                .with_max_lod((params.mip_count - 1) << 4)
-                                .into(),
-                            reference: None,
-                        });
-                        display_list.commands.push(Command::WriteBpReg {
-                            packed_addr_and_value: BpTexImageRegA::new()
-                                .with_addr(BpTexImageRegA::addr_for_image(TEXMAP1).unwrap())
-                                .with_width_minus_one(params.width - 1)
-                                .with_height_minus_one(params.height - 1)
-                                .with_format(match params.format {
-                                    6 => gx::bp::TextureFormat::Rgba8,
-                                    14 => gx::bp::TextureFormat::Cmp,
-                                    x => panic!("unexpected texture format {x}"),
-                                })
-                                .into(),
-                            reference: None,
-                        });
-                        display_list.commands.push(Command::WriteBpReg {
-                            packed_addr_and_value: BpTexImageRegB::new()
-                                .with_addr(BpTexImageRegB::addr_for_image(TEXMAP1).unwrap())
-                                .with_tmem_offset(((128 * 1024) >> 5) as u16)
-                                .with_cache_width(CacheSize::_128KB)
-                                .with_cache_height(CacheSize::_128KB)
-                                .with_image_type(ImageType::Cached)
-                                .into(),
-                            reference: None,
-                        });
-                        display_list.commands.push(Command::WriteBpReg {
-                            packed_addr_and_value: BpTexImageRegC::new()
-                                .with_addr(BpTexImageRegC::addr_for_image(TEXMAP1).unwrap())
-                                .with_tmem_offset(((640 * 1024) >> 5) as u16)
-                                .with_cache_width(CacheSize::_128KB)
-                                .with_cache_height(CacheSize::_128KB)
-                                .into(),
-                            reference: None,
-                        });
-                        display_list.commands.push(
-                            Command::write_bp_tex_image_reg_d_reference(TEXMAP1, material.base_id)
-                                .unwrap(),
+                    // Bind the base texture as TEXMAP1 using TEXCOORD1.
+                    if prev_base_map_id != Some(material.base_id) {
+                        prev_base_map_id = Some(material.base_id);
+                        append_bind_texture(&mut display_list, 1, material.base_id, texture_table);
+                        append_texcoord_scale(
+                            &mut display_list,
+                            1,
+                            material.base_id,
+                            texture_table,
                         );
                     }
 
+                    // Bind the aux texture as TEXMAP2 reusing TEXCOORD1.
                     if let Some(aux_id) = material.aux_id {
-                        if prev_aux_id != Some(material.aux_id) {
-                            prev_aux_id = Some(material.aux_id);
-
-                            BytecodeOp::SetAuxTexture {
-                                aux_texture_id: aux_id,
-                            }
-                            .append_to(&mut cluster_geometry_byte_code);
+                        if prev_aux_map_id != Some(aux_id) {
+                            prev_aux_map_id = Some(aux_id);
+                            append_bind_texture(&mut display_list, 2, aux_id, texture_table);
+                            // NOTE: Assume the aux texture has the same dimensions as the base
+                            // texture. They share texture coordinate 1 so there's no need to set
+                            // the scale again.
                         }
                     }
 
@@ -1877,34 +1895,25 @@ fn pack_brush_geometry(
                                 local_to_texture * local_reflect * world_to_local;
 
                             // This is a load-immediate into GX_DTTMTX0 as GX_MTX3x4.
-                            let addr = 0x0500;
-                            let count = 12;
-                            cluster_geometry_display_lists.push(0x10);
-                            cluster_geometry_display_lists
-                                .write_u32::<BigEndian>((count - 1) << 16 | addr)
-                                .unwrap();
+                            let mut values = Vec::new();
                             for r in 0..3 {
                                 for c in 0..4 {
-                                    cluster_geometry_display_lists
-                                        .write_u32::<BigEndian>(texture_matrix[(r, c)].to_bits())
-                                        .unwrap();
+                                    values.push(texture_matrix[(r, c)].to_bits());
                                 }
                             }
-                            // Pad with nops. Ideally this would happen only after a run of display
-                            // lists, not between them.
-                            while cluster_geometry_display_lists.len() & 31 != 0 {
-                                cluster_geometry_display_lists.push(0);
-                            }
+                            display_list.commands.push(Command::WriteXfReg {
+                                addr: 0x0500,
+                                values,
+                            });
                         }
 
                         let env_map_id = env_map.ids_by_plane[&params.plane];
                         if prev_env_map_id != Some(env_map_id) {
                             prev_env_map_id = Some(env_map_id);
 
-                            BytecodeOp::SetEnvTexture {
-                                env_texture_id: env_map_id,
-                            }
-                            .append_to(&mut cluster_geometry_byte_code);
+                            // Bind the env texture as TEXMAP3 using TEXCOORD2.
+                            append_bind_texture(&mut display_list, 3, env_map_id, texture_table);
+                            append_texcoord_scale(&mut display_list, 2, env_map_id, texture_table);
                         }
 
                         if prev_env_map_tint != Some(params.env_map_tint) {
