@@ -197,6 +197,25 @@ unsafe fn relocate_references<Data: Deref<Target = [u8]>>(map_data: &MapData<Dat
             map_data.cluster_geometry_display_lists().as_ptr() as _,
             map_data.cluster_geometry_display_lists().len() as u32,
         );
+
+        for entry in map_data.displacement_references() {
+            let display_list_ptr: *mut u32 = map_data
+                .displacement_display_lists()
+                .as_ptr()
+                .cast_mut()
+                .offset(entry.display_list_offset as isize)
+                .cast();
+            let image_ptr = map_data
+                .texture_data()
+                .as_ptr()
+                .offset(map_data.texture_table()[entry.texture_id as usize].start_offset as isize);
+            let image_reg_value = ((image_ptr as u32) >> 5) & 0x00ffffff;
+            display_list_ptr.write(display_list_ptr.read() & 0xff000000 | image_reg_value);
+        }
+        DCFlushRange(
+            map_data.displacement_display_lists().as_ptr() as _,
+            map_data.displacement_display_lists().len() as u32,
+        );
     }
 }
 
@@ -223,31 +242,6 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
 
             init_for_3d(&*rmode);
 
-            // // Set up full screen render to texture.
-            // let screen_texture_color_data = Memalign::new(
-            //     32,
-            //     GX_GetTexBufferSize(640, 480, GX_TF_RGBA8, GX_FALSE as u8, 0) as usize,
-            // );
-            // {
-            //     let mut screen_texture_color_texobj = zeroed::<GXTexObj>();
-            //     GX_InitTexObj(
-            //         &mut screen_texture_color_texobj,
-            //         screen_texture_color_data.ptr,
-            //         640,
-            //         480,
-            //         GX_TF_RGBA8 as u8,
-            //         GX_CLAMP as u8,
-            //         GX_CLAMP as u8,
-            //         GX_FALSE as u8,
-            //     );
-            //     GX_InitTexObjFilterMode(
-            //         &mut screen_texture_color_texobj,
-            //         GX_NEAR as u8,
-            //         GX_NEAR as u8,
-            //     );
-            //     GX_LoadTexObj(&mut screen_texture_color_texobj, GX_TEXMAP6 as u8);
-            // }
-
             // Set up texture objects for cluster lightmaps.
             let mut cluster_lightmaps = Vec::new();
             for entry in map_data.lightmap_cluster_table() {
@@ -263,60 +257,9 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
             }
             GX_InvalidateTexAll();
 
-            // // Configure a texture object for the identity map.
-            // let mut identity_map_data: Vec<u8, _> =
-            //     Vec::with_capacity_in(256 * 256 * 4, GlobalAlign32);
-            // {
-            //     let mut texels = identity_map_data.as_mut_ptr();
-            //     for coarse_y in 0..64 {
-            //         for coarse_x in 0..64 {
-            //             for fine_y in 0..4 {
-            //                 for fine_x in 0..4 {
-            //                     let x = (4 * coarse_x + fine_x) as u8;
-            //                     let _y = (4 * coarse_y + fine_y) as u8;
-            //                     // A
-            //                     (*texels) = 255;
-            //                     texels = texels.offset(1);
-            //                     // R
-            //                     (*texels) = x;
-            //                     texels = texels.offset(1);
-            //                 }
-            //             }
-            //             for fine_y in 0..4 {
-            //                 for fine_x in 0..4 {
-            //                     let _x = (4 * coarse_x + fine_x) as u8;
-            //                     let y = (4 * coarse_y + fine_y) as u8;
-            //                     // G
-            //                     (*texels) = y;
-            //                     texels = texels.offset(1);
-            //                     // B
-            //                     (*texels) = 0;
-            //                     texels = texels.offset(1);
-            //                 }
-            //             }
-            //         }
-            //     }
-            //     DCFlushRange(identity_map_data.as_mut_ptr() as *mut c_void, 256 * 256 * 4);
-
-            //     let mut texobj = zeroed::<GXTexObj>();
-            //     GX_InitTexObj(
-            //         &mut texobj,
-            //         identity_map_data.as_mut_ptr() as *mut c_void,
-            //         256,
-            //         256,
-            //         GX_TF_RGBA8 as u8,
-            //         GX_CLAMP as u8,
-            //         GX_CLAMP as u8,
-            //         GX_FALSE as u8,
-            //     );
-            //     GX_InitTexObjFilterMode(&mut texobj, GX_NEAR as u8, GX_NEAR as u8);
-            //     GX_LoadTexObj(&mut texobj, GX_TEXMAP7 as u8);
-            // }
-
-            // Set up texture objects for all other textures.
+            // Set up texture objects for the skybox (texture indices 0..5).
             let texture_data = map_data.texture_data();
-            let map_texobjs: Vec<GXTexObj> = map_data
-                .texture_table()
+            let skybox_texobjs: Vec<GXTexObj> = map_data.texture_table()[0..5]
                 .iter()
                 .map(|entry| {
                     let mut texobj = zeroed::<GXTexObj>();
@@ -456,7 +399,7 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
                             &map_data,
                             &game_state,
                             visibility,
-                            &map_texobjs,
+                            &skybox_texobjs,
                             &cluster_lightmaps,
                             &displacement_lightmaps,
                         );
@@ -478,7 +421,7 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
                             &map_data,
                             &game_state,
                             visibility,
-                            &map_texobjs,
+                            &skybox_texobjs,
                             &cluster_lightmaps,
                             &displacement_lightmaps,
                         );
@@ -500,7 +443,7 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
                             &map_data,
                             &game_state,
                             visibility,
-                            &map_texobjs,
+                            &skybox_texobjs,
                             &cluster_lightmaps,
                             &displacement_lightmaps,
                         );
@@ -875,19 +818,13 @@ fn do_main_draw<Data: Deref<Target = [u8]>>(
     map_data: &MapData<Data>,
     game_state: &GameState,
     visibility: Visibility,
-    map_texobjs: &[GXTexObj],
+    skybox_texobjs: &[GXTexObj],
     cluster_lightmaps: &[Lightmap],
     displacement_lightmaps: &BTreeMap<u16, Lightmap>,
 ) -> i16 {
-    draw_skybox(game_state, map_texobjs);
-    draw_displacements(map_data, game_state, displacement_lightmaps, map_texobjs);
-    let view_cluster = draw_visible_clusters(
-        map_data,
-        game_state,
-        cluster_lightmaps,
-        map_texobjs,
-        visibility,
-    );
+    draw_skybox(game_state, skybox_texobjs);
+    draw_displacements(map_data, game_state, displacement_lightmaps);
+    let view_cluster = draw_visible_clusters(map_data, game_state, cluster_lightmaps, visibility);
     view_cluster
 }
 
@@ -895,7 +832,6 @@ fn draw_visible_clusters<Data: Deref<Target = [u8]>>(
     map_data: &MapData<Data>,
     game_state: &GameState,
     cluster_lightmaps: &[Lightmap],
-    map_texobjs: &[GXTexObj],
     visibility: Visibility,
 ) -> i16 {
     unsafe {
@@ -958,8 +894,6 @@ fn draw_visible_clusters<Data: Deref<Target = [u8]>>(
                         GX_ClearVtxDesc();
                         GX_SetVtxDescv(null_mut());
                     }
-                    BytecodeOp::SetBaseTexture { base_texture_id } => unreachable!(),
-                    BytecodeOp::SetAuxTexture { aux_texture_id } => unreachable!(),
                     BytecodeOp::SetAlphaCompare {
                         z_comp_before_tex,
                         compare_type,
@@ -1032,7 +966,7 @@ fn draw_visible_clusters<Data: Deref<Target = [u8]>>(
     }
 }
 
-fn draw_skybox(game_state: &GameState, map_texobjs: &[GXTexObj]) {
+fn draw_skybox(game_state: &GameState, skybox_texobjs: &[GXTexObj]) {
     unsafe {
         GX_ClearVtxDesc();
         GX_SetVtxDesc(GX_VA_POS as u8, GX_DIRECT as u8);
@@ -1050,7 +984,7 @@ fn draw_skybox(game_state: &GameState, map_texobjs: &[GXTexObj]) {
 
         // +X face.
         GX_LoadTexObj(
-            &map_texobjs[0] as *const GXTexObj as *mut GXTexObj,
+            &skybox_texobjs[0] as *const GXTexObj as *mut GXTexObj,
             GX_TEXMAP0 as u8,
         );
         GX_Begin(GX_QUADS as u8, GX_VTXFMT0 as u8, 4);
@@ -1082,7 +1016,7 @@ fn draw_skybox(game_state: &GameState, map_texobjs: &[GXTexObj]) {
 
         // -X face.
         GX_LoadTexObj(
-            &map_texobjs[1] as *const GXTexObj as *mut GXTexObj,
+            &skybox_texobjs[1] as *const GXTexObj as *mut GXTexObj,
             GX_TEXMAP0 as u8,
         );
         GX_Begin(GX_QUADS as u8, GX_VTXFMT0 as u8, 4);
@@ -1114,7 +1048,7 @@ fn draw_skybox(game_state: &GameState, map_texobjs: &[GXTexObj]) {
 
         // +Y face.
         GX_LoadTexObj(
-            &map_texobjs[2] as *const GXTexObj as *mut GXTexObj,
+            &skybox_texobjs[2] as *const GXTexObj as *mut GXTexObj,
             GX_TEXMAP0 as u8,
         );
         GX_Begin(GX_QUADS as u8, GX_VTXFMT0 as u8, 4);
@@ -1146,7 +1080,7 @@ fn draw_skybox(game_state: &GameState, map_texobjs: &[GXTexObj]) {
 
         // -Y face.
         GX_LoadTexObj(
-            &map_texobjs[3] as *const GXTexObj as *mut GXTexObj,
+            &skybox_texobjs[3] as *const GXTexObj as *mut GXTexObj,
             GX_TEXMAP0 as u8,
         );
         GX_Begin(GX_QUADS as u8, GX_VTXFMT0 as u8, 4);
@@ -1178,7 +1112,7 @@ fn draw_skybox(game_state: &GameState, map_texobjs: &[GXTexObj]) {
 
         // +Z face.
         GX_LoadTexObj(
-            &map_texobjs[4] as *const GXTexObj as *mut GXTexObj,
+            &skybox_texobjs[4] as *const GXTexObj as *mut GXTexObj,
             GX_TEXMAP0 as u8,
         );
         GX_Begin(GX_QUADS as u8, GX_VTXFMT0 as u8, 4);
@@ -1214,7 +1148,6 @@ fn draw_displacements<Data: Deref<Target = [u8]>>(
     map_data: &MapData<Data>,
     game_state: &GameState,
     displacement_lightmaps: &BTreeMap<u16, Lightmap>,
-    map_texobjs: &[GXTexObj],
 ) {
     unsafe {
         GX_ClearVtxDesc();
@@ -1282,20 +1215,6 @@ fn draw_displacements<Data: Deref<Target = [u8]>>(
                             (displacement_display_lists.as_ptr() as *mut c_void)
                                 .offset(display_list_offset as isize),
                             display_list_size,
-                        );
-                    }
-                    BytecodeOp::SetBaseTexture { base_texture_id } => {
-                        GX_LoadTexObj(
-                            &map_texobjs[base_texture_id as usize] as *const GXTexObj
-                                as *mut GXTexObj,
-                            GX_TEXMAP1 as u8,
-                        );
-                    }
-                    BytecodeOp::SetAuxTexture { aux_texture_id } => {
-                        GX_LoadTexObj(
-                            &map_texobjs[aux_texture_id as usize] as *const GXTexObj
-                                as *mut GXTexObj,
-                            GX_TEXMAP2 as u8,
                         );
                     }
                     BytecodeOp::SetFaceIndex { face_index } => {

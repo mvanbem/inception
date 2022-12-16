@@ -27,7 +27,8 @@ use inception_render_common::bytecode::BytecodeOp;
 use inception_render_common::map_data::{
     BspLeaf, BspNode, ClusterGeometryReferencesEntry, ClusterGeometryTableEntry,
     ClusterLightmapTableEntry, CommonLightmapTableEntry, DisplacementLightmapTableEntry,
-    DisplacementTableEntry, LightmapPatchTableEntry, OwnedMapData, TextureTableEntry, WriteTo,
+    DisplacementReferencesEntry, DisplacementTableEntry, LightmapPatchTableEntry, OwnedMapData,
+    TextureTableEntry, WriteTo,
 };
 use memmap::Mmap;
 use nalgebra_glm::{lerp, vec2, vec3, Mat2x3, Vec2, Vec3};
@@ -271,8 +272,12 @@ fn pack_map(hl2_base: &Path, dst: Option<&str>, map_name_or_path: Option<&str>) 
     let visibility = pack_visibility(bsp);
     let (lightmap_cluster_table, lightmap_displacement_table, lightmap_patch_table, lightmap_data) =
         pack_lightmaps(bsp, &cluster_lightmaps, &displacement_lightmaps);
-    let (displacement_table, displacement_byte_code, displacement_display_lists) =
-        pack_displacement_geometry(&map_geometry);
+    let (
+        displacement_table,
+        displacement_byte_code,
+        displacement_display_lists,
+        displacement_references,
+    ) = pack_displacement_geometry(&map_geometry, &texture_table);
 
     let dst_path = Path::new(dst.unwrap_or(".")).join("maps");
     create_dir_all(&dst_path)?;
@@ -302,6 +307,7 @@ fn pack_map(hl2_base: &Path, dst: Option<&str>, map_name_or_path: Option<&str>) 
         displacement_table,
         displacement_byte_code,
         displacement_display_lists,
+        displacement_references,
     }
     .write_to(&mut file)?;
     file.flush()?;
@@ -555,11 +561,7 @@ fn process_geometry(
     let displacement_display_lists_by_pass_face_material =
         displacement_draw_builders_by_pass_face_material
             .into_iter()
-            .map(|(key, builder)| {
-                let mut display_list = builder.build();
-                display_list.pad_to_alignment();
-                (key, display_list)
-            })
+            .map(|(key, builder)| (key, builder.build()))
             .collect();
 
     Ok(MapGeometry {
@@ -1086,16 +1088,15 @@ fn pack_textures(
         })
     }
 
-    fn limit_face_mips(texture: &Vtf, dimension_divisor: usize) -> Vec<VtfFaceMip> {
-        let max_width = texture.width() / dimension_divisor;
-        let max_height = texture.height() / dimension_divisor;
-
+    fn limit_face_mips(texture: &Vtf, max_dimension: usize) -> Vec<VtfFaceMip> {
         let mut any_mip_matched = false;
         let mut smallest_face_mip = None;
         let mut limited_face_mips = Vec::new();
         for face_mip in texture.iter_face_mips() {
             smallest_face_mip = Some(face_mip);
-            if face_mip.texture.width() <= max_width && face_mip.texture.height() <= max_height {
+            if face_mip.texture.width() <= max_dimension
+                && face_mip.texture.height() <= max_dimension
+            {
                 any_mip_matched = true;
                 limited_face_mips.push(face_mip);
             }
@@ -1109,14 +1110,14 @@ fn pack_textures(
     }
 
     const GAMECUBE_MEMORY_BUDGET: usize = 8 * 1024 * 1024;
-    for dimension_divisor in [1, 2, 4, 8, 16, 32] {
+    for max_dimension in [1024, 512, 256, 128, 64, 32, 16, 8] {
         let mut total_size = 0;
         for key in &map_geometry.texture_keys {
             match key {
                 OwnedTextureKey::EncodeAsIs { texture_path } => {
                     let texture = asset_loader.get_texture(texture_path)?;
                     let dst_format = get_dst_format(texture.format())?;
-                    for face_mip in limit_face_mips(&texture, dimension_divisor) {
+                    for face_mip in limit_face_mips(&texture, max_dimension) {
                         total_size += dst_format
                             .metrics()
                             .encoded_size(face_mip.texture.width(), face_mip.texture.height());
@@ -1126,7 +1127,7 @@ fn pack_textures(
                 OwnedTextureKey::Intensity { texture_path } => {
                     let texture = asset_loader.get_texture(texture_path)?;
                     let dst_format = TextureFormat::GxTfI8;
-                    for face_mip in limit_face_mips(&texture, dimension_divisor) {
+                    for face_mip in limit_face_mips(&texture, max_dimension) {
                         total_size += dst_format
                             .metrics()
                             .encoded_size(face_mip.texture.width(), face_mip.texture.height());
@@ -1136,7 +1137,7 @@ fn pack_textures(
                 OwnedTextureKey::AlphaToIntensity { texture_path } => {
                     let texture = asset_loader.get_texture(texture_path)?;
                     let dst_format = TextureFormat::GxTfI8;
-                    for face_mip in limit_face_mips(&texture, dimension_divisor) {
+                    for face_mip in limit_face_mips(&texture, max_dimension) {
                         total_size += dst_format
                             .metrics()
                             .encoded_size(face_mip.texture.width(), face_mip.texture.height());
@@ -1156,7 +1157,7 @@ fn pack_textures(
                         assert_eq!(intensity_texture.mips().len(), alpha_texture.mips().len());
 
                         let dst_format = TextureFormat::GxTfIa8;
-                        for face_mip in limit_face_mips(&intensity_texture, dimension_divisor) {
+                        for face_mip in limit_face_mips(&intensity_texture, max_dimension) {
                             total_size += dst_format
                                 .metrics()
                                 .encoded_size(face_mip.texture.width(), face_mip.texture.height());
@@ -1168,10 +1169,7 @@ fn pack_textures(
             }
         }
 
-        println!(
-            "Textures occupy {} bytes with dimension_divisor {}",
-            total_size, dimension_divisor,
-        );
+        println!("Textures occupy {total_size} bytes with max dimension {max_dimension}");
 
         if total_size > GAMECUBE_MEMORY_BUDGET {
             continue;
@@ -1200,7 +1198,7 @@ fn pack_textures(
                     let dst_format = get_dst_format(texture.format())?;
                     let mut base_mip_size = None;
                     let mut mip_count = 0;
-                    for face_mip in limit_face_mips(&texture, dimension_divisor) {
+                    for face_mip in limit_face_mips(&texture, max_dimension) {
                         assert_eq!(face_mip.face, 0);
                         if base_mip_size.is_none() {
                             base_mip_size =
@@ -1228,7 +1226,7 @@ fn pack_textures(
                     let dst_format = TextureFormat::GxTfI8;
                     let mut base_mip_size = None;
                     let mut mip_count = 0;
-                    for face_mip in limit_face_mips(&texture, dimension_divisor) {
+                    for face_mip in limit_face_mips(&texture, max_dimension) {
                         assert_eq!(face_mip.face, 0);
                         if base_mip_size.is_none() {
                             base_mip_size =
@@ -1256,7 +1254,7 @@ fn pack_textures(
 
                     let mut base_mip_size = None;
                     let mut mip_count = 0;
-                    for face_mip in limit_face_mips(&texture, dimension_divisor) {
+                    for face_mip in limit_face_mips(&texture, max_dimension) {
                         assert_eq!(face_mip.face, 0);
                         if base_mip_size.is_none() {
                             base_mip_size =
@@ -1321,8 +1319,8 @@ fn pack_textures(
                         let mut base_mip_size = None;
                         let mut mip_count = 0;
                         let intensity_face_mips =
-                            limit_face_mips(&intensity_texture, dimension_divisor);
-                        let alpha_face_mips = limit_face_mips(&alpha_texture, dimension_divisor);
+                            limit_face_mips(&intensity_texture, max_dimension);
+                        let alpha_face_mips = limit_face_mips(&alpha_texture, max_dimension);
                         assert_eq!(intensity_face_mips.len(), alpha_face_mips.len());
                         for index in 0..intensity_face_mips.len() {
                             let intensity_face_mip = intensity_face_mips[index];
@@ -1692,15 +1690,22 @@ fn pack_brush_geometry(
 
 fn pack_displacement_geometry(
     map_geometry: &MapGeometry,
-) -> (Vec<DisplacementTableEntry>, Vec<u32>, Vec<u8>) {
+    texture_table: &[TextureTableEntry],
+) -> (
+    Vec<DisplacementTableEntry>,
+    Vec<u32>,
+    Vec<u8>,
+    Vec<DisplacementReferencesEntry>,
+) {
     let mut displacement_table = Vec::new();
     let mut displacement_byte_code = Vec::new();
     let mut displacement_display_lists = Vec::new();
+    let mut displacement_references = Vec::new();
 
     for mode in 0..2 {
         let byte_code_start_index = u32::try_from(displacement_byte_code.len()).unwrap();
 
-        for ((pass, face_index, packed_material), display_list) in
+        for ((pass, face_index, packed_material), draw_display_list) in
             &map_geometry.displacement_display_lists_by_pass_face_material
         {
             if pass.as_mode() != mode {
@@ -1708,25 +1713,50 @@ fn pack_displacement_geometry(
             }
 
             let display_list_offset = u32::try_from(displacement_display_lists.len()).unwrap();
-            display_list
-                .write_to(&mut displacement_display_lists, |_, _| panic!())
-                .unwrap();
-            let display_list_size = u32::try_from(display_list.len()).unwrap();
+            let mut display_list = DisplayList::new();
 
             BytecodeOp::SetFaceIndex {
                 face_index: *face_index,
             }
             .append_to(&mut displacement_byte_code);
-            BytecodeOp::SetBaseTexture {
-                base_texture_id: packed_material.base_id,
-            }
-            .append_to(&mut displacement_byte_code);
+
+            // Bind the base texture to TEXMAP1 with TEXCOORD1.
+            append_bind_texture(&mut display_list, 1, packed_material.base_id, texture_table);
+            append_texcoord_scale(&mut display_list, 1, packed_material.base_id, texture_table);
+
             if *pass == DisplacementPass::WorldVertexTransition {
-                BytecodeOp::SetAuxTexture {
-                    aux_texture_id: packed_material.aux_id.unwrap(),
-                }
-                .append_to(&mut displacement_byte_code);
+                // Bind the aux texture to TEXMAP2 with TEXCOORD2.
+                let aux_id = packed_material.aux_id.unwrap();
+                append_bind_texture(&mut display_list, 2, aux_id, texture_table);
+                append_texcoord_scale(&mut display_list, 2, aux_id, texture_table);
             }
+
+            display_list
+                .commands
+                .extend_from_slice(&draw_display_list.commands);
+            display_list.pad_to_alignment();
+            display_list
+                .write_to(
+                    &mut displacement_display_lists,
+                    |displacement_display_lists, reference| {
+                        displacement_references.push(DisplacementReferencesEntry {
+                            display_list_offset: displacement_display_lists
+                                .len()
+                                .try_into()
+                                .unwrap(),
+                            texture_id: match reference {
+                                gx::display_list::Reference::Texture(x) => x,
+                            },
+                            _padding: 0,
+                        });
+                    },
+                )
+                .unwrap();
+            let next_display_list_offset = u32::try_from(displacement_display_lists.len()).unwrap();
+            assert_eq!(next_display_list_offset & 31, 0);
+            let display_list_size = next_display_list_offset - display_list_offset;
+            assert_eq!(display_list_size & 31, 0);
+
             BytecodeOp::Draw {
                 display_list_offset,
                 display_list_size,
@@ -1745,6 +1775,7 @@ fn pack_displacement_geometry(
         displacement_table,
         displacement_byte_code,
         displacement_display_lists,
+        displacement_references,
     )
 }
 

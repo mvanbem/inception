@@ -95,6 +95,7 @@ pub struct OwnedMapData {
     pub displacement_table: Vec<DisplacementTableEntry>,
     pub displacement_byte_code: Vec<u32>,
     pub displacement_display_lists: Vec<u8>,
+    pub displacement_references: Vec<DisplacementReferencesEntry>,
 }
 
 #[cfg(feature = "std")]
@@ -142,6 +143,7 @@ impl<W: Seek + Write> WriteTo<W> for OwnedMapData {
         write_slice_header!(displacement_table);
         write_slice_header!(displacement_byte_code);
         write_slice_header!(displacement_display_lists);
+        write_slice_header!(displacement_references);
 
         // Write each section.
 
@@ -209,6 +211,7 @@ impl<W: Seek + Write> WriteTo<W> for OwnedMapData {
         write_slice_data!(displacement_table);
         write_slice_data!(displacement_byte_code);
         write_slice_bytes!(displacement_display_lists, 32);
+        write_slice_data!(displacement_references);
 
         w.finish()?;
         Ok(())
@@ -266,6 +269,8 @@ struct PackedMapData {
     displacement_byte_code_len: usize,
     displacement_display_lists_offset: usize,
     displacement_display_lists_len: usize,
+    displacement_references_offset: usize,
+    displacement_references_len: usize,
 }
 
 pub struct MapData<Data> {
@@ -347,6 +352,16 @@ impl<Data: Deref<Target = [u8]>> MapData<Data> {
             self.cast_slice(
                 packed.cluster_geometry_references_offset,
                 packed.cluster_geometry_references_len,
+            )
+        }
+    }
+
+    pub fn displacement_references(&self) -> &[DisplacementReferencesEntry] {
+        let packed = self.packed();
+        unsafe {
+            self.cast_slice(
+                packed.displacement_references_offset,
+                packed.displacement_references_len,
             )
         }
     }
@@ -528,6 +543,24 @@ pub struct ClusterGeometryReferencesEntry {
 
 #[cfg(feature = "std")]
 impl<W: Seek + Write> WriteTo<W> for ClusterGeometryReferencesEntry {
+    fn write_to(&self, w: &mut W) -> io::Result<()> {
+        w.write_u32::<BigEndian>(self.display_list_offset)?;
+        w.write_u16::<BigEndian>(self.texture_id)?;
+        w.write_u16::<BigEndian>(self._padding)?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+pub struct DisplacementReferencesEntry {
+    pub display_list_offset: u32,
+    pub texture_id: u16,
+    pub _padding: u16,
+}
+
+#[cfg(feature = "std")]
+impl<W: Seek + Write> WriteTo<W> for DisplacementReferencesEntry {
     fn write_to(&self, w: &mut W) -> io::Result<()> {
         w.write_u32::<BigEndian>(self.display_list_offset)?;
         w.write_u16::<BigEndian>(self.texture_id)?;

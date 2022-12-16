@@ -46,10 +46,7 @@ impl Lightmap {
             GX_InitTexObjFilterMode(&mut texobj, GX_NEAR as u8, GX_LINEAR as u8);
         }
 
-        Self {
-            image_data: image_data,
-            texobj,
-        }
+        Self { image_data, texobj }
     }
 
     pub fn update<Data: Deref<Target = [u8]>>(
