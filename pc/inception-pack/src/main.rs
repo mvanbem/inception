@@ -3,7 +3,7 @@
 extern crate quickcheck_macros;
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs::{create_dir_all, read, read_dir, File};
 use std::hash::{Hash, Hasher};
 use std::io::{stdout, Write};
@@ -30,7 +30,7 @@ use inception_render_common::map_data::{
     DisplacementTableEntry, LightmapPatchTableEntry, OwnedMapData, TextureTableEntry, WriteTo,
 };
 use memmap::Mmap;
-use nalgebra_glm::{lerp, mat3_to_mat4, vec2, vec3, vec4, Mat2x3, Mat3, Mat3x4, Mat4, Vec2, Vec3};
+use nalgebra_glm::{lerp, vec2, vec3, Mat2x3, Vec2, Vec3};
 use num_traits::PrimInt;
 use ordered_float::NotNan;
 use source_reader::asset::vmt::{
@@ -497,42 +497,6 @@ fn process_geometry(
     displacement_lightmaps: &HashMap<u16, Lightmap>,
     asset_loader: &AssetLoader,
 ) -> Result<MapGeometry> {
-    // Pre-pass: Collect the set of unique planes for each material.
-    let mut material_planes: HashMap<VpkPath, HashSet<Plane>> = HashMap::new();
-    for leaf in bsp.iter_worldspawn_leaves() {
-        if leaf.cluster() == -1 {
-            // Leaf is not potentially visible from anywhere.
-            continue;
-        }
-
-        for face in bsp.iter_faces_from_leaf(leaf) {
-            if face.tex_info == -1 {
-                // Not a textured surface.
-                continue;
-            }
-
-            let tex_info = &bsp.tex_infos()[face.tex_info as usize];
-            if tex_info.tex_data == -1 {
-                // Not textured.
-                // TODO: Determine whether any such faces need to be drawn.
-                continue;
-            }
-
-            let tex_data = &bsp.tex_datas()[tex_info.tex_data as usize];
-            let material_path = VpkPath::new_with_prefix_and_extension(
-                bsp.tex_data_strings()
-                    .get(tex_data.name_string_table_id as usize),
-                "materials",
-                "vmt",
-            );
-            let plane = Plane::from(bsp.planes()[face.plane_num as usize].normal);
-            material_planes
-                .entry(material_path.clone())
-                .or_default()
-                .insert(plane);
-        }
-    }
-
     let mut ids = TextureIdAllocator::new();
     // The first five texture IDs are reserved for the 2D skybox.
     allocate_skybox_textures(bsp, asset_loader, &mut ids)?;
@@ -558,7 +522,6 @@ fn process_geometry(
                 process_textured_brush_face(
                     bsp,
                     asset_loader,
-                    &material_planes,
                     &mut ids,
                     &mut positions,
                     &mut normals,
@@ -709,8 +672,7 @@ fn process_displacement(
     );
     let material = asset_loader.get_material(&material_path)?;
     let packed_material =
-        PackedMaterial::from_material_and_all_planes(asset_loader, ids, &material, [], true)?
-            .unwrap();
+        PackedMaterial::from_material(asset_loader, ids, &material, true)?.unwrap();
     let (pass, base_texture, texture_transform1, texture_transform2) = match material.shader() {
         Shader::LightmappedGeneric(LightmappedGeneric {
             base_texture_path, ..
@@ -912,7 +874,6 @@ fn process_displacement(
 fn process_textured_brush_face(
     bsp: Bsp,
     asset_loader: &AssetLoader,
-    material_planes: &HashMap<VpkPath, HashSet<Plane>>,
     ids: &mut TextureIdAllocator,
     positions: &mut AttributeBuilder<[FloatByBits; 3], u16>,
     normals: &mut AttributeBuilder<[u8; 3], u16>,
@@ -936,7 +897,6 @@ fn process_textured_brush_face(
         "materials",
         "vmt",
     );
-    let plane = Plane::from(bsp.planes()[face.plane_num as usize].normal);
     let material = asset_loader.get_material(&material_path)?;
     let base_texture_size = match material.shader() {
         Shader::LightmappedGeneric(LightmappedGeneric {
@@ -969,18 +929,12 @@ fn process_textured_brush_face(
             return Ok(());
         }
     };
-    let packed_material = PackedMaterial::from_material_and_all_planes(
-        asset_loader,
-        ids,
-        &material,
-        &material_planes[&material_path],
-        false,
-    )?
-    .unwrap();
+    let packed_material =
+        PackedMaterial::from_material(asset_loader, ids, &material, false)?.unwrap();
     let mut polygon_builder = PolygonBuilder::new(cluster_builder.draw_builder(
         Pass::from_material(&material, &packed_material),
         packed_material,
-        ShaderParams::from_material_plane(&material, plane),
+        ShaderParams::from_material(&material),
     ));
 
     let texture_transform = material.texture_transform();
@@ -1114,37 +1068,6 @@ fn hashable_float<const N: usize>(array: &[f32; N]) -> [FloatByBits; N] {
     result
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Plane {
-    x: FloatByBits,
-    y: FloatByBits,
-    z: FloatByBits,
-}
-
-impl Plane {
-    pub fn to_vec3(&self) -> Vec3 {
-        vec3(self.x.0, self.y.0, self.z.0)
-    }
-}
-
-#[cfg(test)]
-impl Arbitrary for Plane {
-    fn arbitrary(g: &mut quickcheck::Gen) -> Self {
-        Self {
-            x: FloatByBits::arbitrary(g),
-            y: FloatByBits::arbitrary(g),
-            z: FloatByBits::arbitrary(g),
-        }
-    }
-}
-
-impl From<[f32; 3]> for Plane {
-    fn from(xyz: [f32; 3]) -> Self {
-        let [x, y, z] = hashable_float(&xyz);
-        Self { x, y, z }
-    }
-}
-
 fn pack_textures(
     asset_loader: &AssetLoader,
     map_geometry: &MapGeometry,
@@ -1188,7 +1111,6 @@ fn pack_textures(
     const GAMECUBE_MEMORY_BUDGET: usize = 8 * 1024 * 1024;
     for dimension_divisor in [1, 2, 4, 8, 16, 32] {
         let mut total_size = 0;
-        let mut env_map_size = 0;
         for key in &map_geometry.texture_keys {
             match key {
                 OwnedTextureKey::EncodeAsIs { texture_path } => {
@@ -1243,25 +1165,12 @@ fn pack_textures(
                         total_size += 32;
                     }
                 }
-
-                OwnedTextureKey::BakeOrientedEnvmap { texture_path, .. } => {
-                    // Emit a sphere map at double the cube face dimension.
-                    let texture = asset_loader.get_texture(texture_path)?;
-                    let width = 2 * texture.width() / dimension_divisor;
-                    let height = 2 * texture.height() / dimension_divisor;
-                    // TODO: Use DXT1.
-                    let size = TextureFormat::GxTfRgba8
-                        .metrics()
-                        .encoded_size(width, height);
-                    total_size += size;
-                    env_map_size += size;
-                }
             }
         }
 
         println!(
-            "Textures occupy {} bytes ({} for env maps) with dimension_divisor {}",
-            total_size, env_map_size, dimension_divisor,
+            "Textures occupy {} bytes with dimension_divisor {}",
+            total_size, dimension_divisor,
         );
 
         if total_size > GAMECUBE_MEMORY_BUDGET {
@@ -1499,148 +1408,6 @@ fn pack_textures(
                         }
                     }
                 }
-
-                OwnedTextureKey::BakeOrientedEnvmap {
-                    texture_path,
-                    plane,
-                } => {
-                    // Emit a sphere map at double the cube face dimension.
-                    let texture = asset_loader.get_texture(texture_path)?;
-                    assert_eq!(texture.width(), texture.height());
-                    let cube_size = texture.width() as usize;
-                    let sphere_width = 2 * cube_size / dimension_divisor as usize;
-                    let sphere_height = 2 * cube_size / dimension_divisor as usize;
-                    let mut pixels = Vec::with_capacity(sphere_width * sphere_height);
-
-                    // Decode the six cube map faces to flat RGBA8 buffers.
-                    let mut faces = Vec::new();
-                    {
-                        let encoded_faces = &texture.mips()[0];
-                        assert!(encoded_faces.len() == 6 || encoded_faces.len() == 7);
-                        for face_index in 0..6 {
-                            faces.push(
-                                TextureBuf::transcode(
-                                    encoded_faces[face_index].as_slice(),
-                                    TextureFormat::Rgba8,
-                                )
-                                .into_data(),
-                            );
-                        }
-                    }
-                    let sample = |v: Vec3| -> [u8; 4] {
-                        let (face, s, t) = if v[0].abs() >= v[1].abs() && v[0].abs() >= v[2].abs() {
-                            if v[0] > 0.0 {
-                                // X+
-                                (1, -v[2] / v[0] * 0.5 + 0.5, v[1] / v[0] * 0.5 + 0.5)
-                            } else {
-                                // X-
-                                (0, -v[2] / v[0] * 0.5 + 0.5, -v[1] / v[0] * 0.5 + 0.5)
-                            }
-                        } else if v[1].abs() >= v[2].abs() {
-                            if v[1] > 0.0 {
-                                // Y+
-                                (3, -v[0] / v[1] * 0.5 + 0.5, v[2] / v[1] * 0.5 + 0.5)
-                            } else {
-                                // Y-
-                                (2, v[0] / v[1] * 0.5 + 0.5, v[2] / v[1] * 0.5 + 0.5)
-                            }
-                        } else {
-                            if v[2] > 0.0 {
-                                // Z+
-                                (5, v[0] / v[2] * 0.5 + 0.5, v[1] / v[2] * 0.5 + 0.5)
-                            } else {
-                                // Z-
-                                (4, v[0] / v[2] * 0.5 + 0.5, -v[1] / v[2] * 0.5 + 0.5)
-                            }
-                        };
-
-                        let x = (s * cube_size as f32).clamp(0.0, cube_size as f32);
-                        let y = (t * cube_size as f32).clamp(0.0, cube_size as f32);
-                        let x0 = (x as usize).min(cube_size - 1);
-                        let y0 = (y as usize).min(cube_size - 1);
-                        let x1 = (x0 + 1).min(cube_size - 1);
-                        let y1 = (y0 + 1).min(cube_size - 1);
-                        let xf = x.fract();
-                        let yf = y.fract();
-
-                        let offset = 4 * (cube_size * y0 + x0);
-                        let sample0: [u8; 4] = faces[face][offset..offset + 4].try_into().unwrap();
-                        let offset = 4 * (cube_size * y0 + x1);
-                        let sample1: [u8; 4] = faces[face][offset..offset + 4].try_into().unwrap();
-                        let offset = 4 * (cube_size * y1 + x0);
-                        let sample2: [u8; 4] = faces[face][offset..offset + 4].try_into().unwrap();
-                        let offset = 4 * (cube_size * y1 + x1);
-                        let sample3: [u8; 4] = faces[face][offset..offset + 4].try_into().unwrap();
-
-                        let lerp = |a, b, t| (1.0 - t) * a + t * b;
-                        let quantize = |x: f32| (x + 0.5).clamp(0.0, 255.0) as u8;
-                        let filter = |s0, s1, s2, s3| {
-                            quantize(lerp(
-                                lerp(s0 as f32, s1 as f32, xf),
-                                lerp(s2 as f32, s3 as f32, xf),
-                                yf,
-                            ))
-                        };
-
-                        [
-                            filter(sample0[0], sample1[0], sample2[0], sample3[0]),
-                            filter(sample0[1], sample1[1], sample2[1], sample3[1]),
-                            filter(sample0[2], sample1[2], sample2[2], sample3[2]),
-                            filter(sample0[3], sample1[3], sample2[3], sample3[3]),
-                        ]
-                    };
-
-                    // Sample the decoded cube map to build the sphere map.
-                    let normal = plane.to_vec3();
-                    let (s, t) = build_local_space(&normal);
-                    let mut png_pixels = Vec::with_capacity(sphere_width * sphere_height * 3);
-                    for y in 0..sphere_height {
-                        for x in 0..sphere_width {
-                            let tex_s = (x as f32 + 0.5) / sphere_width as f32 * 2.0 - 1.0;
-                            let tex_t = (y as f32 + 0.5) / sphere_height as f32 * 2.0 - 1.0;
-                            let tex_zsqr = 1.0 - tex_s * tex_s - tex_t * tex_t;
-                            let (tex_s, tex_t, tex_zsqr) = if tex_zsqr >= 0.0 {
-                                (tex_s, tex_t, tex_zsqr)
-                            } else {
-                                let st = vec2(tex_s, tex_t).normalize();
-                                (st[0], st[1], 0.0)
-                            };
-
-                            let incident = vec3(0.0, 0.0, 1.0);
-                            let sphere_normal = vec3(tex_s, tex_t, tex_zsqr.sqrt());
-                            let vec =
-                                incident - sphere_normal * (2.0 * incident.dot(&sphere_normal));
-                            let world_vec = Mat3::from_columns(&[s, t, normal]) * vec;
-
-                            let rgba = sample(world_vec);
-                            pixels.extend_from_slice(&rgba);
-                            png_pixels.extend_from_slice(&rgba[..3]);
-                        }
-                    }
-
-                    texture_data.extend_from_slice(
-                        TextureBuf::transcode(
-                            TextureBuf::new(
-                                TextureFormat::Rgba8,
-                                sphere_width,
-                                sphere_height,
-                                pixels,
-                            )
-                            .as_slice(),
-                            // TODO: Use DXT1.
-                            TextureFormat::GxTfRgba8,
-                        )
-                        .data(),
-                    );
-
-                    TextureMetadata {
-                        width: sphere_width,
-                        height: sphere_height,
-                        mip_count: 1,
-                        gx_flags: 0x3, // CLAMP_S | CLAMP_T
-                        gx_format: gx_texture_format(TextureFormat::GxTfRgba8),
-                    }
-                }
             };
 
             let end_offset = u32::try_from(texture_data.len()).unwrap();
@@ -1680,23 +1447,6 @@ fn gx_texture_format(format: TextureFormat) -> u8 {
         TextureFormat::GxTfCmpr => 0xe,
         _ => unreachable!(),
     }
-}
-
-fn build_local_space(normal: &Vec3) -> (Vec3, Vec3) {
-    // Choose a reference vector that is not nearly aligned with the normal. This is fairly
-    // arbitrary and is done only to establish a local coordinate space. Use the Y axis if the
-    // normal points mostly along the X axis. Otherwise, choose the X axis.
-    let r = if normal[0].abs() >= normal[1].abs() && normal[0].abs() >= normal[2].abs() {
-        vec3(0.0, 1.0, 0.0)
-    } else {
-        vec3(1.0, 0.0, 0.0)
-    };
-    // Construct s perpendicular to the normal and reference vectors.
-    let s = normal.cross(&r).normalize();
-    // Construct t perpendicular to the s and normal vectors. The order is chosen so that
-    // `s x t = normal`.
-    let t = normal.cross(&s).normalize();
-    (s, t)
 }
 
 fn append_texcoord_scale(
@@ -1826,18 +1576,15 @@ fn pack_brush_geometry(
 
     for cluster in &map_geometry.clusters {
         let mut cluster_geometry_table_entry = ClusterGeometryTableEntry {
-            byte_code_index_ranges: [[0, 0]; 18],
+            byte_code_index_ranges: [[0, 0]; 6],
         };
         let mut display_list_offset = u32::try_from(cluster_geometry_display_lists.len()).unwrap();
-        for mode in 0..18 {
+        for mode in 0..6 {
             cluster_geometry_table_entry.byte_code_index_ranges[mode as usize][0] =
                 u32::try_from(cluster_geometry_byte_code.len()).unwrap();
 
             let mut prev_base_map_id = None;
             let mut prev_aux_map_id = None;
-            let mut prev_plane = None;
-            let mut prev_env_map_id = None;
-            let mut prev_env_map_tint = None;
             let mut prev_alpha = None;
             for ((pass, material, params), draw_display_list) in
                 &cluster.display_lists_by_pass_material_params
@@ -1864,65 +1611,6 @@ fn pack_brush_geometry(
                             // NOTE: Assume the aux texture has the same dimensions as the base
                             // texture. They share texture coordinate 1 so there's no need to set
                             // the scale again.
-                        }
-                    }
-
-                    if let Some(env_map) = material.env_map.as_ref() {
-                        if prev_plane != Some(params.plane) {
-                            prev_plane = Some(params.plane);
-
-                            let normal = params.plane.to_vec3();
-                            let (s, t) = build_local_space(&normal);
-
-                            // Map world space vectors to (s, t, normal) local space.
-                            let world_to_local = mat3_to_mat4(&Mat3::from_rows(&[
-                                s.transpose(),
-                                t.transpose(),
-                                normal.transpose(),
-                            ]));
-                            // Map local space vectors to their mirror images relative to the
-                            // `z = 0` plane.
-                            let local_reflect = Mat4::from_diagonal(&vec4(1.0, 1.0, -1.0, 1.0));
-                            // Map normalized vectors in local space to texture coordinates.
-                            let local_to_texture = Mat3x4::from_rows(&[
-                                vec4(0.5, 0.0, 0.0, 0.5).transpose(),
-                                vec4(0.0, 0.5, 0.0, 0.5).transpose(),
-                                vec4(0.0, 0.0, 0.0, 1.0).transpose(),
-                            ]);
-
-                            // Their product maps world space vectors to reflection texture coordinates.
-                            let texture_matrix: Mat3x4 =
-                                local_to_texture * local_reflect * world_to_local;
-
-                            // This is a load-immediate into GX_DTTMTX0 as GX_MTX3x4.
-                            let mut values = Vec::new();
-                            for r in 0..3 {
-                                for c in 0..4 {
-                                    values.push(texture_matrix[(r, c)].to_bits());
-                                }
-                            }
-                            display_list.commands.push(Command::WriteXfReg {
-                                addr: 0x0500,
-                                values,
-                            });
-                        }
-
-                        let env_map_id = env_map.ids_by_plane[&params.plane];
-                        if prev_env_map_id != Some(env_map_id) {
-                            prev_env_map_id = Some(env_map_id);
-
-                            // Bind the env texture as TEXMAP3 using TEXCOORD2.
-                            append_bind_texture(&mut display_list, 3, env_map_id, texture_table);
-                            append_texcoord_scale(&mut display_list, 2, env_map_id, texture_table);
-                        }
-
-                        if prev_env_map_tint != Some(params.env_map_tint) {
-                            prev_env_map_tint = Some(params.env_map_tint);
-
-                            BytecodeOp::SetEnvMapTint {
-                                rgb: params.env_map_tint,
-                            }
-                            .append_to(&mut cluster_geometry_byte_code);
                         }
                     }
 

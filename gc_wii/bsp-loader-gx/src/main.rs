@@ -35,10 +35,6 @@ use crate::loader::Loader;
 use crate::shaders::flat_vertex_color::FLAT_VERTEX_COLOR_SHADER;
 use crate::shaders::lightmapped::LIGHTMAPPED_SHADER;
 use crate::shaders::lightmapped_baaa::LIGHTMAPPED_BAAA_SHADER;
-use crate::shaders::lightmapped_baaa_env::LIGHTMAPPED_BAAA_ENV_SHADER;
-use crate::shaders::lightmapped_baaa_env_emai::LIGHTMAPPED_BAAA_ENV_EMAI_SHADER;
-use crate::shaders::lightmapped_env::LIGHTMAPPED_ENV_SHADER;
-use crate::shaders::lightmapped_env_emai::LIGHTMAPPED_ENV_EMAI_SHADER;
 use crate::shaders::self_illum::SELF_ILLUM_SHADER;
 use crate::shaders::unlit_generic::UNLIT_GENERIC_SHADER;
 use crate::shaders::world_vertex_transition::WORLD_VERTEX_TRANSITION_SHADER;
@@ -79,7 +75,7 @@ fn configure_loader() -> impl Loader {
     #[cfg(feature = "ftp_loader")]
     {
         return crate::loader::ftp_loader::FtpLoader::new(crate::net::SocketAddr::new(
-            [10, 0, 1, 105],
+            [10, 0, 1, 104],
             21,
         ));
     }
@@ -962,30 +958,8 @@ fn draw_visible_clusters<Data: Deref<Target = [u8]>>(
                         GX_ClearVtxDesc();
                         GX_SetVtxDescv(null_mut());
                     }
-                    BytecodeOp::SetBaseTexture { base_texture_id } => {
-                        GX_LoadTexObj(
-                            &map_texobjs[base_texture_id as usize] as *const GXTexObj
-                                as *mut GXTexObj,
-                            GX_TEXMAP1 as u8,
-                        );
-                    }
-                    BytecodeOp::SetAuxTexture { aux_texture_id } => {
-                        GX_LoadTexObj(
-                            &map_texobjs[aux_texture_id as usize] as *const GXTexObj
-                                as *mut GXTexObj,
-                            GX_TEXMAP2 as u8,
-                        );
-                    }
-                    BytecodeOp::SetEnvTexture { env_texture_id } => {
-                        GX_LoadTexObj(
-                            &map_texobjs[env_texture_id as usize] as *const GXTexObj
-                                as *mut GXTexObj,
-                            GX_TEXMAP3 as u8,
-                        );
-                    }
-                    BytecodeOp::SetEnvMapTint { rgb: [r, g, b] } => {
-                        GX_SetTevKColor(GX_KCOLOR0 as u8, GXColor { r, g, b, a: 255 });
-                    }
+                    BytecodeOp::SetBaseTexture { base_texture_id } => unreachable!(),
+                    BytecodeOp::SetAuxTexture { aux_texture_id } => unreachable!(),
                     BytecodeOp::SetAlphaCompare {
                         z_comp_before_tex,
                         compare_type,
@@ -1005,24 +979,20 @@ fn draw_visible_clusters<Data: Deref<Target = [u8]>>(
             }
         };
 
-        for pass in 0..18 {
-            if pass < 16 {
-                match pass & 0x7 {
+        for pass in 0..6 {
+            if pass < 4 {
+                match pass & 0x1 {
                     0 => LIGHTMAPPED_SHADER.apply(),
-                    1 | 2 => LIGHTMAPPED_ENV_SHADER.apply(),
-                    3 => LIGHTMAPPED_ENV_EMAI_SHADER.apply(),
-                    4 => LIGHTMAPPED_BAAA_SHADER.apply(),
-                    5 | 6 => LIGHTMAPPED_BAAA_ENV_SHADER.apply(),
-                    7 => LIGHTMAPPED_BAAA_ENV_EMAI_SHADER.apply(),
+                    1 => LIGHTMAPPED_BAAA_SHADER.apply(),
                     _ => unreachable!(),
                 }
-            } else if pass == 16 {
+            } else if pass == 4 {
                 UNLIT_GENERIC_SHADER.apply();
-            } else if pass == 17 {
+            } else if pass == 5 {
                 SELF_ILLUM_SHADER.apply();
             }
 
-            let blend = pass < 16 && (pass & 8) == 8;
+            let blend = pass < 4 && (pass & 2) == 2;
             if blend {
                 // Alpha blending.
                 GX_SetBlendMode(

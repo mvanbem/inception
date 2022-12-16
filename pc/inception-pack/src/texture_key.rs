@@ -7,8 +7,6 @@ use source_reader::vpk::path::VpkPath;
 #[cfg(test)]
 use quickcheck::Arbitrary;
 
-use crate::Plane;
-
 pub trait TextureKey {
     fn as_borrowed_texture_key(&self) -> BorrowedTextureKey;
 }
@@ -52,13 +50,6 @@ impl ToOwned for dyn TextureKey + '_ {
                 intensity_from_alpha,
                 alpha_texture_path: alpha_texture_path.to_owned(),
             },
-            BorrowedTextureKey::BakeOrientedEnvmap {
-                texture_path,
-                plane,
-            } => OwnedTextureKey::BakeOrientedEnvmap {
-                texture_path: texture_path.to_owned(),
-                plane: *plane,
-            },
         }
     }
 }
@@ -79,16 +70,12 @@ pub enum OwnedTextureKey {
         intensity_from_alpha: bool,
         alpha_texture_path: VpkPath,
     },
-    BakeOrientedEnvmap {
-        texture_path: VpkPath,
-        plane: Plane,
-    },
 }
 
 #[cfg(test)]
 impl Arbitrary for OwnedTextureKey {
     fn arbitrary(g: &mut quickcheck::Gen) -> Self {
-        match u8::arbitrary(g) % 5 {
+        match u8::arbitrary(g) % 4 {
             0 => Self::EncodeAsIs {
                 texture_path: VpkPath::arbitrary(g),
             },
@@ -102,10 +89,6 @@ impl Arbitrary for OwnedTextureKey {
                 intensity_texture_path: VpkPath::arbitrary(g),
                 intensity_from_alpha: bool::arbitrary(g),
                 alpha_texture_path: VpkPath::arbitrary(g),
-            },
-            4 => Self::BakeOrientedEnvmap {
-                texture_path: VpkPath::arbitrary(g),
-                plane: Plane::arbitrary(g),
             },
             _ => unreachable!(),
         }
@@ -128,13 +111,6 @@ impl TextureKey for OwnedTextureKey {
                 intensity_texture_path,
                 intensity_from_alpha: *intensity_from_alpha,
                 alpha_texture_path,
-            },
-            Self::BakeOrientedEnvmap {
-                texture_path,
-                plane,
-            } => BorrowedTextureKey::BakeOrientedEnvmap {
-                texture_path,
-                plane,
             },
         }
     }
@@ -161,10 +137,6 @@ pub enum BorrowedTextureKey<'a> {
         intensity_texture_path: &'a VpkPath,
         intensity_from_alpha: bool,
         alpha_texture_path: &'a VpkPath,
-    },
-    BakeOrientedEnvmap {
-        texture_path: &'a VpkPath,
-        plane: &'a Plane,
     },
 }
 

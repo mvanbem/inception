@@ -1,10 +1,6 @@
 pub mod flat_vertex_color;
 pub mod lightmapped;
 pub mod lightmapped_baaa;
-pub mod lightmapped_baaa_env;
-pub mod lightmapped_baaa_env_emai;
-pub mod lightmapped_env;
-pub mod lightmapped_env_emai;
 pub mod self_illum;
 pub mod unlit_generic;
 pub mod vertex_color;

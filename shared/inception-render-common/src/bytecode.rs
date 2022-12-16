@@ -14,12 +14,6 @@ pub enum BytecodeOp {
     SetAuxTexture {
         aux_texture_id: u16,
     },
-    SetEnvTexture {
-        env_texture_id: u16,
-    },
-    SetEnvMapTint {
-        rgb: [u8; 3],
-    },
     SetAlphaCompare {
         z_comp_before_tex: u8,
         compare_type: u8,
@@ -54,26 +48,20 @@ impl BytecodeOp {
             &Self::SetAuxTexture { aux_texture_id } => {
                 bytecode.push(0x03000000 | aux_texture_id as u32);
             }
-            &Self::SetEnvTexture { env_texture_id } => {
-                bytecode.push(0x04000000 | env_texture_id as u32);
-            }
-            &Self::SetEnvMapTint { rgb: [r, g, b] } => {
-                bytecode.push(0x05000000 | (r as u32) << 16 | (g as u32) << 8 | b as u32);
-            }
             &Self::SetAlphaCompare {
                 z_comp_before_tex,
                 compare_type,
                 reference,
             } => {
                 bytecode.push(
-                    0x06000000
+                    0x04000000
                         | (z_comp_before_tex as u32) << 16
                         | (compare_type as u32) << 8
                         | reference as u32,
                 );
             }
             &Self::SetFaceIndex { face_index } => {
-                bytecode.push(0x07000000 | face_index as u32);
+                bytecode.push(0x05000000 | face_index as u32);
             }
         }
     }
@@ -118,18 +106,6 @@ impl<'a> Iterator for BytecodeReader<'a> {
                 Some(BytecodeOp::SetAuxTexture { aux_texture_id })
             }
             0x04 => {
-                let env_texture_id = self.0[0] as u16;
-                self.0 = &self.0[1..];
-                Some(BytecodeOp::SetEnvTexture { env_texture_id })
-            }
-            0x05 => {
-                let r = (self.0[0] >> 16) as u8;
-                let g = (self.0[0] >> 8) as u8;
-                let b = self.0[0] as u8;
-                self.0 = &self.0[1..];
-                Some(BytecodeOp::SetEnvMapTint { rgb: [r, g, b] })
-            }
-            0x06 => {
                 let z_comp_before_tex = (self.0[0] >> 16) as u8;
                 let compare_type = (self.0[0] >> 8) as u8;
                 let reference = self.0[0] as u8;
@@ -140,7 +116,7 @@ impl<'a> Iterator for BytecodeReader<'a> {
                     reference,
                 })
             }
-            0x07 => {
+            0x05 => {
                 let face_index = self.0[0] as u16;
                 self.0 = &self.0[1..];
                 Some(BytecodeOp::SetFaceIndex { face_index })
