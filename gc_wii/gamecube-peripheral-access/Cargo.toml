@@ -6,6 +6,9 @@ license = "MIT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[lib]
+test = false
+
 [dependencies]
 bare-metal = "0.2"
 vcell = "0.1"

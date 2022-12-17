@@ -403,6 +403,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(data, &[0x61, 0x97, 0x00, 0x00, 0x00]);
-        assert_eq!(references, &[(5, Reference::Texture(5))]);
+        assert_eq!(references, &[(1, Reference::Texture(5))]);
     }
 }

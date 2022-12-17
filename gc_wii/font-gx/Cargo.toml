@@ -6,6 +6,9 @@ license = "MIT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[lib]
+test = false
+
 [dependencies]
 gamecube-shader = { path = "../gamecube-shader", default-features = false }
 ogc-sys = { path = "../ogc-sys", default-features = false }
