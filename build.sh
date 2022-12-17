@@ -18,9 +18,7 @@ function subcommand_pack_map {
     popd >/dev/null
 
     mkdir -p ftp
-    rm -rf ftp/*
-    cp assets/maps.txt ftp/
-    cp -r build/maps ftp/
+    cp -r --preserve=timestamps assets/maps.txt build/maps ftp/
 }
 
 function subcommand_pack_all_maps {
@@ -36,9 +34,23 @@ function subcommand_pack_all_maps {
     popd >/dev/null
 
     mkdir -p ftp
-    rm -rf ftp/*
-    cp assets/maps.txt ftp/
-    cp -r build/maps ftp/
+    cp -r --preserve=timestamps assets/maps.txt build/maps ftp/
+}
+
+function subcommand_pack_model {
+    echo === Running inception-pack ===
+    pushd pc >/dev/null
+
+    cargo run -p inception-pack $release_flag -- \
+        --hl2-base ~/.steam/steam/steamapps/common/Half-Life\ 2/hl2 \
+        pack_model \
+        --dst ../build \
+        "$@"
+
+    popd >/dev/null
+
+    mkdir -p ftp
+    cp -r --preserve=timestamps build/models ftp/
 }
 
 function subcommand_build_embedded {
@@ -58,7 +70,7 @@ function subcommand_build_embedded {
     popd >/dev/null
 
     mkdir -p ftp
-    cp build/bsp-loader-gx_gamecube.dol ftp/bsp-loader-gx.dol
+    cp --preserve=timestamps build/bsp-loader-gx_gamecube.dol ftp/bsp-loader-gx.dol
 
     echo === SUCCESS ===
 }
@@ -80,7 +92,7 @@ function subcommand_build_ftp {
     popd >/dev/null
 
     mkdir -p ftp
-    cp build/bsp-loader-gx_gamecube.dol ftp/bsp-loader-gx.dol
+    cp --preserve=timestamps build/bsp-loader-gx_gamecube.dol ftp/bsp-loader-gx.dol
 
     echo === SUCCESS ===
 }
@@ -101,7 +113,7 @@ function subcommand_build_gcm {
 
     popd >/dev/null
 
-    cp build/bsp-loader-gx_gamecube.dol ftp/bsp-loader-gx.dol
+    cp --preserve=timestamps build/bsp-loader-gx_gamecube.dol ftp/bsp-loader-gx.dol
 
 
     echo === Building apploader ===
@@ -119,9 +131,7 @@ function subcommand_build_gcm {
 
     mkdir -p disc_root
     rm -rf disc_root/*
-    cp ../assets/{opening.bnr,maps.txt} disc_root/
-    mkdir disc_root/maps
-    cp maps/* disc_root/maps/
+    cp -r --preserve=timestamps ../assets/{opening.bnr,maps.txt} maps disc_root/
 
     popd >/dev/null
     pushd pc >/dev/null
@@ -220,6 +230,11 @@ while true; do
             ;;
         pack_all_maps)
             subcommand_pack_all_maps
+            exit 0
+            ;;
+        pack_model)
+            shift
+            subcommand_pack_model "$@"
             exit 0
             ;;
         *)

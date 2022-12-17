@@ -156,6 +156,8 @@ pub enum Reference {
 pub enum GxPrimitive {
     Quads,
     Triangles,
+    TriangleStrip,
+    TriangleFan,
 }
 
 impl GxPrimitive {
@@ -163,6 +165,8 @@ impl GxPrimitive {
         match self {
             GxPrimitive::Quads => 0x80,
             GxPrimitive::Triangles => 0x90,
+            GxPrimitive::TriangleStrip => 0x98,
+            GxPrimitive::TriangleFan => 0xa0,
         }
     }
 }
