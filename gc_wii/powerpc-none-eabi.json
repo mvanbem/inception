@@ -5,7 +5,6 @@
     "dynamic-linking": false,
     "env": "newlib",
     "executables": true,
-    "has-elf-tls": false,
     "has-rpath": true,
     "llvm-target": "powerpc-none-eabi",
     "linker": "powerpc-eabi-gcc",
