@@ -3,6 +3,8 @@ members = [
     "fully-occupied",
     "gx",
     "inception-render-common",
+    "mvbitfield",
+    "mvbitfield-proc-macro",
     "no-std-ftp",
     "no-std-io",
     "recursive-iter",

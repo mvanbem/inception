@@ -1,0 +1,17 @@
+[package]
+name = "mvbitfield-proc-macro"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+proc-macro = true
+
+[dependencies]
+combine = "^3.8.1"
+combine-proc-macro = "0.3"
+proc-macro2 = "^0.4.29"
+quote = "0.6"
+syn = "1"
