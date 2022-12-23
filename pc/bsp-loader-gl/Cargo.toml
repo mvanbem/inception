@@ -9,9 +9,9 @@ license = "MIT"
 [dependencies]
 anyhow = "1"
 byteorder = "1"
-glium = "0.30"
+glium = "0.32"
 memmap = "0.7"
-nalgebra-glm = "0.15"
+nalgebra-glm = "0.17"
 nom = "7"
 png = "0.17"
 recursive-iter = { path = "../../shared/recursive-iter" }
@@ -19,4 +19,4 @@ source-reader = { path = "../../shared/source-reader", features = ["glium"] }
 texture-atlas = { path = "../../shared/texture-atlas" }
 texture-format = { path = "../../shared/texture-format" }
 try-insert-ext = "0.1"
-zip = "0.5"
+zip = "0.6"

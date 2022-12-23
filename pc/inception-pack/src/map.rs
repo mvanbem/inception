@@ -43,8 +43,7 @@ use crate::texture_key::{OwnedTextureKey, TextureIdAllocator};
 use crate::write_big_endian::WriteBigEndian;
 use crate::{hashable_float, FloatByBits};
 
-pub fn pack_map(hl2_base: &Path, dst: Option<&str>, map_name_or_path: Option<&str>) -> Result<()> {
-    let map_name_or_path = map_name_or_path.unwrap_or("d1_trainstation_01");
+pub fn pack_map(hl2_base: &Path, dst: &Path, map_name_or_path: &str) -> Result<()> {
     let map_path = if map_name_or_path.ends_with(".bsp") {
         map_name_or_path.into()
     } else {
@@ -95,7 +94,7 @@ pub fn pack_map(hl2_base: &Path, dst: Option<&str>, map_name_or_path: Option<&st
         displacement_references,
     ) = pack_displacement_geometry(&map_geometry, &texture_table);
 
-    let dst_path = Path::new(dst.unwrap_or(".")).join("maps");
+    let dst_path = dst.join("maps");
     create_dir_all(&dst_path)?;
 
     let dst_file_name = format!("{}.dat", map_path.file_stem().unwrap().to_str().unwrap());

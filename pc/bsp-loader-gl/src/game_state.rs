@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use glium::glutin::event::{ElementState, KeyboardInput, MouseButton, VirtualKeyCode};
+use glium::glutin::window::CursorGrabMode;
 use glium::Display;
 use nalgebra_glm::{radians, vec1, vec3, Vec3};
 
@@ -56,7 +57,11 @@ impl GameState {
             display
                 .gl_window()
                 .window()
-                .set_cursor_grab(self.dragging)
+                .set_cursor_grab(if self.dragging {
+                    CursorGrabMode::Confined
+                } else {
+                    CursorGrabMode::None
+                })
                 .unwrap();
         }
         if button == MouseButton::Right && state == ElementState::Pressed {

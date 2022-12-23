@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Instant;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use glium::glutin::dpi::LogicalSize;
 use glium::glutin::event::{DeviceEvent, Event, WindowEvent};
 use glium::glutin::event_loop::{ControlFlow, EventLoop};
@@ -69,6 +69,7 @@ struct GraphicsData {
 }
 
 fn main() -> Result<()> {
+    #[cfg(not(target_os = "windows"))]
     let hl2_base = {
         let mut hl2_base = PathBuf::from(std::env::var("HOME").unwrap());
         hl2_base.extend([
@@ -81,7 +82,13 @@ fn main() -> Result<()> {
         ]);
         hl2_base
     };
-    let hl2_misc = Rc::new(Vpk::new(hl2_base.join("hl2_misc"))?);
+    #[cfg(target_os = "windows")]
+    let hl2_base =
+        PathBuf::from("C:\\Program Files (x86)\\Steam\\steamapps\\common\\Half-Life 2\\hl2");
+    let hl2_misc = {
+        let vpk_path = hl2_base.join("hl2_misc");
+        Rc::new(Vpk::new(&vpk_path).with_context(|| format!("opening vpk {vpk_path:?}"))?)
+    };
 
     let map_path = {
         let mut map_path = hl2_base.clone();

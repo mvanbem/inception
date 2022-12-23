@@ -8,6 +8,6 @@ license = "MIT"
 
 [dependencies]
 byteorder = "1"
-half = { version = "1", features = ["num-traits"] }
+half = { version = "2", features = ["num-traits"] }
 num-traits = "0.2"
 stb_dxt = "0.1"

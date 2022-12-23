@@ -11,16 +11,16 @@ license = "MIT"
 anyhow = "1"
 bytemuck = { version = "1", features = ["extern_crate_alloc"] }
 byteorder = "1"
-clap = "2"
-fontdue = "0.6"
+clap = { version = "4", features = ["derive"] }
+fontdue = "0.7"
 gx = { path = "../../shared/gx" }
 inception-render-common = { path = "../../shared/inception-render-common", features = ["std"] }
 memmap = "0.7"
-nalgebra-glm = "0.15"
+nalgebra-glm = "0.17"
 num-traits = "0.2"
-ordered-float = "2"
+ordered-float = "3"
 paste = "1"
-seq-macro = "0.2"
+seq-macro = "0.3"
 source-reader = { path = "../../shared/source-reader" }
 texture-atlas = { path = "../../shared/texture-atlas" }
 texture-format = { path = "../../shared/texture-format" }

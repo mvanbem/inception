@@ -10,5 +10,5 @@ license = "MIT"
 anyhow = "1"
 byteorder = "1"
 chrono = "0.4"
-clap = { version = "3", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
 relocation = { path = "../../shared/relocation" }

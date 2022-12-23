@@ -11,7 +11,7 @@ function subcommand_pack_map {
 
     cargo run -p inception-pack $release_flag -- \
         --hl2-base ~/.steam/steam/steamapps/common/Half-Life\ 2/hl2 \
-        pack_map \
+        pack-map \
         --dst ../build \
         "$@"
 
@@ -27,7 +27,7 @@ function subcommand_pack_all_maps {
 
     cargo run -p inception-pack $release_flag -- \
         --hl2-base ~/.steam/steam/steamapps/common/Half-Life\ 2/hl2 \
-        pack_all_maps \
+        pack-all-maps \
         --dst ../build \
         "$@"
 
@@ -43,7 +43,7 @@ function subcommand_pack_model {
 
     cargo run -p inception-pack $release_flag -- \
         --hl2-base ~/.steam/steam/steamapps/common/Half-Life\ 2/hl2 \
-        pack_model \
+        pack-model \
         --dst ../build \
         "$@"
 
@@ -167,7 +167,7 @@ function subcommand_audit {
         exit_code=0
         cargo -q run -p inception-pack $release_flag -- \
             --hl2-base ~/.steam/steam/steamapps/common/Half-Life\ 2/hl2 \
-            pack_map \
+            pack-map \
             --dst ../build \
             $map \
             >../build/inception-pack.log \
@@ -203,15 +203,15 @@ while true; do
             release_path_component=debug
             shift
             ;;
-        ""|build|build_embedded)
+        ""|build|build-embedded)
             subcommand_build_embedded
             exit 0
             ;;
-        build_ftp)
+        build-ftp)
             subcommand_build_ftp
             exit 0
             ;;
-        build_gcm)
+        build-gcm)
             subcommand_build_gcm
             exit 0
             ;;
@@ -223,16 +223,16 @@ while true; do
             subcommand_clean
             exit 0
             ;;
-        pack_map)
+        pack-map)
             shift
             subcommand_pack_map "$@"
             exit 0
             ;;
-        pack_all_maps)
+        pack-all-maps)
             subcommand_pack_all_maps
             exit 0
             ;;
-        pack_model)
+        pack-model)
             shift
             subcommand_pack_model "$@"
             exit 0

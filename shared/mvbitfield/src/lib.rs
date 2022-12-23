@@ -29,6 +29,14 @@ pub mod prelude;
 /// # Example
 ///
 /// ```
+/// use mvbitfield::prelude::*;
+/// #
+/// # mvbitfield! {
+/// #     struct MyType: U3 {
+/// #         _reserved: 3,
+/// #     }
+/// # }
+///
 /// mvbitfield! {
 ///     //                  +------- Name of the generated type
 ///     //                  |    +-- Underlying type
@@ -65,14 +73,14 @@ pub mod prelude;
 ///
 /// # DSL Spec
 ///
-/// ```
-/// mvbitfield! { <struct_decl> }
+/// ```text
+/// mvbitfield! { <struct-decl> }
 ///
-/// <struct_decl>     := <struct_header> <struct_body>;
-/// <struct_header>   := <visibility_spec> "struct" $ident ":" $ident;
-/// <struct_body>     := "{" <field_spec> ("," <field_spec>)* "}";
-/// <field_spec>      := <visibility_spec> $ident ":" $literal ("as" $ident)?;
-/// <visibility_spec> := empty
+/// <struct-decl>     := <struct-header> <struct-body>;
+/// <struct-header>   := <visibility-spec> "struct" $ident ":" $ident;
+/// <struct-body>     := "{" <field-spec> ("," <field-spec>)* "}";
+/// <field-spec>      := <visibility-spec> $ident ":" $literal ("as" $ident)?;
+/// <visibility-spec> := empty
 ///                    | "pub"
 ///                    | "pub" "(" "crate" ")";
 /// ```
@@ -109,23 +117,43 @@ pub mod prelude;
 /// User-defined field types must have the following methods, where `N` is a placeholder for the
 /// field bit width and `T` is the field's default type:
 ///
-/// ```
+/// ```text
 /// const fn as_uN(self) -> T;
 /// const fn from_uN(value: T) -> Self;
 /// ```
 ///
-/// For a seven-bit user-defined type, those would be:
+/// ### Example: Seven-Bit User-Defined Type
 ///
 /// ```
-/// const fn as_u7(self) -> U7;
-/// const fn from_u7(value: U7) -> Self;
+/// use mvbitfield::prelude::*;
+///
+/// struct Foo(U7);
+///
+/// impl Foo {
+///     const fn as_u7(self) -> U7 {
+///         self.0
+///     }
+///
+///     const fn from_u7(value: U7) -> Self {
+///         Self(value)
+///     }
+/// }
 /// ```
 ///
-/// And for a 32-bit user-defined type:
+/// ### Example: 32-Bit User-Defined Type
 ///
 /// ```
-/// const fn as_u32(self) -> u32;
-/// const fn from_u32(value: u32) -> Self;
+/// struct Foo(u32);
+///
+/// impl Foo {
+///     const fn as_u32(self) -> u32 {
+///         self.0
+///     }
+///
+///     const fn from_u32(value: u32) -> Self {
+///         Self(value)
+///     }
+/// }
 /// ```
 pub use mvbitfield_proc_macro::mvbitfield;
 

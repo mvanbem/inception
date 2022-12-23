@@ -17,8 +17,7 @@ use crate::draw_builder::DrawBuilder;
 use crate::gx_helpers::DisplayListExt;
 use crate::write_big_endian::WriteBigEndian;
 
-pub fn pack_model(hl2_base: &Path, dst: Option<&str>, model_name: Option<&str>) -> Result<()> {
-    let model_name = model_name.unwrap_or("police");
+pub fn pack_model(hl2_base: &Path, dst: &Path, model_name: &str) -> Result<()> {
     let hl2_misc_loader = Rc::new(Vpk::new(hl2_base.join("hl2_misc"))?);
     let hl2_textures_loader = Rc::new(Vpk::new(hl2_base.join("hl2_textures"))?);
     let asset_loader = AssetLoader::new(
@@ -55,7 +54,7 @@ pub fn pack_model(hl2_base: &Path, dst: Option<&str>, model_name: Option<&str>) 
     let (display_lists, references) =
         pack_model_geometry(&asset_loader, model_name, mdl, vtx, vvd)?;
 
-    let dst_path = Path::new(dst.unwrap_or(".")).join("models");
+    let dst_path = dst.join("models");
     create_dir_all(&dst_path)?;
 
     let dst_file_name = format!("{}.dat", model_name);

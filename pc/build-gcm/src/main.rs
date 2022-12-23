@@ -7,10 +7,10 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use byteorder::{BigEndian, WriteBytesExt};
 use chrono::{DateTime, Datelike};
-use clap::StructOpt;
+use clap::Parser;
 use relocation::{PointerFormat, RelocationWriter};
 
-#[derive(clap::Parser)]
+#[derive(Parser)]
 #[clap(name = "build-gcm")]
 struct Args {
     #[clap(long)]

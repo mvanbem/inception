@@ -15,14 +15,13 @@ approx = "0.5"
 bytemuck = { version = "1", features = ["derive"] }
 byteorder = "1"
 fully-occupied = { path = "../fully-occupied" }
-glium = { version = "0.30", optional = true }
+glium = { version = "0.32", optional = true }
 memmap = "0.7"
-nalgebra-glm = "0.15"
+nalgebra-glm = "0.17"
 nom = "7"
 quickcheck = { version = "1", optional = true }
 recursive-iter = { path = "../recursive-iter" }
 texture-atlas = { path = "../texture-atlas" }
 texture-format = { path = "../texture-format" }
 try-insert-ext = "0.1"
-try_map = "0.3"
-zip = "0.5"
+zip = "0.6"
