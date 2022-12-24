@@ -13,4 +13,4 @@ test = false
 derive_more = "0.99"
 ogc-sys = { path = "../ogc-sys", default-features = false }
 paste = "1"
-seq-macro = "0.2"
+seq-macro = "0.3"
