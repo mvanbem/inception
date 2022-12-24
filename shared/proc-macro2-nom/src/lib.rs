@@ -169,19 +169,15 @@ fn error<'input, T>() -> Result<'input, T> {
 pub type Result<'input, T> = IResult<FlatTokenStreamSlice<'input>, T, Error>;
 pub type RefResult<'input, T> = Result<'input, &'input T>;
 
-macro_rules! consume_if_match_and_extract_else_error {
+macro_rules! expect {
     (
         $input:ident,
-        $pat:pat $(if $guard:expr)? => $x:expr $(,)?
+        $pat:pat => $x:expr $(,)?
     ) => {
         match $input.peek() {
-            #[allow(unused_variables)]
-            $pat $(if $guard)? => {
-                if let $pat = $input.next() {
-                    Ok(($input, $x))
-                } else {
-                    unreachable!()
-                }
+            $pat => {
+                $input.next();
+                Ok(($input, $x))
             }
             _ => error(),
         }
@@ -190,7 +186,7 @@ macro_rules! consume_if_match_and_extract_else_error {
 
 /// Matches any ident token tree.
 pub fn ident<'input>(mut input: FlatTokenStreamSlice<'input>) -> RefResult<'input, Ident> {
-    consume_if_match_and_extract_else_error!(input, Some(FlatTokenTree::Ident(id)) => id)
+    expect!(input, Some(FlatTokenTree::Ident(id)) => id)
 }
 
 /// Matches an ident token tree with the given text.
@@ -202,12 +198,7 @@ pub fn keyword<'input: 'text, 'text>(
 
 /// Matches any group token tree.
 pub fn group<'input>(mut input: FlatTokenStreamSlice<'input>) -> Result<'input, FlatGroup<'input>> {
-    consume_if_match_and_extract_else_error!(
-        input,
-        Some(FlatTokenTree::Group { inner, stream }) => FlatGroup {
-            inner, stream: stream,
-        },
-    )
+    expect!(input, Some(FlatTokenTree::Group { inner, stream }) => FlatGroup {inner, stream })
 }
 
 /// Matches a group token tree with the given delimiter.
@@ -236,7 +227,7 @@ where
 
 /// Matches any punct token tree.
 pub fn any_punct<'input>(mut input: FlatTokenStreamSlice<'input>) -> RefResult<'input, Punct> {
-    consume_if_match_and_extract_else_error!(input, Some(FlatTokenTree::Punct(punct)) => punct)
+    expect!(input, Some(FlatTokenTree::Punct(punct)) => punct)
 }
 
 /// Matches a punct token tree with the given character.
@@ -246,7 +237,7 @@ pub fn punct<'input>(c: char) -> impl Parser<FlatTokenStreamSlice<'input>, &'inp
 
 /// Matches any literal token tree.
 pub fn literal<'input>(mut input: FlatTokenStreamSlice<'input>) -> RefResult<'input, Literal> {
-    consume_if_match_and_extract_else_error!(input, Some(FlatTokenTree::Literal(literal)) => literal)
+    expect!(input, Some(FlatTokenTree::Literal(literal)) => literal)
 }
 
 #[cfg(test)]
