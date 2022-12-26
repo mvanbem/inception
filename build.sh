@@ -148,6 +148,60 @@ function subcommand_build_gcm {
     echo === SUCCESS ===
 }
 
+function subcommand_build_kernel_gcm {
+    echo === Assembling kernel ===
+    pushd gc_wii/kernel >/dev/null
+
+    ./assemble.sh
+
+    popd >/dev/null
+
+
+    echo === Building kernel ===
+    pushd gc_wii >/dev/null
+
+    cargo build -p kernel $release_flag
+
+    elf2dol -v -v \
+        target/powerpc-none-eabi/$release_path_component/kernel \
+        ../build/kernel.dol
+    cp --preserve=timestamps ../build/kernel.dol ../ftp/kernel.dol
+
+    popd >/dev/null
+
+
+    echo === Building apploader ===
+    pushd gc_wii >/dev/null
+
+    cargo build -p apploader --release
+
+    powerpc-eabi-objcopy -O binary target/powerpc-none-eabi/release/apploader ../build/apploader
+
+    popd >/dev/null
+
+
+    echo === Building disc image ===
+    pushd build >/dev/null
+
+    mkdir -p kernel_disc_root
+    rm -rf kernel_disc_root/*
+    cp -r --preserve=timestamps ../assets/opening.bnr kernel_disc_root/
+
+    popd >/dev/null
+    pushd pc >/dev/null
+
+    cargo run -p build-gcm -- \
+        --apploader ../build/apploader \
+        --dol ../build/kernel.dol \
+        --root-directory ../build/kernel_disc_root \
+        --output ../build/kernel.gcm
+
+    popd >/dev/null
+
+
+    echo === SUCCESS ===
+}
+
 function subcommand_other {
     pushd pc >/dev/null
     cargo run -p inception-pack $release_flag -- \
@@ -235,6 +289,10 @@ while true; do
         pack-model)
             shift
             subcommand_pack_model "$@"
+            exit 0
+            ;;
+        build-kernel-gcm)
+            subcommand_build_kernel_gcm
             exit 0
             ;;
         *)

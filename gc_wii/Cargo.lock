@@ -280,6 +280,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "gamecube-cpu"
+version = "0.1.0"
+dependencies = [
+ "mvbitfield",
+]
+
+[[package]]
 name = "gamecube-dvd-driver"
 version = "0.1.0"
 dependencies = [
@@ -306,6 +313,14 @@ dependencies = [
  "ogc-sys",
  "paste",
  "seq-macro",
+]
+
+[[package]]
+name = "gamecube-video-driver"
+version = "0.1.0"
+dependencies = [
+ "mvbitfield",
+ "snafu",
 ]
 
 [[package]]
@@ -346,6 +361,16 @@ dependencies = [
 [[package]]
 name = "include-bytes-align-as"
 version = "0.1.0"
+
+[[package]]
+name = "kernel"
+version = "0.1.0"
+dependencies = [
+ "gamecube-cpu",
+ "gamecube-video-driver",
+ "mvbitfield",
+ "panic-abort",
+]
 
 [[package]]
 name = "lazy_static"
@@ -520,6 +545,12 @@ name = "once_cell"
 version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "86f0b0d4bf799edbc74508c1e8bf170ff5f41238e5f8225603ca7caaae2b7860"
+
+[[package]]
+name = "panic-abort"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e20e6499bbbc412f280b04a42346b356c6fa0753d5fd22b7bd752ff34c778ee"
 
 [[package]]
 name = "panic-never"

@@ -1,5 +1,6 @@
 /archive/
 /build/
 /ftp/
+/gc_wii/kernel/bin/
 /shared/Cargo.lock
 target/

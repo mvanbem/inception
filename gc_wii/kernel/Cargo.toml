@@ -1,0 +1,22 @@
+[package]
+name = "kernel"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[[bin]]
+name = "kernel"
+test = false
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+
+[dependencies]
+gamecube-cpu = { path = "../gamecube-cpu" }
+gamecube-video-driver = { path = "../gamecube-video-driver" }
+mvbitfield = { path = "../../shared/mvbitfield" }
+panic-abort = "0.3"
