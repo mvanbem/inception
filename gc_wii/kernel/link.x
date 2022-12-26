@@ -11,18 +11,13 @@ SECTIONS
 {
   .text 0x80003100 :
   {
-    *(*);
+    *(.text .text.*);
     . = ALIGN(32);
   } :text
 
-  /* .bss 0x80000000 :
-  {
-    . = ABSOLUTE(ADDR(.text));
-  } :bss */
-
-  /* .bss2 (ADDR(.text) + SIZEOF(.text)) :
+  .bss (ADDR(.text) + SIZEOF(.text)) :
   {
     *(.bss .bss.*);
-    . = ABSOLUTE(0x80400000);
-  } :bss */
+    . = ALIGN(32);
+  } :bss
 }

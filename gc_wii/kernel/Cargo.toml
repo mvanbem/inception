@@ -10,11 +10,6 @@ license = "MIT"
 name = "kernel"
 test = false
 
-[profile.release]
-codegen-units = 1
-lto = true
-opt-level = 3
-
 [dependencies]
 gamecube-cpu = { path = "../gamecube-cpu" }
 gamecube-video-driver = { path = "../gamecube-video-driver" }

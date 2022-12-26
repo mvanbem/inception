@@ -149,20 +149,15 @@ function subcommand_build_gcm {
 }
 
 function subcommand_build_kernel_gcm {
-    echo === Assembling kernel ===
-    pushd gc_wii/kernel >/dev/null
-
-    ./assemble.sh
-
-    popd >/dev/null
-
-
     echo === Building kernel ===
     pushd gc_wii >/dev/null
 
+    powerpc-eabi-gcc -c -mogc -mcpu=750 kernel/start.S -o ../build/start.o
+    ar rcs ../build/libstart.a ../build/start.o
+
     cargo build -p kernel $release_flag
 
-    elf2dol -v -v \
+    elf2dol -v \
         target/powerpc-none-eabi/$release_path_component/kernel \
         ../build/kernel.dol
     cp --preserve=timestamps ../build/kernel.dol ../ftp/kernel.dol

@@ -4,3 +4,8 @@ members = [
     "bsp-loader-gx",
     "kernel",
 ]
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
