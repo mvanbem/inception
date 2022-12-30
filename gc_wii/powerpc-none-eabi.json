@@ -2,14 +2,12 @@
     "arch": "powerpc",
     "cpu": "750",
     "data-layout": "E-m:e-p:32:32-i64:64-n32",
-    "dynamic-linking": false,
     "env": "newlib",
-    "executables": true,
-    "has-rpath": true,
     "llvm-target": "powerpc-none-eabi",
     "linker": "powerpc-eabi-gcc",
     "linker-flavor": "gcc",
     "linker-is-gnu": true,
+    "max-atomic-width": 32,
     "os": "none",
     "pre-link-args": {
         "gcc": [
