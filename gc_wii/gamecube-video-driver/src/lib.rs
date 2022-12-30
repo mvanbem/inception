@@ -55,11 +55,11 @@ impl VideoDriver {
     ///
     /// <===|-----|_____|-----|^v^v^|-----|===>  Signal
     ///
-    /// <=========|-----+-----+-----+-----+-- Halfline to hblank start:         373 ticks (27.6 us)
+    /// <===|-----+-----+-----+-----+-----+-- Halfline to hblank start:         373 ticks (27.6 us)
     ///           |=====|-----+-----+-----+-- HSync width:                       64 ticks ( 4.7 us)
     ///           |===========|-----+-----+-- HSync start to color burst start:  71 ticks ( 5.3 us)
     ///           |=================|-----+-- HSync start to color burst end:   105 ticks ( 7.8 us)
-    ///           |=================|=====|-- HSync start to hblank end:        162 ticks (12   us)
+    ///           |=================|=====|-- HSync start to hblank end:        162 ticks (12.0 us)
     /// ```
     pub fn configure_for_ntsc_480i(&mut self, framebuffer: *const ()) {
         self.vi
@@ -177,6 +177,9 @@ impl VideoDriver {
     /// - Post-blanking: 3/3 lines
     /// - Total: 525 lines
     ///
+    /// Note that there are still two fields over a total of 1050 lines. But they produce
+    /// indistinguishable signals.
+    ///
     /// Burst blanking:
     /// - All fields start 24 halflines into the field and end 1038 halflines into the field
     ///
@@ -193,11 +196,11 @@ impl VideoDriver {
     ///
     /// <===|-----|_____|-----|^v^v^|-----|===>  Signal
     ///
-    /// <=========|-----+-----+-----+-----+-- Halfline to hblank start:         373 ticks (27.6 us)
-    ///           |=====|-----+-----+-----+-- HSync width:                       64 ticks ( 4.7 us)
-    ///           |===========|-----+-----+-- HSync start to color burst start:  71 ticks ( 5.3 us)
-    ///           |=================|-----+-- HSync start to color burst end:   105 ticks ( 7.8 us)
-    ///           |=======================|-- HSync start to hblank end:        162 ticks (12   us)
+    /// <===|-----+-----+-----+-----+-----+-- Halfline to hblank start:         373 ticks (13.8 us)
+    ///           |=====|-----+-----+-----+-- HSync width:                       64 ticks ( 2.4 us)
+    ///           |===========|-----+-----+-- HSync start to color burst start:  71 ticks ( 2.6 us)
+    ///           |=================|-----+-- HSync start to color burst end:   105 ticks ( 3.9 us)
+    ///           |=======================|-- HSync start to hblank end:        162 ticks ( 6.0 us)
     /// ```
     pub fn configure_for_ntsc_480p(&mut self, framebuffer: *const ()) {
         self.vi
