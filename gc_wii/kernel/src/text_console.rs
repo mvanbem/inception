@@ -1,3 +1,4 @@
+use core::fmt::{self, Write};
 use core::mem::size_of;
 
 use array_const_fn_init::array_const_fn_init;
@@ -27,6 +28,8 @@ impl Font {
     }
 }
 
+static FONT: &Font = Font::from_slice(include_bytes!("../../../build/console_font.dat"));
+
 const fn gradient_element(x: usize) -> u32 {
     let y = 0x80u8;
     let u = 0xc0u8;
@@ -39,6 +42,7 @@ const CHROMA_GRADIENT_ROW: [u32; WORDS_PER_SCANLINE as usize] =
 
 pub struct TextConsole {
     data: [[u8; Self::WIDTH]; Self::HEIGHT],
+    modified: bool,
     origin_y: usize,
     cursor_x: usize,
     cursor_y: usize,
@@ -49,21 +53,23 @@ impl TextConsole {
     const WIDTH: usize = SCREEN_WIDTH / CELL_WIDTH;
     const HEIGHT: usize = SCREEN_HEIGHT / CELL_HEIGHT - 2;
 
-    const HEX: [u8; 16] = [
-        b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'a', b'b', b'c', b'd', b'e',
-        b'f',
-    ];
-
     pub fn new() -> Self {
         Self {
             data: [[Self::FILL; Self::WIDTH]; Self::HEIGHT],
+            modified: true,
             origin_y: 0,
             cursor_x: 0,
             cursor_y: 0,
         }
     }
 
-    pub fn render(&self, font: &Font, framebuffer: &Framebuffer) {
+    pub fn modified(&self) -> bool {
+        self.modified
+    }
+
+    pub fn render(&mut self, framebuffer: &Framebuffer) {
+        self.modified = false;
+
         let mut dst = framebuffer.as_ptr();
 
         // SAFETY: render() writes exactly 300 KiB to a 300 KiB framebuffer.
@@ -72,7 +78,7 @@ impl TextConsole {
             let mut cell = self.origin_y;
             for _ in 0..Self::HEIGHT {
                 for pixel in 0..CELL_HEIGHT {
-                    self.fill_text_row(&mut dst, font, cell, pixel);
+                    self.fill_text_row(&mut dst, cell, pixel);
                 }
                 cell += 1;
                 if cell >= Self::HEIGHT {
@@ -100,12 +106,12 @@ impl TextConsole {
         }
     }
 
-    unsafe fn fill_text_row(&self, dst: &mut *mut (), font: &Font, cell_y: usize, pixel_y: usize) {
+    unsafe fn fill_text_row(&self, dst: &mut *mut (), cell_y: usize, pixel_y: usize) {
         // Render and flush pairs of characters into 32-byte cache lines.
         for cell_pair_x in 0..Self::WIDTH / 2 {
             for i in 0..2 {
                 let character = self.data[cell_y][2 * cell_pair_x + i] as usize;
-                let src = font.0[character][pixel_y].as_ptr();
+                let src = FONT.0[character][pixel_y].as_ptr();
 
                 // Within a cache line, process pixel pairs at a time for 32-bit writes.
                 for pixel_pair in 0..CELL_WIDTH as isize / 2 {
@@ -124,7 +130,9 @@ impl TextConsole {
 
     /// Shifts the view down one line, removing a line at the top and adding a blank line at the
     /// bottom.
-    pub fn scroll_down(&mut self) {
+    fn scroll_down(&mut self) {
+        self.modified = true;
+
         let new_last_row = self.origin_y;
 
         self.origin_y += 1;
@@ -138,7 +146,7 @@ impl TextConsole {
     }
 
     /// Moves the cursor one cell down, scrolling the view down to keep it visible.
-    pub fn move_down(&mut self) {
+    fn move_down(&mut self) {
         self.cursor_y += 1;
         if self.cursor_y >= Self::HEIGHT {
             self.cursor_y = 0;
@@ -151,7 +159,7 @@ impl TextConsole {
     }
 
     /// Moves the cursor one cell right, wrapping to the first column of the next row.
-    pub fn move_right(&mut self) {
+    fn move_right(&mut self) {
         self.cursor_x += 1;
         if self.cursor_x >= Self::WIDTH {
             // The cursor just wrapped off the right
@@ -161,7 +169,9 @@ impl TextConsole {
     }
 
     /// Prints a byte, regardless of its interpretation as a character.
-    pub fn print_byte(&mut self, b: u8) {
+    fn print_byte(&mut self, b: u8) {
+        self.modified = true;
+
         self.data[self.cursor_y][self.cursor_x] = b;
         self.move_right();
     }
@@ -170,7 +180,7 @@ impl TextConsole {
     ///
     /// ASCII control characters are interpreted. Non-ASCII characters are printed as a replacement
     /// character.
-    pub fn print_char(&mut self, c: char) {
+    fn print_char(&mut self, c: char) {
         match c {
             '\n' => {
                 self.move_down();
@@ -187,42 +197,15 @@ impl TextConsole {
             }
         }
     }
+}
 
-    /// Prints a string.
-    pub fn print_str(&mut self, s: &str) {
+impl Write for TextConsole {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.modified = true;
+
         for c in s.chars() {
             self.print_char(c);
         }
-    }
-
-    /// Prints a hex digit.
-    pub fn print_hex_digit(&mut self, value: u8) {
-        self.print_byte(Self::HEX[(value as usize) & 0xf]);
-    }
-
-    /// Prints a two-character hex string.
-    pub fn print_hex_u8(&mut self, value: u8) {
-        self.print_hex_digit(((value as usize) >> 4) as u8);
-        self.print_hex_digit((value as usize) as u8);
-    }
-
-    /// Prints a four-character hex string.
-    pub fn print_hex_u16(&mut self, value: u16) {
-        self.print_hex_digit(((value as usize) >> 12) as u8);
-        self.print_hex_digit(((value as usize) >> 8) as u8);
-        self.print_hex_digit(((value as usize) >> 4) as u8);
-        self.print_hex_digit((value as usize) as u8);
-    }
-
-    /// Prints a eight-character hex string.
-    pub fn print_hex_u32(&mut self, value: u32) {
-        self.print_hex_digit(((value as usize) >> 28) as u8);
-        self.print_hex_digit(((value as usize) >> 24) as u8);
-        self.print_hex_digit(((value as usize) >> 20) as u8);
-        self.print_hex_digit(((value as usize) >> 16) as u8);
-        self.print_hex_digit(((value as usize) >> 12) as u8);
-        self.print_hex_digit(((value as usize) >> 8) as u8);
-        self.print_hex_digit(((value as usize) >> 4) as u8);
-        self.print_hex_digit((value as usize) as u8);
+        Ok(())
     }
 }

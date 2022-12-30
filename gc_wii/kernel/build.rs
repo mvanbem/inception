@@ -10,9 +10,9 @@ fn main() {
     println!("cargo:rustc-link-arg=-T{}", linker_script.display());
     println!("cargo:rerun-if-changed={}", linker_script.display());
 
-    let build_dir = crate_dir.join("../../build");
-    let libstart = build_dir.join("libstart.a");
-    println!("cargo:rustc-link-lib=static=start");
+    let build_dir = crate_dir.join("../../build/kernel_asm");
+    let libstart = build_dir.join("libkernelasm.a");
+    println!("cargo:rustc-link-lib=static=kernelasm");
     println!("cargo:rustc-link-search={}", build_dir.display());
     println!("cargo:rerun-if-changed={}", libstart.display());
 }

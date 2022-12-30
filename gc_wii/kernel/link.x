@@ -4,31 +4,25 @@ ENTRY(start)
 PHDRS
 {
   text PT_LOAD;
-  rodata PT_LOAD;
+  data PT_LOAD;
   bss PT_LOAD;
-  discarded PT_LOAD;
 }
 
 SECTIONS
 {
-  .os_globals 0x00000000 (NOLOAD) :
-  {
-    *(.os_globals);
-  } :discarded
-
   .text 0x80003100 :
   {
     *(.text .text.*);
     . = ALIGN(32);
   } :text
 
-  .rodata (ADDR(.text) + SIZEOF(.text)) :
+  .data (ADDR(.text) + SIZEOF(.text)) :
   {
-    *(.rodata .rodata.*);
+    *(.data .data.* .rodata .rodata.*);
     . = ALIGN(32);
-  } :rodata
+  } :data
 
-  .bss (ADDR(.rodata) + SIZEOF(.rodata)) :
+  .bss (ADDR(.data) + SIZEOF(.data)) :
   {
     *(.bss .bss.*);
     . = ALIGN(32);

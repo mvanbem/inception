@@ -93,20 +93,64 @@ impl<'reg> VideoInterface<'reg> {
         unsafe { ptr::write_volatile(&mut (*Self::PTR).bottom_left_field_base, value) };
     }
 
+    pub fn read_display_interrupt_0(&self) -> DisplayInterrupt {
+        unsafe { ptr::read_volatile(&(*Self::PTR).display_interrupt[0]) }
+    }
+
     pub fn write_display_interrupt_0(&mut self, value: DisplayInterrupt) {
         unsafe { ptr::write_volatile(&mut (*Self::PTR).display_interrupt[0], value) };
+    }
+
+    pub fn modify_display_interrupt_0(
+        &mut self,
+        f: impl FnOnce(DisplayInterrupt) -> DisplayInterrupt,
+    ) {
+        self.write_display_interrupt_0(f(self.read_display_interrupt_0()));
+    }
+
+    pub fn read_display_interrupt_1(&self) -> DisplayInterrupt {
+        unsafe { ptr::read_volatile(&(*Self::PTR).display_interrupt[1]) }
     }
 
     pub fn write_display_interrupt_1(&mut self, value: DisplayInterrupt) {
         unsafe { ptr::write_volatile(&mut (*Self::PTR).display_interrupt[1], value) };
     }
 
+    pub fn modify_display_interrupt_1(
+        &mut self,
+        f: impl FnOnce(DisplayInterrupt) -> DisplayInterrupt,
+    ) {
+        self.write_display_interrupt_1(f(self.read_display_interrupt_1()));
+    }
+
+    pub fn read_display_interrupt_2(&self) -> DisplayInterrupt {
+        unsafe { ptr::read_volatile(&(*Self::PTR).display_interrupt[2]) }
+    }
+
     pub fn write_display_interrupt_2(&mut self, value: DisplayInterrupt) {
         unsafe { ptr::write_volatile(&mut (*Self::PTR).display_interrupt[2], value) };
     }
 
+    pub fn modify_display_interrupt_2(
+        &mut self,
+        f: impl FnOnce(DisplayInterrupt) -> DisplayInterrupt,
+    ) {
+        self.write_display_interrupt_2(f(self.read_display_interrupt_2()));
+    }
+
+    pub fn read_display_interrupt_3(&self) -> DisplayInterrupt {
+        unsafe { ptr::read_volatile(&(*Self::PTR).display_interrupt[3]) }
+    }
+
     pub fn write_display_interrupt_3(&mut self, value: DisplayInterrupt) {
         unsafe { ptr::write_volatile(&mut (*Self::PTR).display_interrupt[3], value) };
+    }
+
+    pub fn modify_display_interrupt_3(
+        &mut self,
+        f: impl FnOnce(DisplayInterrupt) -> DisplayInterrupt,
+    ) {
+        self.write_display_interrupt_3(f(self.read_display_interrupt_3()));
     }
 
     pub fn read_display_latch_0(&self) -> DisplayLatch {
@@ -305,8 +349,8 @@ mvbitfield! {
 
 #[repr(u8)]
 pub enum Clock {
-    k27MHz = 0,
-    k54MHz = 1,
+    K27MHz = 0,
+    K54MHz = 1,
 }
 
 impl Clock {

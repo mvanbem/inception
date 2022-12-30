@@ -152,8 +152,19 @@ function subcommand_build_kernel_gcm {
     echo === Building kernel ===
     pushd gc_wii >/dev/null
 
-    powerpc-eabi-gcc -c -mogc -mcpu=750 kernel/start.S -o ../build/start.o
-    ar rcs ../build/libstart.a ../build/start.o
+    mkdir -p ../build/kernel_asm/
+    for file in exceptions external_interrupt start; do
+        powerpc-eabi-gcc \
+            -c \
+            -mogc \
+            -mcpu=750 \
+            -Wa,-Ikernel/asm \
+            kernel/asm/$file.S \
+            -o ../build/kernel_asm/$file.o
+    done
+    ar rcs \
+        ../build/kernel_asm/libkernelasm.a \
+        ../build/kernel_asm/{exceptions,external_interrupt,start}.o
 
     cargo build -p kernel $release_flag
 

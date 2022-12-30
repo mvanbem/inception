@@ -147,7 +147,7 @@ impl VideoDriver {
                 .with_framebuffer_width_in_16_pixel_units(U7::new_masked(40)),
         );
         self.vi
-            .write_clock_select(ClockSelect::zero().with_clock(Clock::k27MHz));
+            .write_clock_select(ClockSelect::zero().with_clock(Clock::K27MHz));
 
         self.vi.write_display_configuration(
             DisplayConfiguration::zero()
@@ -282,7 +282,7 @@ impl VideoDriver {
                 .with_framebuffer_width_in_16_pixel_units(U7::new_masked(40)),
         );
         self.vi
-            .write_clock_select(ClockSelect::zero().with_clock(Clock::k54MHz));
+            .write_clock_select(ClockSelect::zero().with_clock(Clock::K54MHz));
 
         self.vi.write_display_configuration(
             DisplayConfiguration::zero()
