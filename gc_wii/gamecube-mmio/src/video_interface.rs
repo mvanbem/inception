@@ -5,7 +5,7 @@ use mvbitfield::prelude::*;
 mmio_device! {
     doc_name: "VI",
     struct_name: VideoInterface,
-    base: 0xcc002000usize,
+    base: 0xcc002000,
     size: 0x70,
     regs: {
         vertical_timing_a: VerticalTimingA = rw,

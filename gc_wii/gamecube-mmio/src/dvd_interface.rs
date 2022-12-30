@@ -5,7 +5,7 @@ use mvbitfield::prelude::*;
 mmio_device! {
     doc_name: "DI",
     struct_name: DvdInterface,
-    base: 0xcc006000usize,
+    base: 0xcc006000,
     size: 0x28,
     regs: {
         status: Status = rw,

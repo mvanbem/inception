@@ -32,7 +32,7 @@ macro_rules! mmio_device {
         }
 
         impl<'reg> $struct_name<'reg> {
-            const PTR: *mut RegisterBlock = $base as _;
+            const PTR: *mut RegisterBlock = $base as usize as _;
 
             pub fn new(root: crate::permission::PermissionRoot) -> Self {
                 let _ = root;

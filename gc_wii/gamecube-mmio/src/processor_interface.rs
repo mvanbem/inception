@@ -3,7 +3,7 @@ use mvbitfield::prelude::*;
 mmio_device! {
     doc_name: "PI",
     struct_name: ProcessorInterface,
-    base: 0xcc003000usize,
+    base: 0xcc003000,
     size: 0x30,
     regs: {
         interrupt_cause: InterruptCause = ro,
