@@ -1,85 +1,24 @@
-use core::marker::PhantomData;
 use core::mem::transmute;
-use core::ptr;
 
 use mvbitfield::prelude::*;
 
-#[repr(C)]
-struct RegisterBlock {
-    status: Status,
-    cover: Cover,
-    command_buffer_a: CommandA,
-    command_buffer_b: u32,
-    command_buffer_c: u32,
-    dma_address: u32,
-    dma_length: u32,
-    control: Control,
-    immediate_buffer: ImmediateBuffer,
-    config: u32,
-}
-
-/// Represents ownership of the DI registers.
-pub struct DvdInterface<'reg> {
-    _phantom_register_block: PhantomData<&'reg mut RegisterBlock>,
-}
-
-impl<'reg> DvdInterface<'reg> {
-    const PTR: *mut RegisterBlock = 0xcc006000usize as _;
-
-    /// # Safety
-    ///
-    /// All calls must have disjoint lifetimes.
-    pub unsafe fn new_unchecked() -> Self {
-        Self {
-            _phantom_register_block: PhantomData,
-        }
-    }
-
-    pub fn reborrow(&mut self) -> DvdInterface {
-        DvdInterface {
-            _phantom_register_block: PhantomData,
-        }
-    }
-
-    pub fn write_status(&mut self, value: Status) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).status, value) };
-    }
-
-    pub fn read_status(&self) -> Status {
-        unsafe { ptr::read_volatile(&(*Self::PTR).status) }
-    }
-
-    pub fn write_cover(&mut self, value: Cover) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).cover, value) };
-    }
-
-    pub fn read_cover(&self) -> Cover {
-        unsafe { ptr::read_volatile(&(*Self::PTR).cover) }
-    }
-
-    pub fn write_command_buffer_a(&mut self, value: CommandA) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).command_buffer_a, value) };
-    }
-
-    pub fn write_command_buffer_b(&mut self, value: u32) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).command_buffer_b, value) };
-    }
-
-    pub fn write_command_buffer_c(&mut self, value: u32) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).command_buffer_c, value) };
-    }
-
-    pub fn write_dma_address(&mut self, value: u32) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).dma_address, value) };
-    }
-
-    pub fn write_dma_length(&mut self, value: u32) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).dma_length, value) };
-    }
-
-    pub fn write_control(&mut self, value: Control) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).control, value) };
-    }
+mmio_device! {
+    doc_name: "DI",
+    struct_name: DvdInterface,
+    base: 0xcc006000usize,
+    size: 0x28,
+    regs: {
+        status: Status = rw,
+        cover: Cover = rw,
+        command_buffer_a: CommandA = wo,
+        command_buffer_b: u32 = wo,
+        command_buffer_c: u32 = wo,
+        dma_address: u32 = wo,
+        dma_length: u32 = wo,
+        control: Control = wo,
+        immediate_buffer: ImmediateBuffer = wo,
+        config: u32,
+    },
 }
 
 mvbitfield! {

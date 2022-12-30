@@ -6,7 +6,7 @@ use core::fmt::Write;
 use core::sync::atomic::Ordering;
 
 use gamecube_cpu::registers::time_base;
-use gamecube_mmio::processor_interface::{InterruptCause, InterruptMask, Interrupts};
+use gamecube_mmio::processor_interface::{InterruptMask, Interrupts};
 use gamecube_video_driver::framebuffer::Framebuffer;
 use gamecube_video_driver::VideoDriver;
 use panic_abort as _;
@@ -27,13 +27,12 @@ static FRAMEBUFFER: Framebuffer = Framebuffer::zero();
 
 #[no_mangle]
 extern "C" fn main() -> ! {
-    let init::Devices { mut pi, vi, .. } = unsafe { init::init() };
+    let init::Devices { pi, vi, .. } = unsafe { init::init() };
 
     let mut video = VideoDriver::new(vi);
     video.configure_for_ntsc_480p(FRAMEBUFFER.as_ptr().cast());
 
-    // Acknowledge any pending PI interrupts and enable VI interrupts.
-    pi.write_interrupt_cause(InterruptCause::zero().with_interrupts(Interrupts::all()));
+    // Enable VI interrupts.
     pi.write_interrupt_mask(
         InterruptMask::zero().with_interrupts(Interrupts::zero().with_video_interface(true)),
     );
@@ -43,7 +42,9 @@ extern "C" fn main() -> ! {
     let mut last_time = 0;
     loop {
         if OS_GLOBALS.vi_interrupt_fired.load(Ordering::Relaxed) {
-            OS_GLOBALS.vi_interrupt_fired.store(false, Ordering::Relaxed);
+            OS_GLOBALS
+                .vi_interrupt_fired
+                .store(false, Ordering::Relaxed);
             let start_time = time_base();
             if console.modified() {
                 console.render(&FRAMEBUFFER);

@@ -309,7 +309,11 @@ dependencies = [
 name = "gamecube-mmio"
 version = "0.1.0"
 dependencies = [
+ "gamecube-cpu",
+ "memoffset",
  "mvbitfield",
+ "paste",
+ "seq-macro",
 ]
 
 [[package]]
@@ -439,6 +443,15 @@ name = "memchr"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2dffe52ecf27772e601905b7522cb4ef790d2cc203488bbd0e2fe85fcb74566d"
+
+[[package]]
+name = "memoffset"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d61c719bcfbcf5d62b3a09efa6088de8c54bc0bfcd3ea7ae39fcc186108b8de1"
+dependencies = [
+ "autocfg",
+]
 
 [[package]]
 name = "minimal-lexical"

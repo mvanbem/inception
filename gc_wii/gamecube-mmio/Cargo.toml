@@ -10,4 +10,8 @@ license = "MIT"
 test = false
 
 [dependencies]
+gamecube-cpu = { path = "../gamecube-cpu" }
+memoffset = "0.8"
 mvbitfield = { path = "../../shared/mvbitfield" }
+paste = "1"
+seq-macro = "0.3"

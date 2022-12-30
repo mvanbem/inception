@@ -4,33 +4,36 @@ use core::ops::Range;
 use gamecube_cpu::cache::{flush_data_cache_block, invalidate_instruction_cache_block};
 use gamecube_cpu::registers::msr::modify_msr;
 use gamecube_mmio::dvd_interface::DvdInterface;
+use gamecube_mmio::permission::PermissionRoot;
 use gamecube_mmio::processor_interface::ProcessorInterface;
 use gamecube_mmio::video_interface::VideoInterface;
 
-pub struct Devices {
-    pub _di: DvdInterface<'static>,
-    pub pi: ProcessorInterface<'static>,
-    pub vi: VideoInterface<'static>,
+pub struct Devices<'reg> {
+    pub _di: DvdInterface<'reg>,
+    pub pi: ProcessorInterface<'reg>,
+    pub vi: VideoInterface<'reg>,
 }
 
-pub unsafe fn init() -> Devices {
-    modify_msr(|msr| {
-        msr.with_external_interrupts_enabled(false)
+pub unsafe fn init<'reg>() -> Devices<'reg> {
+    // SAFETY: This is the permission root for the kernel outside of interrupt handlers.
+    let root = unsafe { PermissionRoot::new_unchecked() };
+
+    modify_msr(|reg| {
+        reg.with_external_interrupts_enabled(false)
             .with_machine_check_enabled(false)
     });
 
     install_interrupt_handlers();
 
-    modify_msr(|msr| {
-        msr.with_external_interrupts_enabled(true)
+    modify_msr(|reg| {
+        reg.with_external_interrupts_enabled(true)
             .with_machine_check_enabled(true)
     });
 
-    // SAFETY: These must be the only calls in the program.
     Devices {
-        _di: unsafe { DvdInterface::new_unchecked() },
-        pi: unsafe { ProcessorInterface::new_unchecked() },
-        vi: unsafe { VideoInterface::new_unchecked() },
+        _di: DvdInterface::new(root),
+        pi: ProcessorInterface::new(root),
+        vi: VideoInterface::new(root),
     }
 }
 

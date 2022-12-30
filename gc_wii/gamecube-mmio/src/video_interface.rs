@@ -1,181 +1,34 @@
-use core::marker::PhantomData;
-use core::mem::{size_of, transmute};
-use core::ptr::{self};
+use core::mem::transmute;
 
 use mvbitfield::prelude::*;
 
-#[repr(C)]
-struct RegisterBlock {
-    vertical_timing_a: VerticalTimingA,
-    display_configuration: DisplayConfiguration,
-    horizontal_timing_a: HorizontalTimingA,
-    horizontal_timing_b: HorizontalTimingB,
-    vertical_timing_b_odd_field: VerticalTimingB,
-    vertical_timing_b_even_field: VerticalTimingB,
-    burst_blanking_odd_field: BurstBlankingOddField,
-    burst_blanking_even_field: BurstBlankingEvenField,
-    top_left_field_base: FieldBase,
-    top_right_field_base: FieldBase,
-    bottom_left_field_base: FieldBase,
-    bottom_right_field_base: FieldBase,
-    vertical_position: u16,
-    horizontal_position: u16,
-    display_interrupt: [DisplayInterrupt; 4],
-    display_latch: [DisplayLatch; 2],
-    horizontal_scaling: HorizontalScaling,
-    filter_coefficient_table: [u32; 8],
-    clock_select: ClockSelect,
-    _padding_todo_there_are_more_registers: u16,
-}
-
-const _: () = assert!(size_of::<RegisterBlock>() == 0x70);
-
-/// Represents ownership of the VI registers.
-pub struct VideoInterface<'reg> {
-    _phantom_register_block: PhantomData<&'reg mut RegisterBlock>,
-}
-
-impl<'reg> VideoInterface<'reg> {
-    const PTR: *mut RegisterBlock = 0xcc002000usize as _;
-
-    /// # Safety
-    ///
-    /// All calls must have disjoint lifetimes.
-    pub unsafe fn new_unchecked() -> Self {
-        Self {
-            _phantom_register_block: PhantomData,
-        }
-    }
-
-    pub fn reborrow(&mut self) -> VideoInterface {
-        VideoInterface {
-            _phantom_register_block: PhantomData,
-        }
-    }
-
-    pub fn write_vertical_timing_a(&mut self, value: VerticalTimingA) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).vertical_timing_a, value) };
-    }
-
-    pub fn write_display_configuration(&mut self, value: DisplayConfiguration) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).display_configuration, value) };
-    }
-
-    pub fn write_horizontal_timing_a(&mut self, value: HorizontalTimingA) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).horizontal_timing_a, value) };
-    }
-
-    pub fn write_horizontal_timing_b(&mut self, value: HorizontalTimingB) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).horizontal_timing_b, value) };
-    }
-
-    pub fn write_vertical_timing_b_odd_field(&mut self, value: VerticalTimingB) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).vertical_timing_b_odd_field, value) };
-    }
-
-    pub fn write_vertical_timing_b_even_field(&mut self, value: VerticalTimingB) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).vertical_timing_b_even_field, value) };
-    }
-
-    pub fn write_burst_blanking_odd_field(&mut self, value: BurstBlankingOddField) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).burst_blanking_odd_field, value) };
-    }
-
-    pub fn write_burst_blanking_even_field(&mut self, value: BurstBlankingEvenField) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).burst_blanking_even_field, value) };
-    }
-
-    pub fn write_top_left_field_base(&mut self, value: FieldBase) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).top_left_field_base, value) };
-    }
-
-    pub fn write_bottom_left_field_base(&mut self, value: FieldBase) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).bottom_left_field_base, value) };
-    }
-
-    pub fn read_display_interrupt_0(&self) -> DisplayInterrupt {
-        unsafe { ptr::read_volatile(&(*Self::PTR).display_interrupt[0]) }
-    }
-
-    pub fn write_display_interrupt_0(&mut self, value: DisplayInterrupt) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).display_interrupt[0], value) };
-    }
-
-    pub fn modify_display_interrupt_0(
-        &mut self,
-        f: impl FnOnce(DisplayInterrupt) -> DisplayInterrupt,
-    ) {
-        self.write_display_interrupt_0(f(self.read_display_interrupt_0()));
-    }
-
-    pub fn read_display_interrupt_1(&self) -> DisplayInterrupt {
-        unsafe { ptr::read_volatile(&(*Self::PTR).display_interrupt[1]) }
-    }
-
-    pub fn write_display_interrupt_1(&mut self, value: DisplayInterrupt) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).display_interrupt[1], value) };
-    }
-
-    pub fn modify_display_interrupt_1(
-        &mut self,
-        f: impl FnOnce(DisplayInterrupt) -> DisplayInterrupt,
-    ) {
-        self.write_display_interrupt_1(f(self.read_display_interrupt_1()));
-    }
-
-    pub fn read_display_interrupt_2(&self) -> DisplayInterrupt {
-        unsafe { ptr::read_volatile(&(*Self::PTR).display_interrupt[2]) }
-    }
-
-    pub fn write_display_interrupt_2(&mut self, value: DisplayInterrupt) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).display_interrupt[2], value) };
-    }
-
-    pub fn modify_display_interrupt_2(
-        &mut self,
-        f: impl FnOnce(DisplayInterrupt) -> DisplayInterrupt,
-    ) {
-        self.write_display_interrupt_2(f(self.read_display_interrupt_2()));
-    }
-
-    pub fn read_display_interrupt_3(&self) -> DisplayInterrupt {
-        unsafe { ptr::read_volatile(&(*Self::PTR).display_interrupt[3]) }
-    }
-
-    pub fn write_display_interrupt_3(&mut self, value: DisplayInterrupt) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).display_interrupt[3], value) };
-    }
-
-    pub fn modify_display_interrupt_3(
-        &mut self,
-        f: impl FnOnce(DisplayInterrupt) -> DisplayInterrupt,
-    ) {
-        self.write_display_interrupt_3(f(self.read_display_interrupt_3()));
-    }
-
-    pub fn read_display_latch_0(&self) -> DisplayLatch {
-        unsafe { ptr::read_volatile(&(*Self::PTR).display_latch[0]) }
-    }
-
-    pub fn write_display_latch_0(&mut self, value: DisplayLatch) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).display_latch[0], value) };
-    }
-
-    pub fn read_display_latch_1(&self) -> DisplayLatch {
-        unsafe { ptr::read_volatile(&(*Self::PTR).display_latch[1]) }
-    }
-
-    pub fn write_display_latch_1(&mut self, value: DisplayLatch) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).display_latch[1], value) };
-    }
-
-    pub fn write_horizontal_scaling(&mut self, value: HorizontalScaling) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).horizontal_scaling, value) };
-    }
-
-    pub fn write_clock_select(&mut self, value: ClockSelect) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).clock_select, value) };
-    }
+mmio_device! {
+    doc_name: "VI",
+    struct_name: VideoInterface,
+    base: 0xcc002000usize,
+    size: 0x70,
+    regs: {
+        vertical_timing_a: VerticalTimingA = rw,
+        display_configuration: DisplayConfiguration = rw,
+        horizontal_timing_a: HorizontalTimingA = rw,
+        horizontal_timing_b: HorizontalTimingB = rw,
+        vertical_timing_b_odd_field: VerticalTimingB = rw,
+        vertical_timing_b_even_field: VerticalTimingB = rw,
+        burst_blanking_odd_field: BurstBlankingOddField = rw,
+        burst_blanking_even_field: BurstBlankingEvenField = rw,
+        top_left_field_base: FieldBase = rw,
+        top_right_field_base: FieldBase = rw,
+        bottom_left_field_base: FieldBase = rw,
+        bottom_right_field_base: FieldBase = rw,
+        vertical_position: u16 = ro,
+        horizontal_position: u16 = ro,
+        display_interrupt: [DisplayInterrupt; 4] = rw(indexed),
+        display_latch: [DisplayLatch; 2] = rw(indexed),
+        horizontal_scaling: HorizontalScaling = rw,
+        filter_coefficient_table: [u32; 8] = rw(indexed),
+        clock_select: ClockSelect = rw,
+        _padding_todo_there_are_more_registers: u16,
+    },
 }
 
 mvbitfield! {

@@ -1,77 +1,24 @@
-use core::marker::PhantomData;
-use core::mem::size_of;
-use core::ptr;
-
 use mvbitfield::prelude::*;
 
-#[repr(C)]
-pub struct RegisterBlock {
-    interrupt_cause: InterruptCause,
-    interrupt_mask: InterruptMask,
-    _unknown1: u32,
-    _fifo_base_start: u32,
-    _fifo_base_end: u32,
-    _fifo_write_ptr: u32,
-    _unknown2: u32,
-    _unknown3: u32,
-    _unknown4: u32,
-    _reset: u32,
-    _unknown5: u32,
-    di_control: u32,
-}
-
-const _: () = assert!(size_of::<RegisterBlock>() == 48);
-
-/// Represents ownership of the PI registers.
-pub struct ProcessorInterface<'reg> {
-    _phantom_register_block: PhantomData<&'reg mut RegisterBlock>,
-}
-
-impl<'reg> ProcessorInterface<'reg> {
-    const PTR: *mut RegisterBlock = 0xcc003000usize as _;
-
-    /// # Safety
-    ///
-    /// All calls must have disjoint lifetimes.
-    pub unsafe fn new_unchecked() -> Self {
-        Self {
-            _phantom_register_block: PhantomData,
-        }
-    }
-
-    pub fn reborrow(&mut self) -> ProcessorInterface {
-        ProcessorInterface {
-            _phantom_register_block: PhantomData,
-        }
-    }
-
-    pub fn read_interrupt_cause(&self) -> InterruptCause {
-        unsafe { ptr::read_volatile(&(*Self::PTR).interrupt_cause) }
-    }
-
-    pub fn write_interrupt_cause(&mut self, value: InterruptCause) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).interrupt_cause, value) };
-    }
-
-    pub fn read_interrupt_mask(&self) -> InterruptMask {
-        unsafe { ptr::read_volatile(&(*Self::PTR).interrupt_mask) }
-    }
-
-    pub fn write_interrupt_mask(&mut self, value: InterruptMask) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).interrupt_mask, value) };
-    }
-
-    pub fn read_di_control(&self) -> u32 {
-        unsafe { ptr::read_volatile(&(*Self::PTR).di_control) }
-    }
-
-    pub fn write_di_control(&mut self, value: u32) {
-        unsafe { ptr::write_volatile(&mut (*Self::PTR).di_control, value) };
-    }
-
-    pub fn modify_di_control(&mut self, f: impl FnOnce(u32) -> u32) {
-        self.write_di_control(f(self.read_di_control()));
-    }
+mmio_device! {
+    doc_name: "PI",
+    struct_name: ProcessorInterface,
+    base: 0xcc003000usize,
+    size: 0x30,
+    regs: {
+        interrupt_cause: InterruptCause = ro,
+        interrupt_mask: InterruptMask = rw,
+        unknown1: u32,
+        fifo_base_start: u32,
+        fifo_base_end: u32,
+        fifo_write_ptr: u32,
+        unknown2: u32,
+        unknown3: u32,
+        unknown4: u32,
+        reset: u32,
+        unknown5: u32,
+        di_control: u32 = rw,
+    },
 }
 
 mvbitfield! {

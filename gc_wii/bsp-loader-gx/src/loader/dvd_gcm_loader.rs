@@ -86,12 +86,12 @@ impl<'reg> Loader for DvdGcmLoader<'reg> {
     type Params<'a> = (DvdDriver<'reg>, ProcessorInterface<'a>);
     type Data = Vec<u8, GlobalAlign32>;
 
-    fn new((mut dvd, mut pi): Self::Params<'_>) -> Self {
+    fn new((mut dvd, pi): Self::Params<'_>) -> Self {
         // Check for the expected disc.
         loop {
             unsafe {
                 libc::printf(b"Resetting the disc drive...\n\0".as_ptr());
-                dvd.reset(pi.reborrow());
+                dvd.reset(pi);
                 match dvd.read_disc_id() {
                     Ok(disc_id) => {
                         if &disc_id[..8] == b"GGMEMV\x00\x00" {

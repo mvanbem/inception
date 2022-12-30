@@ -14,10 +14,6 @@ impl VideoDriver {
         Self { vi }
     }
 
-    pub fn registers_mut(&mut self) -> VideoInterface {
-        self.vi.reborrow()
-    }
-
     /// Configures the video interface for NTSC 480i output.
     ///
     /// The framebuffer must be 32-byte aligned and below physical memory address 0x01000000 (16

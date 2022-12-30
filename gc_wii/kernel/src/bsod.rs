@@ -1,6 +1,8 @@
 use core::fmt::Write;
 
 use gamecube_cpu::registers::msr::MachineState;
+use gamecube_mmio::permission::PermissionRoot;
+use gamecube_mmio::uninterruptible::Uninterruptible;
 use gamecube_mmio::video_interface::VideoInterface;
 use gamecube_video_driver::VideoDriver;
 
@@ -30,8 +32,11 @@ struct Bat {
 
 #[no_mangle]
 extern "C" fn bsod(args: &BsodArgs) -> ! {
-    // SAFETY: Interrupts have been disabled. We own the machine.
-    let vi = unsafe { VideoInterface::new_unchecked() };
+    // SAFETY: We own the machine and interrupts have been disabled.
+    let root = unsafe { PermissionRoot::new_unchecked() };
+    let _u = unsafe { Uninterruptible::new_unchecked() };
+
+    let vi = VideoInterface::new(root);
 
     let mut console = TextConsole::new();
     writeln!(

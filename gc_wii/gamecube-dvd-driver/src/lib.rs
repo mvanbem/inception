@@ -8,6 +8,7 @@ use core::sync::atomic::{compiler_fence, Ordering};
 use aligned::{Aligned, A32};
 use gamecube_mmio::dvd_interface::*;
 use gamecube_mmio::processor_interface::ProcessorInterface;
+use gamecube_mmio::uninterruptible::uninterruptible;
 use ogc_sys::DCInvalidateRange;
 use snafu::Snafu;
 
@@ -30,10 +31,6 @@ pub struct DvdDriver<'reg> {
 impl<'reg> DvdDriver<'reg> {
     pub fn new(di: DvdInterface<'reg>) -> Self {
         Self { di }
-    }
-
-    pub fn registers_mut(&mut self) -> DvdInterface {
-        self.di.reborrow()
     }
 
     pub fn inquiry(&mut self) -> Result<[u8; 32], DvdError> {
@@ -99,10 +96,12 @@ impl<'reg> DvdDriver<'reg> {
         while open != self.di.read_cover().state() {}
     }
 
-    pub fn reset(&mut self, mut pi: ProcessorInterface) {
-        // Perform a hard reset. I'm not sure what the individual bits or writes do.
-        pi.modify_di_control(|x| (x & !4) | 1);
-        pi.modify_di_control(|x| x | 5);
+    pub fn reset(&mut self, pi: ProcessorInterface) {
+        uninterruptible(|u| {
+            // Perform a hard reset. I'm not sure what the individual bits or writes do.
+            pi.modify_di_control(u, |x| (x & !4) | 1);
+            pi.modify_di_control(u, |x| x | 5);
+        });
         unsafe { libc::usleep(115000) };
     }
 
