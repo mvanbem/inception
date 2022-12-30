@@ -30,6 +30,7 @@ derive_more = "0.99"
 derive-try-from-primitive = "1"
 font-gx = { path = "../font-gx" }
 gamecube-dvd-driver = { path = "../gamecube-dvd-driver" }
+gamecube-mmio = { path = "../gamecube-mmio" }
 gamecube-peripheral-access = { path = "../gamecube-peripheral-access" }
 gamecube-shader = { path = "../gamecube-shader" }
 inception-render-common = { path = "../../shared/inception-render-common" }

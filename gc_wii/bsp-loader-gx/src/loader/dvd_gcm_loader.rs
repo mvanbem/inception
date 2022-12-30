@@ -7,15 +7,18 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use bytemuck::{from_bytes, Pod, Zeroable};
+use gamecube_dvd_driver::DvdDriver;
+use gamecube_mmio::processor_interface::ProcessorInterface;
 use inception_render_common::map_data::MapData;
 use ogc_sys::GlobalAlign32;
 
-pub struct DvdGcmLoader {
+pub struct DvdGcmLoader<'reg> {
+    dvd: DvdDriver<'reg>,
     table_data: Vec<u8, GlobalAlign32>,
     string_table_start: usize,
 }
 
-impl DvdGcmLoader {
+impl<'reg> DvdGcmLoader<'reg> {
     fn string(&self, offset: usize) -> &str {
         let start = self.string_table_start + offset;
         let end = start
@@ -27,7 +30,7 @@ impl DvdGcmLoader {
         core::str::from_utf8(&self.table_data[start..end]).unwrap()
     }
 
-    fn read_file(&self, path: &str) -> Vec<u8, GlobalAlign32> {
+    fn read_file(&mut self, path: &str) -> Vec<u8, GlobalAlign32> {
         let orig_path = path;
         let mut path = path;
 
@@ -44,7 +47,8 @@ impl DvdGcmLoader {
                     let file_offset = entry.data_or_parent_index;
                     let file_size = entry.file_length_or_next_index;
                     let mut data = Vec::with_capacity_in((file_size + 31) & !31, GlobalAlign32);
-                    gamecube_dvd_driver::read_maybe_uninit(file_offset, data.spare_capacity_mut())
+                    self.dvd
+                        .read_maybe_uninit(file_offset, data.spare_capacity_mut())
                         .unwrap();
                     unsafe { data.set_len(file_size) }
                     return data;
@@ -78,17 +82,17 @@ impl DvdGcmLoader {
     }
 }
 
-impl Loader for DvdGcmLoader {
-    type Params = ();
+impl<'reg> Loader for DvdGcmLoader<'reg> {
+    type Params<'a> = (DvdDriver<'reg>, ProcessorInterface<'a>);
     type Data = Vec<u8, GlobalAlign32>;
 
-    fn new(_: ()) -> Self {
+    fn new((mut dvd, mut pi): Self::Params<'_>) -> Self {
         // Check for the expected disc.
         loop {
             unsafe {
                 libc::printf(b"Resetting the disc drive...\n\0".as_ptr());
-                gamecube_dvd_driver::reset();
-                match gamecube_dvd_driver::read_disc_id() {
+                dvd.reset(pi.reborrow());
+                match dvd.read_disc_id() {
                     Ok(disc_id) => {
                         if &disc_id[..8] == b"GGMEMV\x00\x00" {
                             break;
@@ -98,28 +102,27 @@ impl Loader for DvdGcmLoader {
                 }
 
                 libc::printf(b"Unrecognized disc. Open the disc cover.\n\0".as_ptr());
-                gamecube_dvd_driver::wait_for_cover(true);
+                dvd.wait_for_cover(true);
 
                 libc::printf(b"Insert the Inception disc and close the cover.\n\0".as_ptr());
-                gamecube_dvd_driver::wait_for_cover(false);
+                dvd.wait_for_cover(false);
             }
         }
 
         let mut metadata: Aligned<A32, _> = Aligned(DiscHeader0x420::zeroed());
-        gamecube_dvd_driver::read(0x420, bytemuck::bytes_of_mut(&mut *metadata)).unwrap();
+        dvd.read(0x420, bytemuck::bytes_of_mut(&mut *metadata))
+            .unwrap();
 
         let mut table_data = Vec::with_capacity_in((metadata.fst_size + 31) & !31, GlobalAlign32);
-        gamecube_dvd_driver::read_maybe_uninit(
-            metadata.fst_offset,
-            table_data.spare_capacity_mut(),
-        )
-        .unwrap();
+        dvd.read_maybe_uninit(metadata.fst_offset, table_data.spare_capacity_mut())
+            .unwrap();
         unsafe { table_data.set_len(metadata.fst_size) }
 
         let root_entry: &FileTableEntry = from_bytes(&table_data[..size_of::<FileTableEntry>()]);
         let string_table_start = size_of::<FileTableEntry>() * root_entry.file_length_or_next_index;
 
         Self {
+            dvd,
             table_data,
             string_table_start,
         }

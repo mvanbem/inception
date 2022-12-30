@@ -74,6 +74,14 @@ impl OwnedType {
             _ => panic!(),
         }
     }
+
+    pub fn bits(&self) -> usize {
+        match self {
+            Self::PrimitiveInteger(t) => t.kind.bits(),
+            Self::NarrowInteger(t) => t.bits,
+            _ => panic!(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

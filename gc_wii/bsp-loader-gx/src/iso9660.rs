@@ -7,19 +7,21 @@ use aligned::{Aligned, A32};
 use alloc::format;
 use alloc::vec::Vec;
 use bytemuck::{from_bytes, Pod, Zeroable};
+use gamecube_dvd_driver::DvdDriver;
 use ogc_sys::GlobalAlign32;
 
-pub struct DiscReader {
+pub struct DiscReader<'reg> {
+    dvd: DvdDriver<'reg>,
     path_table_offset: usize,
     path_table_size: usize,
     root_directory_extent: Range<usize>,
 }
 
-impl DiscReader {
-    pub fn new() -> Self {
+impl<'reg> DiscReader<'reg> {
+    pub fn new(mut dvd: DvdDriver<'reg>) -> Self {
         let mut buf: Aligned<A32, _> = Aligned([0; 2048]);
         for i in 16.. {
-            gamecube_dvd_driver::read(2048 * i, &mut *buf).unwrap();
+            dvd.read(2048 * i, &mut *buf).unwrap();
 
             let volume_descriptor: &VolumeDescriptorHeader =
                 from_bytes(&(*buf)[..size_of::<VolumeDescriptorHeader>()]);
@@ -31,6 +33,7 @@ impl DiscReader {
                     assert_eq!(primary.version, 1);
                     assert_eq!(primary.logical_block_size_be, 2048);
                     return Self {
+                        dvd,
                         path_table_offset: 2048 * primary.be_path_table_lba_be as usize,
                         path_table_size: primary.path_table_size_be as usize,
                         root_directory_extent: primary.root_directory_entry.extent(),
@@ -48,7 +51,7 @@ impl DiscReader {
     }
 
     fn scan_path_table<R>(
-        &self,
+        &mut self,
         mut f: impl FnMut(u16, &BePathTableEntry) -> ControlFlow<R>,
     ) -> Option<R> {
         let mut offset = self.path_table_offset;
@@ -65,7 +68,7 @@ impl DiscReader {
                 + 31)
                 & !31;
 
-            gamecube_dvd_driver::read(read_offset, &mut (*buf)[..size]).unwrap();
+            self.dvd.read(read_offset, &mut (*buf)[..size]).unwrap();
             let entry: &BePathTableEntry =
                 from_bytes(&(*buf)[struct_offset..struct_offset + size_of::<BePathTableEntry>()]);
             match f(index, entry) {
@@ -82,7 +85,11 @@ impl DiscReader {
         None
     }
 
-    fn find_directory_with_parent(&self, name: &str, parent_index: u16) -> Option<(u16, usize)> {
+    fn find_directory_with_parent(
+        &mut self,
+        name: &str,
+        parent_index: u16,
+    ) -> Option<(u16, usize)> {
         unsafe {
             let buf = format!(
                 "find_directory_with_parent({:?}, {})\n\0",
@@ -109,16 +116,16 @@ impl DiscReader {
     }
 
     fn for_each_directory_entry<R>(
-        &self,
+        dvd: &mut DvdDriver<'reg>,
         extent: Range<usize>,
-        mut f: impl FnMut(&DirectoryEntry) -> ControlFlow<R>,
+        mut f: impl FnMut(&mut DvdDriver<'reg>, &DirectoryEntry) -> ControlFlow<R>,
     ) -> Option<R> {
         // Directory entries never cross a sector boundary, so read entire sectors and scan them.
         let sector_start = extent.start & !2047;
         let mut skip = 2; // Each directory starts with `.` and `..` entries.
         for sector_start in (sector_start..extent.end).step_by(2048) {
             let mut sector_data: Aligned<A32, _> = Aligned([0; 2048]);
-            gamecube_dvd_driver::read(sector_start, &mut *sector_data).unwrap();
+            dvd.read(sector_start, &mut *sector_data).unwrap();
 
             // Scan directory entries within this sector.
             let mut struct_offset = extent.start.checked_sub(sector_start).unwrap_or(0);
@@ -133,7 +140,7 @@ impl DiscReader {
                 }
 
                 if skip == 0 {
-                    match f(entry) {
+                    match f(dvd, entry) {
                         ControlFlow::Continue(()) => (),
                         ControlFlow::Break(result) => return Some(result),
                     }
@@ -149,21 +156,21 @@ impl DiscReader {
     }
 
     fn list_directory_with_extent(
-        &self,
+        dvd: &mut DvdDriver<'reg>,
         path: &str,
         f: &mut impl FnMut(&str),
         extent: Range<usize>,
     ) {
         if path.is_empty() {
             // Leaf case. List this directory.
-            self.for_each_directory_entry(extent, |entry| {
+            Self::for_each_directory_entry(dvd, extent, |_dvd, entry| {
                 f(entry.rock_ridge_name().unwrap_or(entry.name()));
                 ControlFlow::<()>::Continue(())
             });
         } else {
             // Traversal case. Look for the named directory and recurse into it.
             let name = path.split('/').next().unwrap();
-            self.for_each_directory_entry(extent, |entry| {
+            Self::for_each_directory_entry(dvd, extent, |dvd, entry| {
                 if entry
                     .rock_ridge_name()
                     .map(|entry_name| entry_name.eq_ignore_ascii_case(name))
@@ -171,7 +178,8 @@ impl DiscReader {
                 {
                     // Match.
                     assert_eq!(entry.flags & 2, 2); // Must be a directory.
-                    self.list_directory_with_extent(
+                    Self::list_directory_with_extent(
+                        dvd,
                         path.splitn(2, '/').skip(1).next().unwrap_or(""),
                         f,
                         entry.extent(),
@@ -184,11 +192,20 @@ impl DiscReader {
         }
     }
 
-    pub fn list_directory(&self, path: &str, mut f: impl FnMut(&str)) {
-        self.list_directory_with_extent(path, &mut f, self.root_directory_extent.clone());
+    pub fn list_directory(&mut self, path: &str, mut f: impl FnMut(&str)) {
+        Self::list_directory_with_extent(
+            &mut self.dvd,
+            path,
+            &mut f,
+            self.root_directory_extent.clone(),
+        );
     }
 
-    fn read_file_with_extent(&self, path: &str, extent: Range<usize>) -> Vec<u8, GlobalAlign32> {
+    fn read_file_with_extent(
+        dvd: &mut DvdDriver<'reg>,
+        path: &str,
+        extent: Range<usize>,
+    ) -> Vec<u8, GlobalAlign32> {
         let (name, sub_path) = {
             let mut iter = path.splitn(2, '/');
             let name = iter.next().unwrap();
@@ -196,7 +213,7 @@ impl DiscReader {
             (name, sub_path)
         };
 
-        self.for_each_directory_entry(extent, |entry| {
+        Self::for_each_directory_entry(dvd, extent, |dvd, entry| {
             if entry
                 .rock_ridge_name()
                 .map(|entry_name| entry_name.eq_ignore_ascii_case(name))
@@ -211,7 +228,7 @@ impl DiscReader {
                     let alloc_size = (size + 31) & !31;
                     let mut data = Vec::with_capacity_in(alloc_size, GlobalAlign32);
 
-                    gamecube_dvd_driver::read_maybe_uninit(disc_offset, data.spare_capacity_mut())
+                    dvd.read_maybe_uninit(disc_offset, data.spare_capacity_mut())
                         .unwrap();
                     unsafe { data.set_len(size) }
 
@@ -219,7 +236,7 @@ impl DiscReader {
                 } else {
                     // Recurse into the directory.
                     assert_eq!(entry.flags & 2, 2); // Must be a directory.
-                    ControlFlow::Break(self.read_file_with_extent(sub_path, entry.extent()))
+                    ControlFlow::Break(Self::read_file_with_extent(dvd, sub_path, entry.extent()))
                 }
             } else {
                 ControlFlow::Continue(())
@@ -228,8 +245,8 @@ impl DiscReader {
         .unwrap()
     }
 
-    pub fn read_file(&self, path: &str) -> Vec<u8, GlobalAlign32> {
-        self.read_file_with_extent(path, self.root_directory_extent.clone())
+    pub fn read_file(&mut self, path: &str) -> Vec<u8, GlobalAlign32> {
+        Self::read_file_with_extent(&mut self.dvd, path, self.root_directory_extent.clone())
     }
 }
 

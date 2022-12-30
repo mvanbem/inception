@@ -13,10 +13,10 @@ static MAP_DATA: &[u8] = include_bytes_align_as!(Align32Bytes, "../../../../buil
 pub struct EmbeddedLoader;
 
 impl Loader for EmbeddedLoader {
-    type Params = ();
+    type Params<'a> = ();
     type Data = &'static [u8];
 
-    fn new(_: ()) -> Self {
+    fn new((): Self::Params<'_>) -> Self {
         Self
     }
 

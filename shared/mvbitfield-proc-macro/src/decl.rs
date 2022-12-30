@@ -76,6 +76,15 @@ impl StructDecl {
         for field in self.fields {
             items_for_fields.push(field.layout(&self.header, &mut offset).into_token_stream());
         }
+        if offset > self.header.repr.bits() {
+            panic!(
+                "Bitfield struct {name} attempted to allocate {allocated} bits from an underlying \
+                 type with {available} bits",
+                name = self.header.name,
+                allocated = offset,
+                available = self.header.repr.bits(),
+            );
+        }
 
         // Emit the struct and impl block.
         let visibility = &self.header.visibility;

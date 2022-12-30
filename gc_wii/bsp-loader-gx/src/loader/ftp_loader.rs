@@ -17,10 +17,10 @@ pub struct FtpLoader {
 }
 
 impl Loader for FtpLoader {
-    type Params = SocketAddr;
+    type Params<'a> = SocketAddr;
     type Data = Vec<u8, GlobalAlign32>;
 
-    fn new(addr: Self::Params) -> Self {
+    fn new(addr: Self::Params<'_>) -> Self {
         unsafe {
             libc::printf(b"Initializing Broadband Adapter...\n\0".as_ptr());
             net::init().unwrap();

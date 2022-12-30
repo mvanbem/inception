@@ -4,20 +4,21 @@ use crate::loader::Loader;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use gamecube_dvd_driver::DvdDriver;
 use inception_render_common::map_data::MapData;
 use ogc_sys::GlobalAlign32;
 
-pub struct DvdIsoLoader {
-    disc_reader: DiscReader,
+pub struct DvdIsoLoader<'reg> {
+    disc_reader: DiscReader<'reg>,
 }
 
-impl Loader for DvdIsoLoader {
-    type Params = ();
+impl<'reg> Loader for DvdIsoLoader<'reg> {
+    type Params<'a> = DvdDriver<'reg>;
     type Data = Vec<u8, GlobalAlign32>;
 
-    fn new(_: ()) -> Self {
+    fn new(dvd: Self::Params<'_>) -> Self {
         Self {
-            disc_reader: DiscReader::new(),
+            disc_reader: DiscReader::new(dvd),
         }
     }
 

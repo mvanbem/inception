@@ -92,6 +92,8 @@ enum Command {
     },
     /// Builds the UI font to stdout.
     BuildUiFont,
+    /// Builds the console font to stdout.
+    BuildConsoleFont,
 }
 
 fn main() -> Result<()> {
@@ -108,6 +110,7 @@ fn main() -> Result<()> {
         Command::CatMaterial { name } => cat_material(&args.hl2_base, &name)?,
         Command::DescribeTexture { name } => describe_texture(&args.hl2_base, &name)?,
         Command::BuildUiFont => build_ui_font()?,
+        Command::BuildConsoleFont => build_console_font()?,
     }
     Ok(())
 }
@@ -265,6 +268,70 @@ fn build_ui_font() -> Result<()> {
     let stdout = stdout();
     let mut stdout = stdout.lock();
     stdout.write_all(texture.data())?;
+    stdout.flush()?;
+
+    Ok(())
+}
+
+fn build_console_font() -> Result<()> {
+    const SCALE: f32 = 14.0;
+    const BASELINE_Y: isize = 13;
+    let character_is_bold = |c| c == '_';
+
+    let regular_font_bytes = read("../third_party/dejavu-fonts-ttf-2.37/DejaVuSansMono.ttf")?;
+    let bold_font_bytes = read("../third_party/dejavu-fonts-ttf-2.37/DejaVuSansMono-Bold.ttf")?;
+    let regular_font = Font::from_bytes(
+        regular_font_bytes,
+        FontSettings {
+            scale: SCALE,
+            ..FontSettings::default()
+        },
+    )
+    .map_err(|e| anyhow!(e))?;
+    let bold_font = Font::from_bytes(
+        bold_font_bytes,
+        FontSettings {
+            scale: SCALE,
+            ..FontSettings::default()
+        },
+    )
+    .map_err(|e| anyhow!(e))?;
+
+    let mut data = vec![0; 8 * 16 * 256];
+    for c in 0x20 as char..=0x7f as char {
+        let font = if character_is_bold(c) {
+            &bold_font
+        } else {
+            &regular_font
+        };
+        let (metrics, coverage) = font.rasterize(c, SCALE);
+
+        // Position of the upper-left corner of the 8x16 cell within the rasterized box.
+        // X: Offset left by half the width of the cell from the middle of the box.
+        let cx0 = -4 + (metrics.width as isize / 2);
+        // Y: Offset up by the height of the baseline in the cell from the baseline.
+        let cy0 = -BASELINE_Y + (metrics.height as isize + metrics.ymin as isize);
+
+        for y in 0..16usize {
+            for x in 0..8usize {
+                let cx = x.wrapping_add_signed(cx0);
+                let cy = y.wrapping_add_signed(cy0);
+
+                let dst = 128 * c as usize + 8 * y as usize + x as usize;
+                let luma = if cx < metrics.width && cy < metrics.height {
+                    let src = metrics.width * cy + cx;
+                    (((coverage[src] as f32) / 255.0).powf(1.0 / 2.2) * 255.0).round() as u8
+                } else {
+                    0
+                };
+                data[dst] = luma;
+            }
+        }
+    }
+
+    let stdout = stdout();
+    let mut stdout = stdout.lock();
+    stdout.write_all(&data)?;
     stdout.flush()?;
 
     Ok(())

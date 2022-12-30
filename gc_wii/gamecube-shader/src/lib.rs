@@ -1,6 +1,5 @@
 #![no_std]
 #![allow(dead_code)]
-#![feature(const_fn_trait_bound)]
 
 use ogc_sys::*;
 use paste::paste;

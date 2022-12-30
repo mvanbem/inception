@@ -2,7 +2,6 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![feature(allocator_api)]
 #![feature(core_intrinsics)]
-#![feature(default_alloc_error_handler)]
 #![feature(start)]
 
 extern crate alloc;
@@ -24,6 +23,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use derive_try_from_primitive::TryFromPrimitive;
 use font_gx::TextRenderer;
+use gamecube_mmio::dvd_interface::DvdInterface;
+use gamecube_mmio::processor_interface::ProcessorInterface;
 use gamecube_shader::FLAT_TEXTURED_SHADER;
 use inception_render_common::bytecode::{BytecodeOp, BytecodeReader};
 use inception_render_common::map_data::{MapData, TextureTableEntry};
@@ -66,10 +67,19 @@ fn get_widescreen_setting() -> bool {
     true // Probably a bad default, but that's what my test setup wants.
 }
 
-fn configure_loader() -> impl Loader {
+fn configure_loader<'a>(
+    mut pi: ProcessorInterface<'a>,
+    mut di: DvdInterface<'a>,
+) -> impl Loader + 'a {
+    let _ = pi.reborrow();
+    let _ = di.reborrow();
+
     #[cfg(feature = "dvd_loader")]
     {
-        return crate::loader::dvd_gcm_loader::DvdGcmLoader::new(());
+        return crate::loader::dvd_gcm_loader::DvdGcmLoader::new((
+            gamecube_dvd_driver::DvdDriver::new(di),
+            pi.reborrow(),
+        ));
     }
 
     #[cfg(feature = "ftp_loader")]
@@ -224,7 +234,11 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
     unsafe {
         init_for_console();
 
-        let mut loader = configure_loader();
+        // SAFETY: These are the only calls in the program.
+        let pi = ProcessorInterface::new_unchecked();
+        let di = DvdInterface::new_unchecked();
+
+        let mut loader = configure_loader(pi, di);
 
         loop {
             PENDING_GAME_STATE_CHANGE.store(GameStateChange::None as u32, Ordering::SeqCst);
@@ -1803,7 +1817,7 @@ fn init_for_3d(rmode: &GXRModeObj) {
 
 static mut TEX_REGIONS: [GXTexRegion; 4] = [GXTexRegion { val: [0; 4] }; 4];
 
-unsafe extern "C" fn tex_region_callback(obj: *mut GXTexObj, map_id: u8) -> *mut GXTexRegion {
+unsafe extern "C" fn tex_region_callback(_obj: *mut GXTexObj, map_id: u8) -> *mut GXTexRegion {
     unsafe {
         assert!(map_id < 4);
         &mut TEX_REGIONS[map_id as usize]

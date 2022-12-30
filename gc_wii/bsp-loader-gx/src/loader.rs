@@ -11,11 +11,11 @@ pub mod embedded_loader;
 pub mod ftp_loader;
 
 pub trait Loader: Sized {
-    type Params;
+    type Params<'a>;
     type Data: Deref<Target = [u8]>;
 
     /// This might do a lot of I/O.
-    fn new(params: Self::Params) -> Self;
+    fn new(params: Self::Params<'_>) -> Self;
 
     /// This might do a lot of I/O.
     fn maps(&mut self) -> Vec<String>;

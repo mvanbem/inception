@@ -11,7 +11,9 @@ name = "kernel"
 test = false
 
 [dependencies]
+array-const-fn-init = "0.1"
 gamecube-cpu = { path = "../gamecube-cpu" }
+gamecube-mmio = { path = "../gamecube-mmio" }
 gamecube-video-driver = { path = "../gamecube-video-driver" }
 mvbitfield = { path = "../../shared/mvbitfield" }
 panic-abort = "0.3"
