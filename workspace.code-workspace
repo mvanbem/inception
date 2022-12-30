@@ -9,6 +9,10 @@
 			"**/target/**": true,
 		},
 		"rust-analyzer.checkOnSave.allTargets": false,
+		"rust-analyzer.checkOnSave.command": "clippy",
+		"rust-analyzer.checkOnSave.extraArgs": [
+			"--bins",
+		],
 		"rust-analyzer.linkedProjects": [
 			"gc_wii/Cargo.toml",
 			"pc/Cargo.toml",

@@ -26,7 +26,8 @@ pub fn flush_data_cache_block(ptr: *const ()) {
 
 /// Flushes a sequence of 32-byte blocks from the CPU data cache starting with the given
 /// address.
-pub fn flush_data_cache_blocks(mut ptr: *const (), block_count: usize) {
+pub fn flush_data_cache_blocks(ptr: *const (), block_count: usize) {
+    let mut ptr = ptr as usize;
     for _ in 0..block_count {
         // SAFETY: Flushing the data cache should be invisible from the CPU's perspective.
         unsafe {
@@ -36,6 +37,6 @@ pub fn flush_data_cache_blocks(mut ptr: *const (), block_count: usize) {
                 options(preserves_flags, nostack),
             )
         }
-        ptr = unsafe { ptr.byte_offset(32) };
+        ptr += 32;
     }
 }

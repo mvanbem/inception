@@ -4,9 +4,9 @@ use core::ops::Range;
 use gamecube_cpu::cache::{flush_data_cache_block, invalidate_instruction_cache_block};
 use gamecube_cpu::registers::msr::modify_msr;
 use gamecube_mmio::dvd_interface::DvdInterface;
-use gamecube_mmio::permission::PermissionRoot;
 use gamecube_mmio::processor_interface::ProcessorInterface;
 use gamecube_mmio::video_interface::VideoInterface;
+use gamecube_mmio::PermissionRoot;
 
 pub struct Devices<'reg> {
     pub _di: DvdInterface<'reg>,

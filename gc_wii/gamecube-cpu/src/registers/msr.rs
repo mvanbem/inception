@@ -81,16 +81,22 @@ impl PrivilegeLevel {
     }
 }
 
-pub unsafe fn mfmsr() -> MachineState {
+pub fn mfmsr() -> MachineState {
     let result;
-    asm!(
-        "mfmsr {r}",
-        r = out(reg) result,
-        options(nomem, preserves_flags, nostack),
-    );
+    unsafe {
+        asm!(
+            "mfmsr {r}",
+            r = out(reg) result,
+            options(nomem, preserves_flags, nostack),
+        );
+    }
     MachineState::from_u32(result)
 }
 
+/// # Safety
+///
+/// Executing the `mtmsr` instruction can reconfigure address translation, invalidating references
+/// or causing them to alias.
 pub unsafe fn mtmsr(value: MachineState) {
     asm!(
         "mtmsr {r}",
@@ -99,6 +105,10 @@ pub unsafe fn mtmsr(value: MachineState) {
     );
 }
 
+/// # Safety
+///
+/// Executing the `mtmsr` instruction can reconfigure address translation, invalidating references
+/// or causing them to alias.
 pub unsafe fn modify_msr(f: impl FnOnce(MachineState) -> MachineState) {
     mtmsr(f(mfmsr()));
 }

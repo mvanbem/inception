@@ -8,7 +8,7 @@ use core::sync::atomic::{compiler_fence, Ordering};
 use aligned::{Aligned, A32};
 use gamecube_mmio::dvd_interface::*;
 use gamecube_mmio::processor_interface::ProcessorInterface;
-use gamecube_mmio::uninterruptible::uninterruptible;
+use gamecube_mmio::uninterruptible;
 use ogc_sys::DCInvalidateRange;
 use snafu::Snafu;
 

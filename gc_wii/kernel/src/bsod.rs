@@ -1,9 +1,8 @@
 use core::fmt::Write;
 
 use gamecube_cpu::registers::msr::MachineState;
-use gamecube_mmio::permission::PermissionRoot;
-use gamecube_mmio::uninterruptible::Uninterruptible;
 use gamecube_mmio::video_interface::VideoInterface;
+use gamecube_mmio::{PermissionRoot, Uninterruptible};
 use gamecube_video_driver::VideoDriver;
 
 use crate::text_console::TextConsole;

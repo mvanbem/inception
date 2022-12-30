@@ -22,11 +22,7 @@ macro_rules! mmio_device {
         const _: () = assert!(::core::mem::size_of::<RegisterBlock>() == $size);
 
         #[derive(Clone, Copy)]
-        #[doc = concat!(
-            "Represents permission to access the ",
-            stringify!($struct_name),
-            " MMIO device.",
-        )]
+        #[doc = concat!("Represents permission to access the ", $doc_name, " MMIO device.")]
         pub struct $struct_name<'reg> {
             _phantom_lifetime: ::core::marker::PhantomData<&'reg ()>,
         }

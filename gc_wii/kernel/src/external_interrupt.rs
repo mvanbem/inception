@@ -1,8 +1,7 @@
 use core::sync::atomic::Ordering;
 
-use gamecube_mmio::permission::PermissionRoot;
-use gamecube_mmio::uninterruptible::Uninterruptible;
 use gamecube_mmio::video_interface::VideoInterface;
+use gamecube_mmio::{PermissionRoot, Uninterruptible};
 
 use crate::os_globals::OS_GLOBALS;
 
