@@ -6,10 +6,7 @@ use core::ffi::c_void;
 use core::ops::Range;
 
 use gamecube_cpu::cache::{flush_data_cache_block, invalidate_instruction_cache_block};
-use gamecube_cpu::interrupts::{
-    disable_interrupts, enable_interrupts, enable_machine_check_exception,
-};
-use gamecube_cpu::registers::msr::MachineState;
+use gamecube_cpu::registers::msr::{modify_msr, MachineState};
 use gamecube_cpu::registers::time_base;
 use gamecube_mmio::dvd_interface::DvdInterface;
 use gamecube_mmio::processor_interface::{
@@ -142,51 +139,52 @@ unsafe fn install_interrupt_handler(dst: *mut c_void, src_range: Range<*const c_
     }
 }
 
-#[no_mangle]
-pub extern "C" fn main() -> ! {
-    unsafe { disable_interrupts() };
-    unsafe { enable_machine_check_exception() };
-    unsafe { install_interrupt_handlers() };
+struct Devices {
+    globals: OsGlobals<'static>,
+    di: DvdInterface<'static>,
+    pi: ProcessorInterface<'static>,
+    vi: VideoInterface<'static>,
+}
+
+unsafe fn init() -> Devices {
+    modify_msr(|msr| {
+        msr.with_external_interrupts_enabled(false)
+            .with_machine_check_enabled(false)
+    });
+
+    install_interrupt_handlers();
+
+    modify_msr(|msr| {
+        msr.with_external_interrupts_enabled(true)
+            .with_machine_check_enabled(true)
+    });
 
     // SAFETY: These must be the only calls in the program.
-    let globals = unsafe { OsGlobals::new_unchecked() };
-    let _di = unsafe { DvdInterface::new_unchecked() };
-    let mut pi = unsafe { ProcessorInterface::new_unchecked() };
-    let vi = unsafe { VideoInterface::new_unchecked() };
+    Devices {
+        globals: unsafe { OsGlobals::new_unchecked() },
+        di: unsafe { DvdInterface::new_unchecked() },
+        pi: unsafe { ProcessorInterface::new_unchecked() },
+        vi: unsafe { VideoInterface::new_unchecked() },
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn main() -> ! {
+    let Devices {
+        globals,
+        mut pi,
+        vi,
+        ..
+    } = unsafe { init() };
 
     let mut video = VideoDriver::new(vi);
-    video.configure_for_ntsc_480i(FRAMEBUFFER.as_ptr().cast());
-
-    // Configure the VI to send an interrupt at the beginning of every vblank.
-    // NOTE: I'm measuring alternating VI interrupt intervals of 16,651 us and 16,715 us. The
-    // difference is almost precisely one NTSC scanline. So I think the second one needs to be
-    // offset by a half-line.
-    video.registers_mut().write_display_interrupt_0(
-        DisplayInterrupt::zero()
-            .with_horizontal_position(U11::new_masked(641))
-            .with_vertical_position(U11::new_masked(240)) // The last line of the first field.
-            .with_interrupt_enable(true),
-    );
-    video.registers_mut().write_display_interrupt_1(
-        DisplayInterrupt::zero()
-            .with_horizontal_position(U11::new_masked(641))
-            .with_vertical_position(U11::new_masked(503)) // The last line of the second field.
-            .with_interrupt_enable(true),
-    );
-    video
-        .registers_mut()
-        .write_display_interrupt_2(DisplayInterrupt::zero());
-    video
-        .registers_mut()
-        .write_display_interrupt_3(DisplayInterrupt::zero());
-    gamecube_cpu::eieio();
+    video.configure_for_ntsc_480p(FRAMEBUFFER.as_ptr().cast());
 
     // Acknowledge any pending PI interrupts and enable VI interrupts.
     pi.write_interrupt_cause(InterruptCause::zero().with_interrupts(Interrupts::all()));
     pi.write_interrupt_mask(
         InterruptMask::zero().with_interrupts(Interrupts::zero().with_video_interface(true)),
     );
-    unsafe { enable_interrupts() };
 
     let mut console = TextConsole::new();
     let mut counter = 0;

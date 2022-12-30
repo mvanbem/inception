@@ -305,8 +305,8 @@ mvbitfield! {
 
 #[repr(u8)]
 pub enum Clock {
-    _27MHz = 0,
-    _54MHz = 1,
+    k27MHz = 0,
+    k54MHz = 1,
 }
 
 impl Clock {

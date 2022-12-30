@@ -81,7 +81,6 @@ impl PrivilegeLevel {
     }
 }
 
-#[inline(always)]
 pub unsafe fn mfmsr() -> MachineState {
     let result;
     asm!(
@@ -92,11 +91,14 @@ pub unsafe fn mfmsr() -> MachineState {
     MachineState::from_u32(result)
 }
 
-#[inline(always)]
 pub unsafe fn mtmsr(value: MachineState) {
     asm!(
         "mtmsr {r}",
         r = in(reg) value.as_u32(),
         options(nomem, preserves_flags, nostack),
     );
+}
+
+pub unsafe fn modify_msr(f: impl FnOnce(MachineState) -> MachineState) {
+    mtmsr(f(mfmsr()));
 }
