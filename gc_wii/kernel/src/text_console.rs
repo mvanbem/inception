@@ -37,8 +37,7 @@ const fn gradient_element(x: usize) -> u32 {
     ((y as u32) << 24) | ((u as u32) << 16) | ((y as u32) << 8) | v as u32
 }
 
-const CHROMA_GRADIENT_ROW: [u32; WORDS_PER_SCANLINE as usize] =
-    array_const_fn_init![gradient_element; 320];
+const CHROMA_GRADIENT_ROW: [u32; WORDS_PER_SCANLINE] = array_const_fn_init![gradient_element; 320];
 
 pub struct TextConsole {
     data: [[u8; Self::WIDTH]; Self::HEIGHT],
@@ -53,7 +52,7 @@ impl TextConsole {
     const WIDTH: usize = SCREEN_WIDTH / CELL_WIDTH;
     const HEIGHT: usize = SCREEN_HEIGHT / CELL_HEIGHT - 2;
 
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             data: [[Self::FILL; Self::WIDTH]; Self::HEIGHT],
             modified: true,

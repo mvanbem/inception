@@ -38,22 +38,22 @@ external_interrupt_handler_continued:
     # 0x80000000..0x80000100. Note that stack frames must be at least 16 bytes in size and must be
     # 16-byte aligned.
     #
-    # 0x000000c0  Bottom of the stack. Contains a null backchain pointer. SP points here.
-    # 0x000000c4  LR save area (used by any functions we call)
-    # 0x000000c8  Saved r0
-    # 0x000000cc  Saved r4
-    # 0x000000d0  Saved r5
-    # 0x000000d4  Saved r6
-    # 0x000000d8  Saved r7
-    # 0x000000dc  Saved r8
-    # 0x000000e0  Saved r9
-    # 0x000000e4  Saved r10
-    # 0x000000e8  Saved r11
-    # 0x000000ec  Saved r12
-    # 0x000000f0  Saved LR
-    # 0x000000f4  Saved CTR
-    # 0x000000f8  Saved XER
-    # 0x000000fc  Saved CR
+    # 0x800000c0  Bottom of the stack. Contains a null backchain pointer. SP points here.
+    # 0x800000c4  LR save area (used by any functions we call)
+    # 0x800000c8  Saved r0
+    # 0x800000cc  Saved r4
+    # 0x800000d0  Saved r5
+    # 0x800000d4  Saved r6
+    # 0x800000d8  Saved r7
+    # 0x800000dc  Saved r8
+    # 0x800000e0  Saved r9
+    # 0x800000e4  Saved r10
+    # 0x800000e8  Saved r11
+    # 0x800000ec  Saved r12
+    # 0x800000f0  Saved LR
+    # 0x800000f4  Saved CTR
+    # 0x800000f8  Saved XER
+    # 0x800000fc  Saved CR
     lis %sp,0x8000
     ori %sp,%sp,0x00c0
     li %r3,0

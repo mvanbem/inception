@@ -1,9 +1,7 @@
 use core::sync::atomic::AtomicBool;
 
-pub struct OsGlobals {
-    pub vi_interrupt_fired: AtomicBool,
-}
+use crate::text_console::TextConsole;
 
-pub static OS_GLOBALS: OsGlobals = OsGlobals{
-    vi_interrupt_fired: AtomicBool::new(false),
-};
+pub static VI_INTERRUPT_FIRED: AtomicBool = AtomicBool::new(false);
+
+pub static mut TEXT_CONSOLE: TextConsole = TextConsole::new();

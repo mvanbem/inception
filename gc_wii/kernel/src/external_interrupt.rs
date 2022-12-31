@@ -3,7 +3,7 @@ use core::sync::atomic::Ordering;
 use gamecube_mmio::video_interface::VideoInterface;
 use gamecube_mmio::{PermissionRoot, Uninterruptible};
 
-use crate::os_globals::OS_GLOBALS;
+use crate::os_globals::VI_INTERRUPT_FIRED;
 
 #[no_mangle]
 extern "C" fn handle_external_interrupt() {
@@ -11,7 +11,7 @@ extern "C" fn handle_external_interrupt() {
     let root = unsafe { PermissionRoot::new_unchecked() };
     let u = unsafe { Uninterruptible::new_unchecked() };
 
-    OS_GLOBALS.vi_interrupt_fired.store(true, Ordering::Relaxed);
+    VI_INTERRUPT_FIRED.store(true, Ordering::Relaxed);
 
     let vi = VideoInterface::new(root);
     vi.modify_display_interrupt_0(u, |reg| reg.with_interrupt_status(false));

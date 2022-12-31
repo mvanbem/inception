@@ -12,6 +12,7 @@ test = false
 
 [dependencies]
 array-const-fn-init = "0.1"
+arrayvec = { version = "0.7", default-features = false }
 gamecube-cpu = { path = "../gamecube-cpu" }
 gamecube-mmio = { path = "../gamecube-mmio" }
 gamecube-video-driver = { path = "../gamecube-video-driver" }

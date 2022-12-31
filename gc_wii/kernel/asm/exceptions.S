@@ -40,7 +40,7 @@ exception_handler alignment           0x0600
 exception_handler program             0x0700
 exception_handler fp_unavailable      0x0800
 # exception_handler decrementer        0x0900  # Unique implementation below.
-exception_handler system_call         0x0c00
+# exception_handler system_call        0x0c00  # Unique implementation in another file.
 exception_handler trace               0x0d00
 exception_handler fp_assist           0x0e00
 exception_handler performance_monitor 0x0f00

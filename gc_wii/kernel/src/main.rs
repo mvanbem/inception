@@ -1,29 +1,33 @@
+#![feature(asm_experimental_arch)]
 #![feature(pointer_byte_offsets)]
 #![no_main]
 #![no_std]
 
 use core::fmt::Write;
-use core::sync::atomic::Ordering;
 
-use gamecube_cpu::registers::time_base;
+use gamecube_cpu::registers::msr::{MachineState, PrivilegeLevel};
 use gamecube_mmio::processor_interface::{InterruptMask, Interrupts};
 use gamecube_video_driver::framebuffer::Framebuffer;
 use gamecube_video_driver::VideoDriver;
 use panic_abort as _;
+
+use crate::os_globals::TEXT_CONSOLE;
 
 mod bsod;
 mod external_interrupt;
 mod init;
 mod os_globals;
 mod paging;
+mod system_call;
 mod text_console;
-
-use crate::os_globals::OS_GLOBALS;
-use crate::text_console::TextConsole;
 
 // Large buffers.
 #[link_section = ".bss"]
 static FRAMEBUFFER: Framebuffer = Framebuffer::zero();
+
+extern "C" {
+    fn change_context(srr0: extern "C" fn() -> !, srr1: u32) -> !;
+}
 
 #[no_mangle]
 extern "C" fn main() -> ! {
@@ -37,37 +41,57 @@ extern "C" fn main() -> ! {
         InterruptMask::zero().with_interrupts(Interrupts::zero().with_video_interface(true)),
     );
 
-    let mut console = TextConsole::new();
-    let mut counter = 0u32;
-    let mut last_time = 0;
-    loop {
-        if OS_GLOBALS.vi_interrupt_fired.load(Ordering::Relaxed) {
-            OS_GLOBALS
-                .vi_interrupt_fired
-                .store(false, Ordering::Relaxed);
-            let start_time = time_base();
-            if console.modified() {
-                console.render(&FRAMEBUFFER);
+    {
+        let text_console = unsafe { &mut TEXT_CONSOLE };
+        writeln!(text_console, "System initialized. Starting user code.").unwrap();
+        text_console.render(&FRAMEBUFFER);
+    }
+
+    unsafe {
+        change_context(
+            crate::user::entry,
+            MachineState::zero()
+                .with_exception_is_recoverable(true)
+                .with_data_address_translation_enabled(true)
+                .with_instruction_address_translation_enabled(true)
+                .with_machine_check_enabled(true)
+                .with_privilege_level(PrivilegeLevel::User)
+                .with_external_interrupts_enabled(true)
+                .as_u32(),
+        )
+    };
+}
+
+mod user {
+    use core::fmt::Write;
+
+    use arrayvec::ArrayString;
+    use gamecube_cpu::registers::time_base;
+
+    use crate::system_call;
+
+    #[no_mangle]
+    pub extern "C" fn entry() -> ! {
+        const INTERVAL_TICKS: u64 = 333_333 * 81 / 2;
+        let mut wait_time = time_base() + INTERVAL_TICKS;
+        loop {
+            // Wait.
+            loop {
+                let now = time_base();
+                if now >= wait_time {
+                    wait_time = now + INTERVAL_TICKS;
+                    break;
+                }
             }
-            let end_time = time_base();
 
+            // Print.
+            let mut buf = ArrayString::<1024>::new();
             writeln!(
-                &mut console,
-                "Text console render time: {} us",
-                (2 * (end_time - start_time) / 81) as u32,
+                &mut buf,
+                "This is user code printing once every third of a second."
             )
             .unwrap();
-
-            writeln!(
-                &mut console,
-                "Frame time: {} us",
-                (2 * (end_time - last_time) / 81) as u32,
-            )
-            .unwrap();
-            last_time = end_time;
-
-            writeln!(&mut console, "Counter: {counter}").unwrap();
-            counter = counter.wrapping_add(1);
+            system_call::text_console_print(buf.as_str());
         }
     }
 }
