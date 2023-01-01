@@ -8,22 +8,19 @@
 .global \name\()_exception_handler_start
 \name\()_exception_handler_start:
     # Save the registers we overwrite.
-    mtspr SPRG0,%r3
-    mtspr SPRG1,%r4
-    mfspr %r3,SRR0
-    mtspr SPRG2,%r3
-    mfspr %r3,SRR1
-    mtspr SPRG3,%r3
+    mtsprg0 %r3
+    mtsprg1 %r4
+    mfsrr0 %r3
+    mtsprg2 %r3
+    mfsrr1 %r3
+    mtsprg3 %r3
 
-    # Craft an interrupt context for the second part of the handler and "return" to it.
-    # SRR0 contains the next instruction address which is just the address of the handler.
+    # Change contexts into the second part of the handler.
     lis %r3,record_regs_and_bsod@h
     ori %r3,%r3,record_regs_and_bsod@l
-    mtspr SRR0,%r3
-    # SRR1 contains the MSR value to restore. This one enables instruction and data address
-    # translation.
-    li %r3,0x0030
-    mtspr SRR1,%r3
+    mtsrr0 %r3
+    li %r3,MSR_lo_DR|MSR_lo_IR
+    mtsrr1 %r3
 
     li %r3,\vector
     rfi
@@ -55,10 +52,13 @@ decrementer_exception_handler_start:
 .global decrementer_exception_handler_end
 decrementer_exception_handler_end:
 
+# Inputs:
+# - SPRG0: User r3
+# - SPRG1: User r4
+# - SPRG2: Exception SRR0
+# - SPRG3: Exception SRR1
 .section .text.record_regs_and_bsod
 record_regs_and_bsod:
-    # NOTE: SPRG0/1/2/3 contain the original r3, r4, SRR0, and SRR1.
-
     # Fill in a BsodArgs struct at the first address following the exception handlers. That's not
     # currently allocated for anything else.
     lis %r4,0x8000
@@ -66,21 +66,21 @@ record_regs_and_bsod:
     # Record the vector.
     stwu %r3,4(%r4)
     # Record exception handling registers.
-    mfspr %r3,SPRG2  # Saved SRR0
+    mfsprg2 %r3  # Saved SRR0
     stwu %r3,4(%r4)
-    mfspr %r3,SPRG3  # Saved SRR1
+    mfsprg3 %r3  # Saved SRR1
     stwu %r3,4(%r4)
-    mfspr %r3,DSISR
+    mfdsisr %r3
     stwu %r3,4(%r4)
-    mfspr %r3,DAR
+    mfdar %r3
     stwu %r3,4(%r4)
     # Record the GPRs.
     stwu %r0,4(%r4)
     stwu %r1,4(%r4)
     stwu %r2,4(%r4)
-    mfspr %r3,SPRG0  # Saved r3
+    mfsprg0 %r3  # Saved r3
     stwu %r3,4(%r4)
-    mfspr %r3,SPRG1  # Saved r4
+    mfsprg1 %r3  # Saved r4
     stwu %r3,4(%r4)
     stmw %r5,4(%r4) # r5..=r31; 27 words or 108 bytes
     addi %r4,%r4,108
@@ -125,11 +125,11 @@ record_regs_and_bsod:
     # Load SRR0 for rfi into the bsod function.
     lis %r3,bsod@h
     ori %r3,%r3,bsod@l
-    mtspr SRR0,%r3
+    mtsrr0 %r3
 
     # Load SRR1 for rfi with address translation enabled.
-    li %r3,0x0030
-    mtspr SRR1,%r3
+    li %r3,MSR_lo_DR|MSR_lo_IR
+    mtsrr1 %r3
 
     # Prepare a stack frame at the top of memory.
     # TODO: Consider another place. This will clobber the base of the program stack, which might be

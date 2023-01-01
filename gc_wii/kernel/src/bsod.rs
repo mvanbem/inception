@@ -69,9 +69,9 @@ extern "C" fn bsod(args: &BsodArgs) -> ! {
         let gpr = i / 4 + (i % 4) * 8;
         write!(
             &mut console,
-            "r{gpr:2} 0x{value:08x}{suffix}",
+            "  r{gpr:<2} 0x{value:08x}{suffix}",
             value = args.gpr[gpr],
-            suffix = if i & 3 == 3 { "\n" } else { "  " },
+            suffix = if i & 3 == 3 { "\n" } else { "" },
         )
         .unwrap();
     }

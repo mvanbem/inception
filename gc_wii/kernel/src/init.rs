@@ -25,11 +25,6 @@ pub unsafe fn init<'reg>() -> Devices<'reg> {
 
     install_interrupt_handlers();
 
-    modify_msr(|reg| {
-        reg.with_external_interrupts_enabled(true)
-            .with_machine_check_enabled(true)
-    });
-
     Devices {
         _di: DvdInterface::new(root),
         pi: ProcessorInterface::new(root),

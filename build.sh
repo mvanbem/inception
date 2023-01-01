@@ -153,7 +153,7 @@ function subcommand_build_kernel_gcm {
     pushd gc_wii >/dev/null
 
     mkdir -p ../build/kernel_asm/
-    for file in exceptions external_interrupt start system_call; do
+    for file in exceptions external_interrupt start system_call thread; do
         powerpc-eabi-gcc \
             -c \
             -mogc \
@@ -164,7 +164,7 @@ function subcommand_build_kernel_gcm {
     done
     ar rcs \
         ../build/kernel_asm/libkernelasm.a \
-        ../build/kernel_asm/{exceptions,external_interrupt,start,system_call}.o
+        ../build/kernel_asm/{exceptions,external_interrupt,start,system_call,thread}.o
 
     cargo build -p kernel $release_flag
 
