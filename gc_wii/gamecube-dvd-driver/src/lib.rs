@@ -6,9 +6,9 @@ use core::mem::MaybeUninit;
 use core::sync::atomic::{compiler_fence, Ordering};
 
 use aligned::{Aligned, A32};
+use gamecube_cpu::interrupts::with_external_interrupts_disabled;
 use gamecube_mmio::dvd_interface::*;
 use gamecube_mmio::processor_interface::ProcessorInterface;
-use gamecube_mmio::uninterruptible;
 use ogc_sys::DCInvalidateRange;
 use snafu::Snafu;
 
@@ -24,12 +24,12 @@ pub enum DvdError {
     Placeholder,
 }
 
-pub struct DvdDriver<'reg> {
-    di: DvdInterface<'reg>,
+pub struct DvdDriver {
+    di: DvdInterface,
 }
 
-impl<'reg> DvdDriver<'reg> {
-    pub fn new(di: DvdInterface<'reg>) -> Self {
+impl DvdDriver {
+    pub fn new(di: DvdInterface) -> Self {
         Self { di }
     }
 
@@ -97,12 +97,14 @@ impl<'reg> DvdDriver<'reg> {
     }
 
     pub fn reset(&mut self, pi: ProcessorInterface) {
-        uninterruptible(|u| {
-            // Perform a hard reset. I'm not sure what the individual bits or writes do.
-            pi.modify_di_control(u, |x| (x & !4) | 1);
-            pi.modify_di_control(u, |x| x | 5);
-        });
-        unsafe { libc::usleep(115000) };
+        unsafe {
+            with_external_interrupts_disabled(|| {
+                // Perform a hard reset. I'm not sure what the individual bits or writes do.
+                pi.modify_di_control(|x| (x & !4) | 1);
+                pi.modify_di_control(|x| x | 5);
+            });
+            libc::usleep(115000);
+        }
     }
 
     fn dma_read_command(&mut self, command: Command, buf: &mut [u8]) -> Result<(), DvdError> {

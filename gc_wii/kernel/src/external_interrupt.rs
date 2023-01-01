@@ -1,41 +1,18 @@
-use core::sync::atomic::Ordering;
-
 use gamecube_mmio::processor_interface::ProcessorInterface;
 use gamecube_mmio::video_interface::VideoInterface;
-use gamecube_mmio::{PermissionRoot, Uninterruptible};
-use mvbitfield::mvbitfield;
-use mvbitfield::prelude::U2;
+use mvbitfield::prelude::*;
 
-use crate::os_globals::VI_INTERRUPT_FIRED;
-
-mvbitfield! {
-    pub struct Interrupt: u32 {
-        pub video_interface: 4 as VideoInterfaceInterrupt,
-    }
-}
-
-mvbitfield! {
-    pub struct VideoInterfaceInterrupt: U4 {
-        pub display_interrupt_0: 1 as bool,
-        pub display_interrupt_1: 1 as bool,
-        pub display_interrupt_2: 1 as bool,
-        pub display_interrupt_3: 1 as bool,
-    }
-}
+use crate::driver;
+use crate::thread::{wake_thread, WaitingFor};
 
 #[no_mangle]
-extern "C" fn handle_external_interrupt() -> Interrupt {
-    // SAFETY: This is an interrupt handler and interrupts are disabled.
-    let root = unsafe { PermissionRoot::new_unchecked() };
-    let _u = unsafe { Uninterruptible::new_unchecked() };
-    let pi = ProcessorInterface::new(root);
-    let vi = VideoInterface::new(root);
+extern "C" fn handle_external_interrupt() -> WaitingFor {
+    let pi = ProcessorInterface::new();
+    let vi = VideoInterface::new();
 
-    let mut fired = Interrupt::zero();
+    let mut fired = WaitingFor::zero();
     let pi_cause = pi.read_interrupt_cause();
     if pi_cause.interrupts().video_interface() {
-        VI_INTERRUPT_FIRED.store(true, Ordering::Relaxed);
-
         for i in 0..4 {
             let i = U2::new(i).unwrap();
             let reg = vi.read_display_interrupt(i);
@@ -46,14 +23,18 @@ extern "C" fn handle_external_interrupt() -> Interrupt {
 
                 match i.as_u8() {
                     0 => fired.modify_video_interface(|reg| reg.with_display_interrupt_0(true)),
-                    1 => fired.modify_video_interface(|reg| reg.with_display_interrupt_0(true)),
-                    2 => fired.modify_video_interface(|reg| reg.with_display_interrupt_0(true)),
-                    3 => fired.modify_video_interface(|reg| reg.with_display_interrupt_0(true)),
+                    1 => fired.modify_video_interface(|reg| reg.with_display_interrupt_1(true)),
+                    2 => fired.modify_video_interface(|reg| reg.with_display_interrupt_2(true)),
+                    3 => fired.modify_video_interface(|reg| reg.with_display_interrupt_3(true)),
                     _ => unreachable!(),
                 }
             }
         }
     }
+
+    driver::timer::for_each_elapsed(|thread_id| {
+        wake_thread(thread_id, WaitingFor::zero().with_timer(true));
+    });
 
     fired
 }

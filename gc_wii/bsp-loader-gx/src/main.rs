@@ -25,7 +25,6 @@ use derive_try_from_primitive::TryFromPrimitive;
 use font_gx::TextRenderer;
 use gamecube_mmio::dvd_interface::DvdInterface;
 use gamecube_mmio::processor_interface::ProcessorInterface;
-use gamecube_mmio::PermissionRoot;
 use gamecube_shader::FLAT_TEXTURED_SHADER;
 use inception_render_common::bytecode::{BytecodeOp, BytecodeReader};
 use inception_render_common::map_data::{MapData, TextureTableEntry};
@@ -68,15 +67,12 @@ fn get_widescreen_setting() -> bool {
     true // Probably a bad default, but that's what my test setup wants.
 }
 
-fn configure_loader<'a>(pi: ProcessorInterface<'a>, di: DvdInterface<'a>) -> impl Loader + 'a {
-    let _ = pi;
-    let _ = di;
-
+fn configure_loader() -> impl Loader {
     #[cfg(feature = "dvd_loader")]
     {
         return crate::loader::dvd_gcm_loader::DvdGcmLoader::new((
-            gamecube_dvd_driver::DvdDriver::new(di),
-            pi,
+            gamecube_dvd_driver::DvdDriver::new(DvdInterface::new()),
+            ProcessorInterface::new(),
         ));
     }
 
@@ -232,12 +228,7 @@ fn main(_argc: isize, _argv: *const *const u8) -> isize {
     unsafe {
         init_for_console();
 
-        // SAFETY: This is the permission root of the program.
-        let root = PermissionRoot::new_unchecked();
-        let pi = ProcessorInterface::new(root);
-        let di = DvdInterface::new(root);
-
-        let mut loader = configure_loader(pi, di);
+        let mut loader = configure_loader();
 
         loop {
             PENDING_GAME_STATE_CHANGE.store(GameStateChange::None as u32, Ordering::SeqCst);

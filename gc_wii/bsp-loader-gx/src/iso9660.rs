@@ -10,15 +10,15 @@ use bytemuck::{from_bytes, Pod, Zeroable};
 use gamecube_dvd_driver::DvdDriver;
 use ogc_sys::GlobalAlign32;
 
-pub struct DiscReader<'reg> {
-    dvd: DvdDriver<'reg>,
+pub struct DiscReader {
+    dvd: DvdDriver,
     path_table_offset: usize,
     path_table_size: usize,
     root_directory_extent: Range<usize>,
 }
 
-impl<'reg> DiscReader<'reg> {
-    pub fn new(mut dvd: DvdDriver<'reg>) -> Self {
+impl DiscReader {
+    pub fn new(mut dvd: DvdDriver) -> Self {
         let mut buf: Aligned<A32, _> = Aligned([0; 2048]);
         for i in 16.. {
             dvd.read(2048 * i, &mut *buf).unwrap();
@@ -116,9 +116,9 @@ impl<'reg> DiscReader<'reg> {
     }
 
     fn for_each_directory_entry<R>(
-        dvd: &mut DvdDriver<'reg>,
+        dvd: &mut DvdDriver,
         extent: Range<usize>,
-        mut f: impl FnMut(&mut DvdDriver<'reg>, &DirectoryEntry) -> ControlFlow<R>,
+        mut f: impl FnMut(&mut DvdDriver, &DirectoryEntry) -> ControlFlow<R>,
     ) -> Option<R> {
         // Directory entries never cross a sector boundary, so read entire sectors and scan them.
         let sector_start = extent.start & !2047;
@@ -156,7 +156,7 @@ impl<'reg> DiscReader<'reg> {
     }
 
     fn list_directory_with_extent(
-        dvd: &mut DvdDriver<'reg>,
+        dvd: &mut DvdDriver,
         path: &str,
         f: &mut impl FnMut(&str),
         extent: Range<usize>,
@@ -202,7 +202,7 @@ impl<'reg> DiscReader<'reg> {
     }
 
     fn read_file_with_extent(
-        dvd: &mut DvdDriver<'reg>,
+        dvd: &mut DvdDriver,
         path: &str,
         extent: Range<usize>,
     ) -> Vec<u8, GlobalAlign32> {

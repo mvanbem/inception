@@ -22,19 +22,16 @@ macro_rules! mmio_device {
         const _: () = assert!(::core::mem::size_of::<RegisterBlock>() == $size);
 
         #[derive(Clone, Copy)]
-        #[doc = concat!("Represents permission to access the ", $doc_name, " MMIO device.")]
-        pub struct $struct_name<'reg> {
-            _phantom_lifetime: ::core::marker::PhantomData<&'reg ()>,
+        #[doc = concat!("Represents the ", $doc_name, " MMIO device.")]
+        pub struct $struct_name {
+            _private: (),
         }
 
-        impl<'reg> $struct_name<'reg> {
+        impl $struct_name {
             const PTR: *mut RegisterBlock = $base as usize as _;
 
-            pub fn new(root: crate::permission::PermissionRoot) -> Self {
-                let _ = root;
-                Self {
-                    _phantom_lifetime: ::core::marker::PhantomData,
-                }
+            pub fn new() -> Self {
+                Self { _private: () }
             }
 
             $(
@@ -71,7 +68,7 @@ macro_rules! mmio_device {
     // Non-indexed read implementation.
     (@read $name:ident $type:ty) => {
         ::paste::paste! {
-            pub fn [<read_ $name>](&self) -> $type {
+            pub fn [<read_ $name>](self) -> $type {
                 unsafe {
                     ::core::ptr::read_volatile(
                         ::memoffset::raw_field!(Self::PTR, RegisterBlock, $name),
@@ -84,7 +81,7 @@ macro_rules! mmio_device {
     // Non-indexed write implementation.
     (@write $name:ident $type:ty) => {
         ::paste::paste! {
-            pub fn [<write_ $name>](&self, value: $type) {
+            pub fn [<write_ $name>](self, value: $type) {
                 unsafe {
                     ::core::ptr::write_volatile(
                         ::memoffset::raw_field!(Self::PTR, RegisterBlock, $name).cast_mut(),
@@ -98,12 +95,7 @@ macro_rules! mmio_device {
     // Non-indexed modify implementation.
     (@modify $name:ident $type:ty) => {
         ::paste::paste! {
-            pub fn [<modify_ $name>](
-                &self,
-                u: crate::uninterruptible::Uninterruptible,
-                f: impl FnOnce($type) -> $type,
-            ) {
-                let _ = u;
+            pub fn [<modify_ $name>](self, f: impl FnOnce($type) -> $type) {
                 self.[<write_ $name>](f(self.[<read_ $name>]()));
             }
         }
@@ -112,7 +104,7 @@ macro_rules! mmio_device {
     // Indexed read implementation.
     (@read_indexed $name:ident [$type:ty; $count:literal]) => {
         ::paste::paste! {
-            pub fn [<read_ $name>](&self, index: mmio_device!(@log2 $count)) -> $type {
+            pub fn [<read_ $name>](self, index: mmio_device!(@log2 $count)) -> $type {
                 unsafe {
                     ::core::ptr::read_volatile(
                         ::memoffset::raw_field!(Self::PTR, RegisterBlock, $name)
@@ -125,7 +117,7 @@ macro_rules! mmio_device {
 
         ::seq_macro::seq!(N in 0..$count {
             ::paste::paste! {
-                pub fn [<read_ $name _ N>](&self) -> $type {
+                pub fn [<read_ $name _ N>](self) -> $type {
                     self.[<read_ $name>](<mmio_device!(@log2 $count)>::new_masked(N))
                 }
             }
@@ -135,7 +127,7 @@ macro_rules! mmio_device {
     // Indexed write implementation.
     (@write_indexed $name:ident [$type:ty; $count:literal]) => {
         ::paste::paste! {
-            pub fn [<write_ $name>](&self, index: mmio_device!(@log2 $count), value: $type) {
+            pub fn [<write_ $name>](self, index: mmio_device!(@log2 $count), value: $type) {
                 unsafe {
                     ::core::ptr::write_volatile(
                         ::memoffset::raw_field!(Self::PTR, RegisterBlock, $name)
@@ -150,7 +142,7 @@ macro_rules! mmio_device {
 
         ::seq_macro::seq!(N in 0..$count {
             ::paste::paste! {
-                pub fn [<write_ $name _ N>](&self, value: $type) {
+                pub fn [<write_ $name _ N>](self, value: $type) {
                     self.[<write_ $name>](<mmio_device!(@log2 $count)>::new_masked(N), value);
                 }
             }
@@ -161,24 +153,17 @@ macro_rules! mmio_device {
     (@modify_indexed $name:ident [$type:ty; $count:literal]) => {
         ::paste::paste! {
             pub fn [<modify_ $name>](
-                &self,
-                u: crate::uninterruptible::Uninterruptible,
+                self,
                 index: mmio_device!(@log2 $count),
                 f: impl FnOnce($type) -> $type,
             ) {
-                let _ = u;
                 self.[<write_ $name>](index, f(self.[<read_ $name>](index)));
             }
         }
 
         ::seq_macro::seq!(N in 0..$count {
             ::paste::paste! {
-                pub fn [<modify_ $name _ N>](
-                    &self,
-                    u: crate::uninterruptible::Uninterruptible,
-                    f: impl FnOnce($type) -> $type,
-                ) {
-                    let _ = u;
+                pub fn [<modify_ $name _ N>](self, f: impl FnOnce($type) -> $type) {
                     self.[<write_ $name _ N>](f(self.[<read_ $name _ N>]()));
                 }
             }

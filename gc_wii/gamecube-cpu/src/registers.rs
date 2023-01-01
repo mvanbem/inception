@@ -23,3 +23,25 @@ pub fn time_base() -> u64 {
         }
     }
 }
+
+pub fn decrementer() -> u32 {
+    let result;
+    unsafe {
+        asm!(
+            "mfdec {r}",
+            r = out(reg) result,
+            options(nomem, preserves_flags, nostack),
+        );
+    }
+    result
+}
+
+pub fn set_decrementer(value: u32) {
+    unsafe {
+        asm!(
+            "mtdec {r}",
+            r = in(reg) value,
+            options(nomem, preserves_flags, nostack),
+        );
+    }
+}

@@ -2,11 +2,10 @@ use core::fmt::Write;
 
 use gamecube_cpu::registers::msr::MachineState;
 use gamecube_mmio::video_interface::VideoInterface;
-use gamecube_mmio::{PermissionRoot, Uninterruptible};
 use gamecube_video_driver::VideoDriver;
 
+use crate::driver::text_console::FRAMEBUFFER;
 use crate::text_console::TextConsole;
-use crate::FRAMEBUFFER;
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -31,11 +30,7 @@ struct Bat {
 
 #[no_mangle]
 extern "C" fn bsod(args: &BsodArgs) -> ! {
-    // SAFETY: We own the machine and interrupts have been disabled.
-    let root = unsafe { PermissionRoot::new_unchecked() };
-    let _u = unsafe { Uninterruptible::new_unchecked() };
-
-    let vi = VideoInterface::new(root);
+    VideoDriver::new(VideoInterface::new()).configure_for_ntsc_480i(FRAMEBUFFER.as_ptr().cast());
 
     let mut console = TextConsole::new();
     writeln!(
@@ -91,8 +86,6 @@ extern "C" fn bsod(args: &BsodArgs) -> ! {
     }
 
     console.render(&FRAMEBUFFER);
-
-    VideoDriver::new(vi).configure_for_ntsc_480i(FRAMEBUFFER.as_ptr().cast());
 
     loop {}
 }

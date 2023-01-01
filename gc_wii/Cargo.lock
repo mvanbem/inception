@@ -310,6 +310,7 @@ name = "gamecube-dvd-driver"
 version = "0.1.0"
 dependencies = [
  "aligned",
+ "gamecube-cpu",
  "gamecube-mmio",
  "libc",
  "mvbitfield",

@@ -6,11 +6,11 @@ use mvbitfield::prelude::*;
 pub mod framebuffer;
 
 pub struct VideoDriver {
-    vi: VideoInterface<'static>,
+    vi: VideoInterface,
 }
 
 impl VideoDriver {
-    pub fn new(vi: VideoInterface<'static>) -> Self {
+    pub fn new(vi: VideoInterface) -> Self {
         Self { vi }
     }
 

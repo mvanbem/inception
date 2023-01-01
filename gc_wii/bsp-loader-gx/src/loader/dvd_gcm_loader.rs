@@ -12,13 +12,13 @@ use gamecube_mmio::processor_interface::ProcessorInterface;
 use inception_render_common::map_data::MapData;
 use ogc_sys::GlobalAlign32;
 
-pub struct DvdGcmLoader<'reg> {
-    dvd: DvdDriver<'reg>,
+pub struct DvdGcmLoader {
+    dvd: DvdDriver,
     table_data: Vec<u8, GlobalAlign32>,
     string_table_start: usize,
 }
 
-impl<'reg> DvdGcmLoader<'reg> {
+impl DvdGcmLoader {
     fn string(&self, offset: usize) -> &str {
         let start = self.string_table_start + offset;
         let end = start
@@ -82,8 +82,8 @@ impl<'reg> DvdGcmLoader<'reg> {
     }
 }
 
-impl<'reg> Loader for DvdGcmLoader<'reg> {
-    type Params<'a> = (DvdDriver<'reg>, ProcessorInterface<'a>);
+impl Loader for DvdGcmLoader {
+    type Params<'a> = (DvdDriver, ProcessorInterface);
     type Data = Vec<u8, GlobalAlign32>;
 
     fn new((mut dvd, pi): Self::Params<'_>) -> Self {

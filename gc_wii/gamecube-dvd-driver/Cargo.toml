@@ -15,6 +15,7 @@ wii = ["ogc-sys/wii"]
 
 [dependencies]
 aligned = "0.4"
+gamecube-cpu = { path = "../gamecube-cpu" }
 gamecube-mmio = { path = "../gamecube-mmio" }
 libc = "0.2"
 mvbitfield = { path = "../../shared/mvbitfield" }

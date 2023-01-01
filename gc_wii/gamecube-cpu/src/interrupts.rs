@@ -6,7 +6,7 @@ use crate::registers::msr::*;
 ///
 /// ???
 #[inline(always)]
-pub unsafe fn disable_interrupts() -> bool {
+pub unsafe fn disable_external_interrupts() -> bool {
     let old_msr = mfmsr();
     mtmsr(old_msr.with_external_interrupts_enabled(false));
     old_msr.external_interrupts_enabled()
@@ -18,7 +18,7 @@ pub unsafe fn disable_interrupts() -> bool {
 ///
 /// ???
 #[inline(always)]
-pub unsafe fn enable_interrupts() {
+pub unsafe fn enable_external_interrupts() {
     mtmsr(mfmsr().with_external_interrupts_enabled(true));
 }
 
@@ -29,11 +29,11 @@ pub unsafe fn enable_interrupts() {
 ///
 /// ???
 #[inline(always)]
-pub unsafe fn with_interrupts_disabled<T>(f: impl FnOnce() -> T) -> T {
-    let was_enabled = unsafe { disable_interrupts() };
+pub unsafe fn with_external_interrupts_disabled<T>(f: impl FnOnce() -> T) -> T {
+    let was_enabled = unsafe { disable_external_interrupts() };
     let result = f();
     if was_enabled {
-        unsafe { enable_interrupts() };
+        unsafe { enable_external_interrupts() };
     }
     result
 }
