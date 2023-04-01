@@ -86,10 +86,29 @@ impl StructDecl {
             );
         }
 
-        // Emit the struct and impl block.
-        let visibility = &self.header.visibility;
         let name = &self.header.name;
         let repr = self.header.repr.to_token_stream();
+
+        // Collect additional impl blocks.
+        let mut additional_impls = Vec::new();
+        if matches!(self.header.repr, OwnedType::PrimitiveInteger(_)) {
+            additional_impls.push(quote! {
+                impl From<#repr> for #name {
+                    fn from(value: #repr) -> Self {
+                        Self { value }
+                    }
+                }
+
+                impl From<#name> for #repr {
+                    fn from(value: #name) -> Self {
+                        value.value
+                    }
+                }
+            });
+        }
+
+        // Emit the struct and impl block.
+        let visibility = &self.header.visibility;
         quote! {
             #[derive(Clone, Copy, PartialEq, Eq)]
             #[repr(transparent)]
@@ -105,6 +124,8 @@ impl StructDecl {
 
                 #(#items_for_fields)*
             }
+
+            #(#additional_impls)*
         }
     }
 }
