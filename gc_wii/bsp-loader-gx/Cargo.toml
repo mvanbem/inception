@@ -9,6 +9,7 @@ license = "MIT"
 [[bin]]
 name = "bsp-loader-gx"
 test = false
+bench = false
 
 [features]
 default = ["gamecube", "dvd_loader"]

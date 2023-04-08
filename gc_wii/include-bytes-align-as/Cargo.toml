@@ -8,5 +8,6 @@ license = "MIT"
 
 [lib]
 test = false
+bench = false
 
 [dependencies]

@@ -5,8 +5,6 @@
 #![feature(start)]
 
 extern crate alloc;
-#[cfg(test)]
-extern crate std;
 #[macro_use(include_bytes_align_as)]
 extern crate include_bytes_align_as;
 

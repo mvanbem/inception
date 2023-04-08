@@ -5,13 +5,12 @@
 		}
 	],
 	"settings": {
+		"files.exclude": {
+			"**/target/**": true,
+		},
 		"files.watcherExclude": {
 			"**/target/**": true,
 		},
-		"rust-analyzer.checkOnSave.allTargets": false,
-		"rust-analyzer.checkOnSave.extraArgs": [
-			"--bins",
-		],
 		"rust-analyzer.linkedProjects": [
 			"gc_wii/Cargo.toml",
 			"pc/Cargo.toml",

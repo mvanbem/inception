@@ -8,6 +8,7 @@ license = "MIT"
 
 [lib]
 test = false
+bench = false
 
 [dependencies]
 gamecube-shader = { path = "../gamecube-shader", default-features = false }

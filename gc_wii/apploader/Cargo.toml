@@ -9,6 +9,7 @@ license = "MIT"
 [[bin]]
 name = "apploader"
 test = false
+bench = false
 
 [dependencies]
 aligned = "0.4"

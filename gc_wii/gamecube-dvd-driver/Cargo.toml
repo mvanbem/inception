@@ -8,6 +8,7 @@ license = "MIT"
 
 [lib]
 test = false
+bench = false
 
 [features]
 gamecube = ["ogc-sys/gamecube"]

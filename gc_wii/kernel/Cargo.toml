@@ -9,6 +9,7 @@ license = "MIT"
 [[bin]]
 name = "kernel"
 test = false
+bench = false
 
 [dependencies]
 array-const-fn-init = "0.1"
