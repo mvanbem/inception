@@ -1,15 +1,16 @@
 [package]
-name = "proc-macro2-nom"
+name = "narrow-integer-macros"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[dependencies]
-fix-hidden-lifetime-bug = "0.2"
-nom = "7"
-proc-macro2 = "1"
+[lib]
+proc-macro = true
 
-[dev-dependencies]
+[dependencies]
+litrs = "0.4"
+proc-macro2 = "1"
 quote = "1"
+syn = { version = "2", features = ["extra-traits", "full"] }

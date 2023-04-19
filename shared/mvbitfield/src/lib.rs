@@ -1,167 +1,36 @@
-//! Yet another bitfield crate.
-//!
-//! `mvbitfield` provides a proc macro and helper types for inserting and extracting bitfields.
-//!
-//! The generated types are:
-//!
-//! - **Endian insensitive**, only packing bitfields within an integer, never across array elements.
-//! - **Suitable for FFI and memory-mapped I/O**, having the same layout as the underlying primitive
-//!   integer type.
-//! - **Const-friendly**, with bitfield insertion and extraction methods available in a const
-//!   context.
-//! - **Clear**, using narrow integer types to model field widths and guarantee the states of upper
-//!   bits.
-//! - **Flexible**, allowing user-defined field types so you can color your integers.
-//!
-//! I found these properties convenient for developing a toy embedded operating system.
-
+#![deny(missing_docs)]
+#![deny(rustdoc::broken_intra_doc_links)]
+#![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]
+#![feature(doc_cfg)]
 #![no_std]
 
-use core::fmt::{self, Display, Formatter};
+pub use narrow_integer;
 
-pub mod narrow_integer;
+#[cfg(doc)]
+pub mod doc;
+
 pub mod prelude;
 
-/// Generates a type that wraps an integer, providing methods to insert and extract bitfields.
-///
-/// The generated type has the same layout as the underlying integer type.
-///
-/// # Example
-///
-/// ```
-/// use mvbitfield::prelude::*;
-/// #
-/// # mvbitfield! {
-/// #     struct MyType: U3 {
-/// #         _reserved: 3,
-/// #     }
-/// # }
-///
-/// mvbitfield! {
-///     //                  +------- Name of the generated type
-///     //                  |    +-- Underlying type
-///     //         |--------|  |-|
-///     pub struct MyBitfield: u32 {
-///
-///         // Bitfields are packed starting from the LSB. Multi-bit bitfields have their MSBs and
-///         // LSBs oriented the same way as the underlying primitive type.
-///
-///         //    +----- Field name
-///         //    |  +-- Field bit width
-///         //    |  |   => pub const fn foo(self) -> U6
-///         //    |  |   => pub const fn with_foo(self, value: U6) -> Self
-///         //  |-|  |   => pub const fn set_foo(&mut self, value: U6)
-///         pub foo: 6,
-///
-///         // A field name starting with an underscore generates no methods.
-///         _skip: 2,
-///
-///         //                +-- Field type override
-///         //                |   => pub const fn flag(self) -> bool
-///         //                |   => pub const fn with_flag(self, value: bool) -> Self
-///         //          |-----|   => pub const fn set_flag(&mut self, value: bool)
-///         pub flag: 1 as bool,
-///
-///         //                     +-- User-defined field type
-///         //                     |   => pub const fn my_type(self) -> MyType
-///         //                     |   => pub const fn with_my_type(self, value: MyType) -> Self
-///         //             |-------|   => pub const fn set_my_type(&mut self, value: MyType)
-///         pub my_type: 3 as MyType,
-///     }
-/// }
-/// ```
-///
-/// # DSL Spec
-///
-/// ```text
-/// mvbitfield! { <struct-decl> }
-///
-/// <struct-decl>     := <struct-header> <struct-body>;
-/// <struct-header>   := <visibility-spec> "struct" $ident ":" $ident;
-/// <struct-body>     := "{" <field-spec> ("," <field-spec>)* "}";
-/// <field-spec>      := <visibility-spec> $ident ":" $literal ("as" $ident)?;
-/// <visibility-spec> := empty
-///                    | "pub"
-///                    | "pub" "(" "crate" ")";
-/// ```
-///
-/// # Underlying Type
-///
-/// The underlying type of a bitfield struct may be either a primitive integer type or a
-/// [narrow integer type](crate::narrow_integer).
-///
-/// Bitfield structs with primitive integer underlying types are intended for MMIO access and FFI.
-/// They have no forbidden bit patterns and can be safely constructed from a primitive integer for
-/// free.
-///
-/// Bitfield structs with narrow integer underlying types are intended for use as user-defined field
-/// types within other bitfield structs. They have forbidden bit patterns and cannot be safely
-/// constructed for free from a primitive integer.
-///
-/// # Field Types
-///
-/// The default field type is the unique primitive integer type or
-/// [narrow integer type](crate::narrow_integer) with the same bit width as the field. So a 16-bit
-/// field is inserted and extracted as a `u16`, while an 18-bit field is inserted and extracted as a
-/// [`U18`](crate::narrow_integer::U18).
-///
-/// ## Field Type Override
-///
-/// One-bit fields may declare `bool` accessors instead of the default `U1` with the `as` keyword.
-///
-/// ## User-Defined Field Types
-///
-/// Fields of any width may declare a user-defined type for accessors with the `as` keyword. All
-/// generated bitfield structs are valid user-defined field types.
-///
-/// User-defined field types must have the following methods, where `N` is a placeholder for the
-/// field bit width and `T` is the field's default type:
-///
-/// ```text
-/// const fn as_uN(self) -> T;
-/// const fn from_uN(value: T) -> Self;
-/// ```
-///
-/// ### Example: Seven-Bit User-Defined Type
-///
-/// ```
-/// use mvbitfield::prelude::*;
-///
-/// struct Foo(U7);
-///
-/// impl Foo {
-///     const fn as_u7(self) -> U7 {
-///         self.0
-///     }
-///
-///     const fn from_u7(value: U7) -> Self {
-///         Self(value)
-///     }
-/// }
-/// ```
-///
-/// ### Example: 32-Bit User-Defined Type
-///
-/// ```
-/// struct Foo(u32);
-///
-/// impl Foo {
-///     const fn as_u32(self) -> u32 {
-///         self.0
-///     }
-///
-///     const fn from_u32(value: u32) -> Self {
-///         Self(value)
-///     }
-/// }
-/// ```
-pub use mvbitfield_proc_macro::mvbitfield;
+#[doc(hidden)]
+pub mod __private {
+    pub use mvbitfield_macros::bitfield;
+}
 
-#[derive(Debug)]
-pub struct InvalidBitPattern;
+/// Generates a bitfield struct.
+///
+/// See the [`doc`] module for an [overview of concepts and terms](doc::overview) and
+/// [examples](doc::example).
+///
+#[doc = include_str!("../syntax.md")]
+#[macro_export]
+macro_rules! bitfield {
+    ($($tt:tt)*) => {
+        $crate::__private::bitfield! { ($crate, $($tt)*) }
+    };
+}
 
-impl Display for InvalidBitPattern {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "invalid bit pattern")
-    }
+#[test]
+fn trybuild_tests() {
+    let t = trybuild::TestCases::new();
+    t.compile_fail("tests_error/*.rs");
 }

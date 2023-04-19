@@ -1,0 +1,5 @@
+error: there are 29 unassigned bit(s); consider specifying an anonymous flexible bitfield `..` if this is intended
+ --> tests_error/packing_incomplete.rs:4:12
+  |
+4 |     struct MyStruct: u32 {
+  |            ^^^^^^^^

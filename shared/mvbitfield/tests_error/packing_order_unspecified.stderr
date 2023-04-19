@@ -1,0 +1,5 @@
+error: a packing direction attribute is required (`#[lsb_first]` or `#[msb_first]`)
+ --> tests_error/packing_order_unspecified.rs:4:12
+  |
+4 |     struct MyStruct: u32 {
+  |            ^^^^^^^^

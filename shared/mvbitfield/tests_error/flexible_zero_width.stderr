@@ -1,0 +1,11 @@
+error: no bits available for flexible bitfield
+ --> tests_error/flexible_zero_width.rs:7:9
+  |
+7 |         y: _,
+  |         ^
+
+error: no bits available for flexible bitfield
+  --> tests_error/flexible_zero_width.rs:14:9
+   |
+14 |         ..,
+   |         ^^

@@ -1,10 +1,14 @@
 use std::fmt::{self, Display, Formatter};
 
-use proc_macro2::{Ident, Span, TokenStream, TokenTree};
-use quote::quote;
+use proc_macro2::{Ident, Span, TokenStream};
+use quote::{quote, ToTokens};
+use syn::spanned::Spanned;
+use syn::{Path, Type, TypePath};
 
-#[derive(Clone, Debug)]
-pub enum OwnedType {
+use crate::decl::Config;
+
+#[derive(Clone)]
+pub(crate) enum OwnedType {
     PrimitiveInteger(PrimitiveIntegerType),
     NarrowInteger(NarrowIntegerType),
     Bool(BoolType),
@@ -21,48 +25,48 @@ impl OwnedType {
         }
     }
 
-    pub fn to_token_stream(&self) -> TokenStream {
-        self.to_borrowed().to_token_stream()
-    }
-
     pub fn to_method_name_snippet(&self) -> String {
         match self {
             Self::PrimitiveInteger(PrimitiveIntegerType { kind, .. }) => kind.as_str().to_string(),
-            Self::NarrowInteger(NarrowIntegerType { bits, .. }) => format!("u{bits}"),
+            Self::NarrowInteger(NarrowIntegerType { width, .. }) => format!("u{width}"),
             _ => panic!(),
         }
     }
 
-    pub fn new_integer_span(bits: usize, span: Span) -> Self {
+    pub fn new_integer_span(cfg: &Config, width: usize, span: Span) -> Self {
         let primitive =
-            PrimitiveIntegerType::new_span(PrimitiveIntegerTypeKind::for_bits(bits), span);
-        if primitive.kind.bits() == bits {
+            PrimitiveIntegerType::new_span(PrimitiveIntegerTypeKind::for_width(width), span);
+        if primitive.kind.width() == width {
             Self::PrimitiveInteger(primitive)
         } else {
-            Self::NarrowInteger(NarrowIntegerType::new_span(primitive, bits, span))
+            Self::NarrowInteger(NarrowIntegerType::new_span(cfg, primitive, width, span))
         }
     }
 
-    pub fn from_ident(ident: Ident) -> OwnedType {
-        let name = ident.to_string();
-        if name.starts_with('u') {
-            Self::PrimitiveInteger(PrimitiveIntegerType::new_span(
-                PrimitiveIntegerTypeKind::from_str(&name),
-                ident.span(),
-            ))
-        } else if name.starts_with('U') {
-            let bits: usize = name[1..].parse().unwrap();
-            Self::NarrowInteger(NarrowIntegerType::new_span(
-                PrimitiveIntegerType::new_span(
-                    PrimitiveIntegerTypeKind::for_bits(bits),
-                    ident.span(),
-                ),
-                bits,
-                ident.span(),
-            ))
-        } else {
-            panic!("unrecognized underlying type: {ident}")
+    pub fn from_type(cfg: &Config, type_: &Type) -> OwnedType {
+        if let Type::Path(TypePath { qself: None, path }) = type_ {
+            if let Some(ident) = path.get_ident() {
+                let name = ident.to_string();
+                if name.starts_with('u') {
+                    return Self::PrimitiveInteger(PrimitiveIntegerType::new_span(
+                        PrimitiveIntegerTypeKind::from_str(&name),
+                        ident.span(),
+                    ));
+                } else if name.starts_with('U') {
+                    let width: usize = name[1..].parse().unwrap();
+                    return Self::NarrowInteger(NarrowIntegerType::new_span(
+                        cfg,
+                        PrimitiveIntegerType::new_span(
+                            PrimitiveIntegerTypeKind::for_width(width),
+                            ident.span(),
+                        ),
+                        width,
+                        ident.span(),
+                    ));
+                }
+            }
         }
+        panic!("unrecognized underlying type: {}", quote! { #type_ })
     }
 
     pub fn to_primitive(&self) -> BorrowedType {
@@ -75,17 +79,23 @@ impl OwnedType {
         }
     }
 
-    pub fn bits(&self) -> usize {
+    pub fn width(&self) -> usize {
         match self {
-            Self::PrimitiveInteger(t) => t.kind.bits(),
-            Self::NarrowInteger(t) => t.bits,
+            Self::PrimitiveInteger(t) => t.kind.width(),
+            Self::NarrowInteger(t) => t.width,
             _ => panic!(),
         }
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum BorrowedType<'a> {
+impl ToTokens for OwnedType {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        self.to_borrowed().to_tokens(tokens);
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum BorrowedType<'a> {
     PrimitiveInteger(&'a PrimitiveIntegerType),
     NarrowInteger(&'a NarrowIntegerType),
     Bool(&'a BoolType),
@@ -101,19 +111,15 @@ impl<'a> BorrowedType<'a> {
             Self::User(_) => TypeKind::User,
         }
     }
+}
 
-    pub fn to_token_stream(&self) -> TokenStream {
+impl<'a> ToTokens for BorrowedType<'a> {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
         match self {
-            Self::PrimitiveInteger(PrimitiveIntegerType { ident, .. }) => {
-                TokenStream::from_iter([TokenTree::Ident(ident.clone())])
-            }
-            Self::NarrowInteger(NarrowIntegerType { path, .. }) => path.clone(),
-            Self::Bool(BoolType { ident }) => {
-                TokenStream::from_iter([TokenTree::Ident(ident.clone())])
-            }
-            Self::User(UserType { ident, .. }) => {
-                TokenStream::from_iter([TokenTree::Ident(ident.clone())])
-            }
+            Self::PrimitiveInteger(PrimitiveIntegerType { ident, .. }) => ident.to_tokens(tokens),
+            Self::NarrowInteger(NarrowIntegerType { path, .. }) => path.to_tokens(tokens),
+            Self::Bool(BoolType { ident }) => ident.to_tokens(tokens),
+            Self::User(UserType { path, .. }) => path.to_tokens(tokens),
         }
     }
 }
@@ -174,23 +180,23 @@ impl PrimitiveIntegerTypeKind {
         }
     }
 
-    pub fn for_bits(bits: usize) -> Self {
-        if bits <= 8 {
+    pub fn for_width(width: usize) -> Self {
+        if width <= 8 {
             Self::U8
-        } else if bits <= 16 {
+        } else if width <= 16 {
             Self::U16
-        } else if bits <= 32 {
+        } else if width <= 32 {
             Self::U32
-        } else if bits <= 64 {
+        } else if width <= 64 {
             Self::U64
-        } else if bits <= 128 {
+        } else if width <= 128 {
             Self::U128
         } else {
             panic!()
         }
     }
 
-    pub fn bits(self) -> usize {
+    pub fn width(self) -> usize {
         match self {
             Self::U8 => 8,
             Self::U16 => 16,
@@ -218,26 +224,27 @@ impl Display for PrimitiveIntegerTypeKind {
 }
 
 #[derive(Clone, Debug)]
-pub struct NarrowIntegerType {
+pub(crate) struct NarrowIntegerType {
     pub repr: PrimitiveIntegerType,
-    pub bits: usize,
+    pub width: usize,
     pub path: TokenStream,
 }
 
 impl NarrowIntegerType {
-    pub fn new_span(repr: PrimitiveIntegerType, bits: usize, span: Span) -> Self {
-        let ident = Ident::new(&format!("U{bits}"), span);
+    pub fn new_span(cfg: &Config, repr: PrimitiveIntegerType, width: usize, span: Span) -> Self {
+        let crate_path = &cfg.crate_path;
+        let ident = Ident::new(&format!("U{width}"), span);
         Self {
             repr,
-            bits,
-            path: quote! { ::mvbitfield::narrow_integer::#ident },
+            width,
+            path: quote! { #crate_path::narrow_integer::#ident },
         }
     }
 
     pub fn kind(&self) -> NarrowIntegerTypeKind {
         NarrowIntegerTypeKind {
             repr: self.repr.kind,
-            bits: self.bits,
+            width: self.width,
         }
     }
 }
@@ -245,7 +252,7 @@ impl NarrowIntegerType {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NarrowIntegerTypeKind {
     pub repr: PrimitiveIntegerTypeKind,
-    pub bits: usize,
+    pub width: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -253,23 +260,23 @@ pub struct BoolType {
     pub ident: Ident,
 }
 
-#[derive(Clone, Debug)]
-pub struct UserType {
+#[derive(Clone)]
+pub(crate) struct UserType {
     pub repr: UserTypeRepr,
-    pub ident: Ident,
+    pub path: Path,
 }
 
 #[derive(Clone, Debug)]
-pub enum UserTypeRepr {
+pub(crate) enum UserTypeRepr {
     PrimitiveInteger(PrimitiveIntegerType),
     NarrowInteger(NarrowIntegerType),
 }
 
 impl UserTypeRepr {
-    pub fn bits(&self) -> usize {
+    pub fn width(&self) -> usize {
         match self {
-            Self::PrimitiveInteger(PrimitiveIntegerType { kind, .. }) => kind.bits(),
-            Self::NarrowInteger(NarrowIntegerType { bits, .. }) => *bits,
+            Self::PrimitiveInteger(PrimitiveIntegerType { kind, .. }) => kind.width(),
+            Self::NarrowInteger(NarrowIntegerType { width, .. }) => *width,
         }
     }
 
@@ -281,7 +288,7 @@ impl UserTypeRepr {
     }
 }
 
-pub fn convert(expr: TokenStream, from: BorrowedType, to: BorrowedType) -> TokenStream {
+pub(crate) fn convert(expr: TokenStream, from: BorrowedType, to: BorrowedType) -> TokenStream {
     match (from, to) {
         // No conversion needed if the types are the same.
         _ if from.kind() == to.kind() => expr,
@@ -303,19 +310,19 @@ pub fn convert(expr: TokenStream, from: BorrowedType, to: BorrowedType) -> Token
             quote! { <#path>::new_masked(#expr) }
         }
         (BorrowedType::PrimitiveInteger(_), BorrowedType::Bool(_)) => quote! { (#expr) != 0 },
-        (BorrowedType::PrimitiveInteger(_), BorrowedType::User(UserType { repr, ident })) => {
+        (BorrowedType::PrimitiveInteger(_), BorrowedType::User(UserType { repr, path })) => {
             // Recurse to produce the user type's repr, then construct the user type.
             let expr = convert(expr, from, repr.to_borrowed_type());
-            let method = Ident::new(&format!("from_u{}", repr.bits()), ident.span());
-            quote! { <#ident>::#method(#expr) }
+            let method = Ident::new(&format!("from_u{}", repr.width()), path.span());
+            quote! { <#path>::#method(#expr) }
         }
 
         // Conversions to primitive integers from narrow integers, bools, and user-defined types.
-        (BorrowedType::User(UserType { repr, ident }), BorrowedType::PrimitiveInteger(_)) => {
+        (BorrowedType::User(UserType { repr, path }), BorrowedType::PrimitiveInteger(_)) => {
             // Convert from the user type to its repr and recurse.
-            let method = Ident::new(&format!("as_u{}", repr.bits()), ident.span());
+            let method = Ident::new(&format!("as_u{}", repr.width()), path.span());
             convert(
-                quote! { <#ident>::#method(#expr) },
+                quote! { <#path>::#method(#expr) },
                 repr.to_borrowed_type(),
                 to,
             )
@@ -325,7 +332,7 @@ pub fn convert(expr: TokenStream, from: BorrowedType, to: BorrowedType) -> Token
             BorrowedType::PrimitiveInteger(_),
         ) => {
             // Convert from the narrow integer type to its repr and recurse.
-            let method = Ident::new(&format!("as_u{}", repr.kind.bits()), repr.ident.span());
+            let method = Ident::new(&format!("as_u{}", repr.kind.width()), repr.ident.span());
             convert(
                 quote! { <#path>::#method(#expr) },
                 BorrowedType::PrimitiveInteger(repr),
