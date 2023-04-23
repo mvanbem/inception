@@ -488,6 +488,8 @@ version = "0.1.0"
 dependencies = [
  "bitint",
  "mvbitfield-macros",
+ "paste",
+ "seq-macro",
 ]
 
 [[package]]

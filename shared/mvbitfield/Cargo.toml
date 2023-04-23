@@ -7,8 +7,10 @@ license = "MIT"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-mvbitfield-macros = { path = "../mvbitfield-macros" }
 bitint = { path = "../bitint" }
+mvbitfield-macros = { path = "../mvbitfield-macros" }
+paste = "1"
+seq-macro = "0.3"
 
 [dev-dependencies]
 trybuild = "1"

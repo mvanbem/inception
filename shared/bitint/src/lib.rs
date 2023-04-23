@@ -102,8 +102,8 @@ pub trait BitUint: Sized {
     fn one() -> Self;
 }
 
-macro_rules! impl_bit_uint_for_primitive {
-    ($ty:ty) => {
+macro_rules! impl_bit_uint_for_primitives {
+    ($($ty:ty),*) => {$(
         impl BitUint for $ty {
             type Primitive = Self;
 
@@ -150,66 +150,9 @@ macro_rules! impl_bit_uint_for_primitive {
                 Self::ONE
             }
         }
-    };
+    )*};
 }
-impl_bit_uint_for_primitive!(u8);
-impl_bit_uint_for_primitive!(u16);
-impl_bit_uint_for_primitive!(u32);
-impl_bit_uint_for_primitive!(u64);
-impl_bit_uint_for_primitive!(u128);
-
-impl BitUint for bool {
-    type Primitive = u8;
-
-    const BITS: usize = 1;
-    const MASK: u8 = 1;
-    const MIN: Self = false;
-    const MAX: Self = true;
-    const ZERO: Self = false;
-    const ONE: Self = true;
-
-    fn new(value: u8) -> Option<Self> {
-        match value {
-            0 => Some(false),
-            1 => Some(true),
-            _ => None,
-        }
-    }
-
-    fn new_masked(value: u8) -> Self {
-        (value & 1) != 0
-    }
-
-    unsafe fn new_unchecked(value: u8) -> Self {
-        // SAFETY: `bool` and `u8` have the same size (1) and alignment (1). The caller promised
-        // that the value is 0 or 1.
-        core::mem::transmute(value)
-    }
-
-    fn to_primitive(self) -> u8 {
-        self as u8
-    }
-
-    fn is_in_range(value: u8) -> bool {
-        value <= 1
-    }
-
-    fn min() -> Self {
-        Self::MIN
-    }
-
-    fn max() -> Self {
-        Self::MAX
-    }
-
-    fn zero() -> Self {
-        Self::ZERO
-    }
-
-    fn one() -> Self {
-        Self::ONE
-    }
-}
+impl_bit_uint_for_primitives!(u8, u16, u32, u64, u128);
 
 /// Constructs a narrow integer literal.
 ///

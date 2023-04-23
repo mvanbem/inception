@@ -201,6 +201,22 @@ seq!(N in 17..32 { define_narrow_unsigned_integer!(N: u32); });
 seq!(N in 33..64 { define_narrow_unsigned_integer!(N: u64); });
 seq!(N in 65..128 { define_narrow_unsigned_integer!(N: u128); });
 
+impl From<bool> for U1 {
+    fn from(value: bool) -> Self {
+        // SAFETY: `bool` and `U1` have the same size (1), alignment (1), and valid bit patterns
+        // (0u8 and 1u8).
+        unsafe { core::mem::transmute(value) }
+    }
+}
+
+impl From<U1> for bool {
+    fn from(value: U1) -> Self {
+        // SAFETY: `bool` and `U1` have the same size (1), alignment (1), and valid bit patterns
+        // (0u8 and 1u8).
+        unsafe { core::mem::transmute(value) }
+    }
+}
+
 /// A type-level function returning a [`BitUint`].
 pub trait FnBitUint {
     /// The resulting type.

@@ -4,7 +4,9 @@
 #![feature(doc_cfg)]
 #![no_std]
 
-use bitint::BitUint;
+use bitint::prelude::*;
+use paste::paste;
+use seq_macro::seq;
 
 pub use bitint;
 
@@ -95,19 +97,63 @@ pub trait Bitfield: From<Self::Underlying> {
     }
 }
 
-impl<T: BitUint> Bitfield for T {
-    type Underlying = Self;
+impl Bitfield for bool {
+    type Underlying = U1;
 
-    const ZERO: Self = T::ZERO;
+    const ZERO: Self = false;
 
-    fn from_underlying(value: Self::Underlying) -> Self {
-        value
+    fn from_underlying(value: U1) -> Self {
+        value.into()
     }
 
-    fn to_underlying(self) -> Self::Underlying {
-        self
+    fn to_underlying(self) -> U1 {
+        self.into()
     }
 }
+
+macro_rules! impl_bitfield_for_primitives {
+    ($($ty:ty),*) => {$(
+        impl Bitfield for $ty {
+            type Underlying = Self;
+
+            const ZERO: Self = 0;
+
+            fn from_underlying(value: Self) -> Self {
+                value
+            }
+
+            fn to_underlying(self) -> Self {
+                self
+            }
+        }
+    )*};
+}
+impl_bitfield_for_primitives!(u8, u16, u32, u64, u128);
+
+macro_rules! impl_bitfield_for_bitint {
+    ($width:literal) => {
+        paste! {
+            impl Bitfield for [<U $width>] {
+                type Underlying = Self;
+
+                const ZERO: Self = <[<U $width>] as BitUint>::ZERO;
+
+                fn from_underlying(value: Self) -> Self {
+                    value
+                }
+
+                fn to_underlying(self) -> Self {
+                    self
+                }
+            }
+        }
+    };
+}
+seq!(N in 1..8 { impl_bitfield_for_bitint!(N); });
+seq!(N in 9..16 { impl_bitfield_for_bitint!(N); });
+seq!(N in 17..32 { impl_bitfield_for_bitint!(N); });
+seq!(N in 33..64 { impl_bitfield_for_bitint!(N); });
+seq!(N in 65..128 { impl_bitfield_for_bitint!(N); });
 
 /// Generates a bitfield struct.
 ///
