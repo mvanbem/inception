@@ -4,9 +4,11 @@
 #![feature(doc_cfg)]
 #![no_std]
 
-pub use narrow_integer;
+use bitint::BitUint;
 
-#[cfg(doc)]
+pub use bitint;
+
+// #[cfg(doc)]
 pub mod doc;
 
 pub mod prelude;
@@ -14,6 +16,97 @@ pub mod prelude;
 #[doc(hidden)]
 pub mod __private {
     pub use mvbitfield_macros::bitfield;
+}
+
+/// Bitfield struct and accessor types.
+///
+/// Bitfields have an [`Underlying`](Self::Underlying) type implementing [`BitUint`] and provide
+/// zero-cost conversions to and from that type. Bitfields also have a primitive type,
+/// [`Underlying::Primitive`](BitUint::Primitive), and provide a zero-cost conversion to that type.
+pub trait Bitfield: From<Self::Underlying> {
+    /// The underlying type, freely convertible to and from [`Self`].
+    type Underlying: BitUint + From<Self>;
+
+    /// The type's zero value.
+    const ZERO: Self;
+
+    /// Returns the type's zero value.
+    fn zero() -> Self {
+        Self::ZERO
+    }
+
+    /// Creates a bitfield value from an underlying value.
+    ///
+    /// This is a zero-cost conversion.
+    fn from_underlying(value: Self::Underlying) -> Self;
+
+    /// Creates a bitfield value from a primitive value.
+    ///
+    /// This conversion is available only when the underlying and primitive types are the
+    /// same, and is a convenience alias for the corresponding [`From`] implementation.
+    fn from_primitive(value: <Self::Underlying as BitUint>::Primitive) -> Self
+    where
+        Self: From<<Self::Underlying as BitUint>::Primitive>,
+    {
+        value.into()
+    }
+
+    /// Creates a bitfield value from a primitive value if it is in range for the underlying type.
+    ///
+    /// This is a convenience alias for [`BitUint::new`] and [`Bitfield::from_underlying`].
+    fn new(value: <Self::Underlying as BitUint>::Primitive) -> Option<Self> {
+        <Self::Underlying as BitUint>::new(value).map(Self::from_underlying)
+    }
+
+    /// Creates a bitfield value by masking off the upper bits of a primitive value.
+    ///
+    /// This is a convenience alias for [`BitUint::new_masked`] and [`Bitfield::from_underlying`].
+    fn new_masked(value: <Self::Underlying as BitUint>::Primitive) -> Self {
+        Self::from_underlying(<Self::Underlying as BitUint>::new_masked(value))
+    }
+
+    /// Creates a bitfield value from a primitive value without checking whether it is in range for
+    /// the underlying type.
+    ///
+    /// This zero-cost conversion is a convenience alias for [`BitUint::new_unchecked`] and
+    /// [`Bitfield::from_underlying`].
+    ///
+    /// # Safety
+    ///
+    /// The value must be in range for the underlying type, as determined by
+    /// [`BitUint::is_in_range`].
+    unsafe fn new_unchecked(value: <Self::Underlying as BitUint>::Primitive) -> Self {
+        Self::from_underlying(<Self::Underlying as BitUint>::new_unchecked(value))
+    }
+
+    /// Converts the value to the underlying type.
+    ///
+    /// This is a zero-cost conversion.
+    fn to_underlying(self) -> Self::Underlying;
+
+    /// Converts the value to the primitive type.
+    ///
+    /// The result is in range for the underlying type, as determined by [`BitUint::is_in_range`].
+    ///
+    /// This zero-cost conversion is a convenience alias for [`BitUint::to_primitive`] and
+    /// [`Bitfield::to_underlying`].
+    fn to_primitive(self) -> <Self::Underlying as BitUint>::Primitive {
+        BitUint::to_primitive(self.to_underlying())
+    }
+}
+
+impl<T: BitUint> Bitfield for T {
+    type Underlying = Self;
+
+    const ZERO: Self = T::ZERO;
+
+    fn from_underlying(value: Self::Underlying) -> Self {
+        value
+    }
+
+    fn to_underlying(self) -> Self::Underlying {
+        self
+    }
 }
 
 /// Generates a bitfield struct.

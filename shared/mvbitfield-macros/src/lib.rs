@@ -1,39 +1,14 @@
-use proc_macro2::TokenStream;
-use quote::quote;
 use syn::parse_macro_input;
 
-use crate::decl::{Config, StructDecl};
-use crate::input::Input;
+use crate::gen::bitfield_impl;
 
-mod decl;
-mod input;
-mod types;
+mod ast;
+mod gen;
+mod pack;
 
 #[proc_macro]
 pub fn bitfield(tokens: proc_macro::TokenStream) -> proc_macro::TokenStream {
     bitfield_impl(parse_macro_input!(tokens)).into()
-}
-
-fn bitfield_impl(input: Input) -> TokenStream {
-    let cfg = Config::from_ast(&input);
-
-    let mut results = Vec::new();
-    for ast_struct in input.structs {
-        results.push(
-            match StructDecl::from_ast(&cfg, &ast_struct).and_then(StructDecl::into_token_stream) {
-                Ok(result) => result,
-                Err(e) => {
-                    let name = &ast_struct.name;
-                    let compile_error = e.into_compile_error();
-                    quote! {
-                        #compile_error
-                        struct #name {}
-                    }
-                }
-            },
-        );
-    }
-    quote! { #(#results)* }
 }
 
 #[cfg(test)]
@@ -55,14 +30,14 @@ mod tests {
             ::mvbitfield,
 
             #[msb_first]
-            pub struct MyBitfield: u32 {
+            pub struct MyBitfield: 32 {
                 pub foo: 6,
                 pub flag: 1 as bool,
                 ..
             }
 
             #[lsb_first]
-            pub struct AnotherBitfield: u16 {
+            pub struct AnotherBitfield: 16 {
                 bar: 3,
                 qux: 13,
             }

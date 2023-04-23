@@ -1,12 +1,12 @@
 [workspace]
 members = [
+    "bitint",
+    "bitint-macros",
     "fully-occupied",
     "gx",
     "inception-render-common",
     "mvbitfield",
     "mvbitfield-macros",
-    "narrow-integer",
-    "narrow-integer-macros",
     "no-std-ftp",
     "no-std-io",
     "recursive-iter",

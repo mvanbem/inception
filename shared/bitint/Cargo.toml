@@ -1,16 +1,12 @@
 [package]
-name = "narrow-integer-macros"
+name = "bitint"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[lib]
-proc-macro = true
-
 [dependencies]
-litrs = "0.4"
-proc-macro2 = "1"
-quote = "1"
-syn = { version = "2", features = ["extra-traits", "full"] }
+bitint-macros = { path = "../bitint-macros" }
+paste = "1"
+seq-macro = "0.3"

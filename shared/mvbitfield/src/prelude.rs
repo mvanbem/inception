@@ -1,7 +1,7 @@
 //! Convenience re-exports.
 
 #[doc(no_inline)]
-pub use crate::bitfield;
+pub use crate::{bitfield, Bitfield};
 
 #[doc(no_inline)]
-pub use crate::narrow_integer::prelude::*;
+pub use bitint::prelude::*;

@@ -8,7 +8,7 @@ license = "MIT"
 
 [dependencies]
 mvbitfield-macros = { path = "../mvbitfield-macros" }
-narrow-integer = { path = "../narrow-integer" }
+bitint = { path = "../bitint" }
 
 [dev-dependencies]
 trybuild = "1"

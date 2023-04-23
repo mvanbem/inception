@@ -3,7 +3,7 @@
 use paste::paste;
 use seq_macro::seq;
 
-use crate::{NarrowInteger, RangeError, Result};
+use crate::{BitUint, RangeError, Result};
 
 macro_rules! define_narrow_unsigned_integer {
     ($bits:literal: $repr:ident) => {
@@ -24,7 +24,7 @@ macro_rules! define_narrow_unsigned_integer {
                 /// Creates a narrow integer from a primitive value if it is in range for this type,
                 /// as determined by [`is_in_range`](Self::is_in_range).
                 ///
-                /// This method is a `const` variant of [`NarrowInteger::new`].
+                /// This method is a `const` variant of [`BitUint::new`].
                 #[inline(always)]
                 #[must_use]
                 pub const fn new(value: $repr) -> Option<Self> {
@@ -40,7 +40,7 @@ macro_rules! define_narrow_unsigned_integer {
                 /// This conversion is lossless if the value is in range for this type, as
                 /// determined by [`is_in_range`](Self::is_in_range).
                 ///
-                /// This method is a `const` variant of [`NarrowInteger::new_masked`].
+                /// This method is a `const` variant of [`BitUint::new_masked`].
                 #[inline(always)]
                 #[must_use]
                 pub const fn new_masked(value: $repr) -> Self {
@@ -55,7 +55,7 @@ macro_rules! define_narrow_unsigned_integer {
                 /// The value must be in range for this type, as determined by
                 /// [`is_in_range`](Self::is_in_range).
                 ///
-                /// This method is a `const` variant of [`NarrowInteger::new_unchecked`].
+                /// This method is a `const` variant of [`BitUint::new_unchecked`].
                 #[inline(always)]
                 #[must_use]
                 pub const unsafe fn new_unchecked(value: $repr) -> Self {
@@ -67,10 +67,10 @@ macro_rules! define_narrow_unsigned_integer {
                 /// The result is in range for this type, as determined by
                 /// [`is_in_range`](Self::is_in_range).
                 ///
-                /// This method is a `const` variant of [`NarrowInteger::as_primitive`].
+                /// This method is a `const` variant of [`BitUint::to_primitive`].
                 #[inline(always)]
                 #[must_use]
-                pub const fn [<as_ $repr>](self) -> $repr {
+                pub const fn to_primitive(self) -> $repr {
                     self.0
                 }
 
@@ -82,7 +82,7 @@ macro_rules! define_narrow_unsigned_integer {
                 /// - The value is between [`MIN`](Self::MIN) and [`MAX`](Self::MAX), inclusive:
                 ///   `value >= Self::MIN.as_primitive() && value <= Self::MAX.as_primitive()`
                 ///
-                /// This method is a `const` variant of [`NarrowInteger::is_in_range`].
+                /// This method is a `const` variant of [`BitUint::is_in_range`].
                 pub const fn is_in_range(value: $repr) -> bool {
                     value & !Self::MASK == 0
                 }
@@ -91,7 +91,7 @@ macro_rules! define_narrow_unsigned_integer {
                 define_narrow_unsigned_integer!(@ops $repr sub "subtraction" -);
             }
 
-            impl NarrowInteger for [<U $bits>] {
+            impl BitUint for [<U $bits>] {
                 type Primitive = $repr;
 
                 const BITS: usize = $bits;
@@ -115,8 +115,8 @@ macro_rules! define_narrow_unsigned_integer {
                     Self::new_unchecked(value)
                 }
 
-                fn as_primitive(self) -> $repr {
-                    self.[<as_ $repr>]()
+                fn to_primitive(self) -> $repr {
+                    self.to_primitive()
                 }
 
                 fn is_in_range(value: $repr) -> bool {
@@ -146,7 +146,7 @@ macro_rules! define_narrow_unsigned_integer {
                 #[inline(always)]
                 #[must_use]
                 fn from(value: [<U $bits>]) -> Self {
-                    value.[<as_ $repr>]()
+                    value.to_primitive()
                 }
             }
         }
@@ -199,4 +199,41 @@ seq!(N in 1..8 { define_narrow_unsigned_integer!(N: u8); });
 seq!(N in 9..16 { define_narrow_unsigned_integer!(N: u16); });
 seq!(N in 17..32 { define_narrow_unsigned_integer!(N: u32); });
 seq!(N in 33..64 { define_narrow_unsigned_integer!(N: u64); });
-seq!(N in 64..128 { define_narrow_unsigned_integer!(N: u128); });
+seq!(N in 65..128 { define_narrow_unsigned_integer!(N: u128); });
+
+/// A type-level function returning a [`BitUint`].
+pub trait FnBitUint {
+    /// The resulting type.
+    type Type: BitUint;
+}
+
+/// Maps each bit width to its corresponding [`BitUint`] type.
+pub enum BitUintFor<const WIDTH: usize> {}
+
+macro_rules! impl_bit_uint_for_primitives {
+    ($($width:literal),*) => {
+        paste! {
+            $(
+                impl FnBitUint for BitUintFor<$width> {
+                    type Type = [<u $width>];
+                }
+            )*
+        }
+    };
+}
+impl_bit_uint_for_primitives!(8, 16, 32, 64, 128);
+
+macro_rules! impl_bit_uint_for_narrow_integer {
+    ($width:literal) => {
+        paste! {
+            impl FnBitUint for BitUintFor<$width> {
+                type Type = [<U $width>];
+            }
+        }
+    };
+}
+seq!(N in 1..8 { impl_bit_uint_for_narrow_integer!(N); });
+seq!(N in 9..16 { impl_bit_uint_for_narrow_integer!(N); });
+seq!(N in 17..32 { impl_bit_uint_for_narrow_integer!(N); });
+seq!(N in 33..64 { impl_bit_uint_for_narrow_integer!(N); });
+seq!(N in 65..128 { impl_bit_uint_for_narrow_integer!(N); });

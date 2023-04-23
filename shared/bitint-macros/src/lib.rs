@@ -4,6 +4,19 @@ use quote::{format_ident, quote_spanned, ToTokens};
 use syn::parse::{Parse, ParseBuffer, Parser};
 use syn::{parenthesized, parse_quote, token, Error, LitInt, Path, Result, Token};
 
+#[proc_macro]
+pub fn lit(tokens: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    lit_impl(tokens.into()).into()
+}
+
+#[proc_macro_attribute]
+pub fn bitint_literals(
+    attr: proc_macro::TokenStream,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    bitint_literals_impl(attr.into(), item.into()).into()
+}
+
 struct LitInput {
     _paren_token: token::Paren,
     crate_path: Path,
@@ -23,7 +36,7 @@ impl Parse for LitInput {
     }
 }
 
-pub fn lit(tokens: TokenStream) -> TokenStream {
+fn lit_impl(tokens: TokenStream) -> TokenStream {
     let input: LitInput = match syn::parse2(tokens) {
         Ok(input) => input,
         Err(e) => return e.into_compile_error(),
@@ -142,9 +155,7 @@ impl ConfigBuilder {
 
     fn build(self) -> Config {
         Config {
-            crate_path: self
-                .crate_path
-                .unwrap_or_else(|| parse_quote! { ::narrow_integer }),
+            crate_path: self.crate_path.unwrap_or_else(|| parse_quote! { ::bitint }),
         }
     }
 }
@@ -196,7 +207,7 @@ impl ToTokens for Errors {
     }
 }
 
-pub fn narrow_integer_literals(attr: TokenStream, item: TokenStream) -> TokenStream {
+fn bitint_literals_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     let (cfg, cfg_errors) = Config::new(attr);
     let mut result = cfg_errors.into_token_stream();
 
@@ -218,12 +229,12 @@ mod tests {
     use syn::parse::{Parse, ParseStream};
     use syn::{Expr, Item, Result};
 
-    use super::{lit, narrow_integer_literals};
+    use super::{bitint_literals_impl, lit_impl};
 
     #[test]
     fn lit_simple() {
         assert_eq!(
-            syn::parse2::<Expr>(lit(quote! { (some::path::to, 7_u3) })).unwrap(),
+            syn::parse2::<Expr>(lit_impl(quote! { (some::path::to, 7_u3) })).unwrap(),
             syn::parse2::<Expr>(quote! { some::path::to::U3::new_masked(7) }).unwrap(),
         );
     }
@@ -256,13 +267,13 @@ mod tests {
     #[test]
     fn narrow_integer_literals_simple() {
         assert_eq!(
-            syn::parse2::<ParseItems>(narrow_integer_literals(
+            syn::parse2::<ParseItems>(bitint_literals_impl(
                 quote! {},
                 quote! { fn foo() { 1234567u24 } },
             ))
             .unwrap(),
             syn::parse2::<ParseItems>(quote! {
-                fn foo() { ::narrow_integer::U24::new_masked(1234567) }
+                fn foo() { ::bitint::U24::new_masked(1234567) }
             })
             .unwrap(),
         );
@@ -271,7 +282,7 @@ mod tests {
     #[test]
     fn narrow_integer_literals_with_crate_path() {
         assert_eq!(
-            syn::parse2::<ParseItems>(narrow_integer_literals(
+            syn::parse2::<ParseItems>(bitint_literals_impl(
                 quote! { crate_path = path::to::ni },
                 quote! { fn foo() { 1234567u24 } },
             ))

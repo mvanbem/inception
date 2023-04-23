@@ -1,0 +1,23 @@
+error: widths must be at least 1 and at most 128
+ --> tests_error/struct_width.rs:4:23
+  |
+4 |     struct MyStructA: 0 {
+  |                       ^
+
+error: widths must be at least 1 and at most 128
+ --> tests_error/struct_width.rs:8:23
+  |
+8 |     struct MyStructB: 129 {
+  |                       ^^^
+
+error: number too large to fit in target type
+  --> tests_error/struct_width.rs:12:23
+   |
+12 |     struct MyStructC: 680564733841876926926749214863536422912 {
+   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: invalid digit found in string
+  --> tests_error/struct_width.rs:16:23
+   |
+16 |     struct MyStructD: -1 {
+   |                       ^^

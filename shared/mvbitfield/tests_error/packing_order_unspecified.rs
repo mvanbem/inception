@@ -1,7 +1,7 @@
 use mvbitfield::prelude::*;
 
 bitfield! {
-    struct MyStruct: u32 {
+    struct MyStruct: 32 {
         a: 16,
         b: 16,
     }

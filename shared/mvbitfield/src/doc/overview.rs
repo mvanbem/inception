@@ -12,13 +12,13 @@
 //!
 //! The Rust Core Library provides five sized primitive unsigned integer types: [`u8`], [`u16`],
 //! [`u32`], [`u64`], and [`u128`]. `mvbitfield` augments this set with 123 [narrow integer
-//! types](narrow_integer) named [`U1`](crate::prelude::U1) through [`U127`](crate::prelude::U127)
-//! to fill in the gaps.
+//! types](bitint) named [`U1`](crate::prelude::U1) through [`U127`](crate::prelude::U127) to fill
+//! in the gaps.
 //!
 //! # Underlying Type
 //!
 //! Each bitfield struct specifies an underlying type, which may be either a primitive unsigned
-//! integer type or a [narrow integer type](crate::narrow_integer).
+//! integer type or a [narrow integer type](bitint).
 //!
 //! The generated struct has the same layout as the underlying type and can be [converted to and
 //! from that type](#underlying-type-conversion) for free in a const context.
@@ -40,9 +40,8 @@
 //! # Bitfield Accessor Types
 //!
 //! Each bitfield's default accessor type is the unique primitive integer type or [narrow integer
-//! type](crate::narrow_integer) with the same width as the bitfield. A bitfield's accessor type may
-//! be overridden with the optional `as` syntax in the [bitfield
-//! declaration](crate::bitfield#bitfields).
+//! type](bitint) with the same width as the bitfield. A bitfield's accessor type may be overridden
+//! with the optional `as` syntax in the [bitfield declaration](crate::bitfield#bitfields).
 //!
 //! As a special case, bitfields with width 1 may declare [`bool`] accessors.
 //!
@@ -152,7 +151,7 @@
 //! nested primitive type.
 //!
 //! The mutating setters have similar variants, but with the fallible methods returning a
-//! [`narrow_integer::Result`](crate::narrow_integer::Result):
+//! [`bitint::Result`](bitint::Result):
 //!
 //! ```ignore
 //! const        fn set_B_uN          (&mut self, value: T) -> Result<()>;

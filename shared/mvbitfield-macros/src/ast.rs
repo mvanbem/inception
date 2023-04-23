@@ -37,7 +37,7 @@ pub struct Struct {
     _struct_token: Token![struct],
     pub name: Ident,
     _colon_token: Token![:],
-    pub underlying_type: Type,
+    pub width: LitInt,
     _brace_token: token::Brace,
     pub bitfields: Punctuated<Bitfield, Token![,]>,
 }
@@ -51,7 +51,7 @@ impl Parse for Struct {
             _struct_token: input.parse()?,
             name: input.parse()?,
             _colon_token: input.parse()?,
-            underlying_type: input.parse()?,
+            width: input.parse()?,
             _brace_token: braced!(body in input),
             bitfields: body.parse_terminated(Bitfield::parse, Token![,])?,
         })
@@ -104,16 +104,6 @@ impl Bitfield {
                 ..
             } => Ok(Some(lit_int.base10_parse()?)),
             _ => Ok(None),
-        }
-    }
-
-    pub fn width_span(&self) -> Span {
-        match &self.variant {
-            BitfieldVariant::Regular { width, .. } => match width {
-                BitfieldWidth::LitInt(lit_int) => lit_int.span(),
-                BitfieldWidth::Placeholder(underscore) => underscore.span(),
-            },
-            BitfieldVariant::DotDot { dot_dot_token } => dot_dot_token.span(),
         }
     }
 
@@ -214,19 +204,19 @@ mod tests {
 
     #[test]
     fn struct_empty() {
-        let input = quote! { struct Foo: u32 {} };
+        let input = quote! { struct Foo: 32 {} };
         let Struct {
             attrs,
             visibility,
             name,
-            underlying_type,
+            width,
             bitfields: fields,
             ..
         } = syn::parse2(input).unwrap();
         assert!(attrs.is_empty());
         assert_eq!(quote! { #visibility }.to_string(), "");
         assert_eq!(quote! { #name }.to_string(), "Foo");
-        assert_eq!(quote! { #underlying_type }.to_string(), "u32");
+        assert_eq!(width.base10_digits(), "32");
         assert_eq!(fields.len(), 0);
     }
 
@@ -234,7 +224,7 @@ mod tests {
     fn struct_everything() {
         let input = quote! {
             /// this has a doc comment
-            pub(crate) struct Bar: path::to::Underlying {
+            pub(crate) struct Bar: 5 {
                 field: 1
             }
         };
@@ -242,7 +232,7 @@ mod tests {
             attrs,
             visibility,
             name,
-            underlying_type,
+            width,
             bitfields: fields,
             ..
         } = syn::parse2(input).unwrap();
@@ -254,10 +244,7 @@ mod tests {
         );
         assert_eq!(quote! { #visibility }.to_string(), "pub (crate)");
         assert_eq!(name.to_string(), "Bar");
-        assert_eq!(
-            quote! { #underlying_type }.to_string(),
-            "path :: to :: Underlying",
-        );
+        assert_eq!(width.base10_digits(), "5");
         assert_eq!(fields.len(), 1);
     }
 

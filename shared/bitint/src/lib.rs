@@ -1,4 +1,4 @@
-//! Narrow integer types.
+//! Integer types that have a logical size measured in bits.
 //!
 //! Each narrow integer type wraps a primitive integer type and imposes a validity constraint. The
 //! value is represented in the least significant bits and the upper bits are always clear.
@@ -14,7 +14,7 @@ mod types;
 
 #[doc(hidden)]
 pub mod __private {
-    pub use narrow_integer_macros::lit;
+    pub use bitint_macros::lit;
 }
 
 pub use types::*;
@@ -32,11 +32,10 @@ impl Display for RangeError {
 /// A specialized [`Result`] type for narrow integers.
 pub type Result<T> = core::result::Result<T, RangeError>;
 
-/// Narrow integer types, which wrap a primitive type and ensure the unused most significant bits
-/// are clear.
-pub trait NarrowInteger: Sized {
-    /// The primitive type that this type wraps.
-    type Primitive;
+/// Unsigned integer types that have a logical width measured in bits.
+pub trait BitUint: Sized {
+    /// The primitive type that this type wraps. For primitive integers this is `Self`.
+    type Primitive: From<Self>;
 
     /// The bit width of this type.
     const BITS: usize;
@@ -53,18 +52,20 @@ pub trait NarrowInteger: Sized {
     /// The value `1` represented in this type.
     const ONE: Self;
 
-    /// Creates a narrow integer from a primitive value if it is in range for this type, as
+    /// Creates a bit-sized value from a primitive value if it is in range for this type, as
     /// determined by [`is_in_range`](Self::is_in_range).
     fn new(value: Self::Primitive) -> Option<Self>;
 
-    /// Creates a narrow integer by masking off the upper bits of a primitive value.
+    /// Creates a bit-sized value by masking off the upper bits of a primitive value.
     ///
     /// This conversion is lossless if the value is in range for this type, as determined by
     /// [`is_in_range`](Self::is_in_range).
     fn new_masked(value: Self::Primitive) -> Self;
 
-    /// Creates a narrow integer from a primitive value without checking whether it is in range for
+    /// Creates a bit-sized value from a primitive value without checking whether it is in range for
     /// this type.
+    ///
+    /// This is a zero-cost conversion.
     ///
     /// # Safety
     ///
@@ -74,8 +75,9 @@ pub trait NarrowInteger: Sized {
 
     /// Converts the value to a primitive type.
     ///
-    /// The result is in range for this type, as determined by [`is_in_range`](Self::is_in_range).
-    fn as_primitive(self) -> Self::Primitive;
+    /// This is a zero-cost conversion. The result is in range for this type, as determined by
+    /// [`is_in_range`](Self::is_in_range).
+    fn to_primitive(self) -> Self::Primitive;
 
     /// Checks whether a primitive value is in range for this type.
     ///
@@ -100,6 +102,115 @@ pub trait NarrowInteger: Sized {
     fn one() -> Self;
 }
 
+macro_rules! impl_bit_uint_for_primitive {
+    ($ty:ty) => {
+        impl BitUint for $ty {
+            type Primitive = Self;
+
+            const BITS: usize = Self::BITS as usize;
+            const MASK: Self = Self::MAX;
+            const MIN: Self = Self::MIN;
+            const MAX: Self = Self::MAX;
+            const ZERO: Self = 0;
+            const ONE: Self = 1;
+
+            fn new(value: Self) -> Option<Self> {
+                Some(value)
+            }
+
+            fn new_masked(value: Self) -> Self {
+                value
+            }
+
+            unsafe fn new_unchecked(value: Self) -> Self {
+                value
+            }
+
+            fn to_primitive(self) -> Self {
+                self
+            }
+
+            fn is_in_range(_value: Self) -> bool {
+                true
+            }
+
+            fn min() -> Self {
+                Self::MIN
+            }
+
+            fn max() -> Self {
+                Self::MAX
+            }
+
+            fn zero() -> Self {
+                Self::ZERO
+            }
+
+            fn one() -> Self {
+                Self::ONE
+            }
+        }
+    };
+}
+impl_bit_uint_for_primitive!(u8);
+impl_bit_uint_for_primitive!(u16);
+impl_bit_uint_for_primitive!(u32);
+impl_bit_uint_for_primitive!(u64);
+impl_bit_uint_for_primitive!(u128);
+
+impl BitUint for bool {
+    type Primitive = u8;
+
+    const BITS: usize = 1;
+    const MASK: u8 = 1;
+    const MIN: Self = false;
+    const MAX: Self = true;
+    const ZERO: Self = false;
+    const ONE: Self = true;
+
+    fn new(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        }
+    }
+
+    fn new_masked(value: u8) -> Self {
+        (value & 1) != 0
+    }
+
+    unsafe fn new_unchecked(value: u8) -> Self {
+        // SAFETY: `bool` and `u8` have the same size (1) and alignment (1). The caller promised
+        // that the value is 0 or 1.
+        core::mem::transmute(value)
+    }
+
+    fn to_primitive(self) -> u8 {
+        self as u8
+    }
+
+    fn is_in_range(value: u8) -> bool {
+        value <= 1
+    }
+
+    fn min() -> Self {
+        Self::MIN
+    }
+
+    fn max() -> Self {
+        Self::MAX
+    }
+
+    fn zero() -> Self {
+        Self::ZERO
+    }
+
+    fn one() -> Self {
+        Self::ONE
+    }
+}
+
 /// Constructs a narrow integer literal.
 ///
 /// This macro accepts an integer literal with a custom suffix. The suffix must be the character
@@ -110,14 +221,14 @@ pub trait NarrowInteger: Sized {
 /// # Examples
 ///
 /// ```
-/// # use narrow_integer::prelude::*;
+/// # use bitint::prelude::*;
 /// // The suffix `u3` refers to the narrow integer type `U3`.
 /// let x = lit!(6u3);
-/// assert_eq!(x.as_u8(), 6);
+/// assert_eq!(x.to_primitive(), 6);
 ///```
 ///
 /// ```compile_fail
-/// # use narrow_integer::prelude::*;
+/// # use bitint::prelude::*;
 /// // This value is out of range for `U9`.
 /// lit!(512u9);
 /// ```
@@ -139,20 +250,20 @@ macro_rules! lit {
 /// # Examples
 ///
 /// ```
-/// # use narrow_integer::prelude::*;
-/// #[narrow_integer_literals]
+/// # use bitint::prelude::*;
+/// #[bitint_literals]
 /// fn example() {
 ///     let x = 6u3;
-///     assert_eq!(x.as_u8(), 6);
+///     assert_eq!(x.to_primitive(), 6);
 /// }
 /// ```
 ///
 /// ```compile_fail
-/// # use narrow_integer::prelude::*;
-/// #[narrow_integer_literals]
+/// # use bitint::prelude::*;
+/// #[bitint_literals]
 /// fn example() {
 ///     // This value is out of range for `U9`.
 ///     let x = 512u9;
 /// }
 /// ```
-pub use narrow_integer_macros::narrow_integer_literals;
+pub use bitint_macros::bitint_literals;

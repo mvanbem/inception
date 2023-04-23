@@ -130,6 +130,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
+name = "bitint"
+version = "0.1.0"
+dependencies = [
+ "bitint-macros",
+ "paste",
+ "seq-macro",
+]
+
+[[package]]
+name = "bitint-macros"
+version = "0.1.0"
+dependencies = [
+ "litrs",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.15",
+]
+
+[[package]]
 name = "bsp-loader-gx"
 version = "0.1.0"
 dependencies = [
@@ -467,8 +486,8 @@ checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 name = "mvbitfield"
 version = "0.1.0"
 dependencies = [
+ "bitint",
  "mvbitfield-macros",
- "narrow-integer",
 ]
 
 [[package]]
@@ -506,25 +525,6 @@ dependencies = [
  "nalgebra",
  "num-traits",
  "simba",
-]
-
-[[package]]
-name = "narrow-integer"
-version = "0.1.0"
-dependencies = [
- "narrow-integer-macros",
- "paste",
- "seq-macro",
-]
-
-[[package]]
-name = "narrow-integer-macros"
-version = "0.1.0"
-dependencies = [
- "litrs",
- "proc-macro2",
- "quote",
- "syn 2.0.15",
 ]
 
 [[package]]
