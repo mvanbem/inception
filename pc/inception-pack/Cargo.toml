@@ -5,8 +5,6 @@ edition = "2021"
 description = "Packs Source engine assets for use with Inception."
 license = "MIT"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 anyhow = "1"
 bytemuck = { version = "1", features = ["extern_crate_alloc"] }

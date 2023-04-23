@@ -5,8 +5,6 @@ edition = "2021"
 description = "Rust bindings for libogc targeting GameCube, for use with devkitPro."
 license = "MIT"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [lib]
 test = false
 bench = false
