@@ -4,7 +4,9 @@ cargo watch -d 0 -s "{
         -p bitint-macros \
         -p bitint \
         -p mvbitfield-macros \
-        -p mvbitfield
+        -p mvbitfield \
+        --all-features
     TRYBUILD=overwrite chronic cargo doc --color=always \
-        -p mvbitfield
+        -p mvbitfield \
+        --all-features
 } |& less -cR"

@@ -1,7 +1,6 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 #![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]
-#![feature(doc_cfg)]
 #![no_std]
 
 use bitint::prelude::*;
@@ -10,9 +9,10 @@ use seq_macro::seq;
 
 pub use bitint;
 
-// #[cfg(doc)]
-pub mod doc;
-
+#[cfg(feature = "doc")]
+pub mod example;
+#[cfg(feature = "doc")]
+pub mod overview;
 pub mod prelude;
 
 #[doc(hidden)]
@@ -157,8 +157,7 @@ seq!(N in 65..128 { impl_bitfield_for_bitint!(N); });
 
 /// Generates a bitfield struct.
 ///
-/// See the [`doc`] module for an [overview of concepts and terms](doc::overview) and
-/// [examples](doc::example).
+/// See the [overview of concepts and terms](overview) and [examples](example).
 ///
 #[doc = include_str!("../syntax.md")]
 #[macro_export]

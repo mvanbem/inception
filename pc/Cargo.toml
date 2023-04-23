@@ -3,6 +3,7 @@ members = [
     "bsp-loader-gl",
     "build-gcm",
     "inception-pack",
+    "use-unused-features",
 ]
 
 [profile.release]

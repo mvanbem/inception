@@ -41,6 +41,5 @@ assert_eq!(value, MyBitfieldStruct::from_underlying(0b1_000_110_0));
 
 # Getting Started
 
-* Read the [overview](doc::overview) and take a look at some [examples](doc::example) in the [`doc`]
-  module.
+* Read the [overview] and take a look at some [examples](example).
 * Consult the syntax reference under the [bitfield!] macro.
