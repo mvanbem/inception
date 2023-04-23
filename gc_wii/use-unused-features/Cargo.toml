@@ -12,3 +12,4 @@ bench = false
 
 [features]
 doc = []
+_nightly = []

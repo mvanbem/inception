@@ -1,6 +1,7 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 #![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]
+#![cfg_attr(feature = "_nightly", feature(doc_cfg))]
 #![no_std]
 
 use bitint::prelude::*;
@@ -9,9 +10,11 @@ use seq_macro::seq;
 
 pub use bitint;
 
-#[cfg(feature = "doc")]
+#[cfg(any(doc, feature = "doc"))]
+#[cfg_attr(feature = "_nightly", doc(cfg(doc)))]
 pub mod example;
-#[cfg(feature = "doc")]
+#[cfg(any(doc, feature = "doc"))]
+#[cfg_attr(feature = "_nightly", doc(cfg(doc)))]
 pub mod overview;
 pub mod prelude;
 

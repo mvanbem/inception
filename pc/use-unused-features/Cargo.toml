@@ -8,3 +8,4 @@ license = "MIT"
 
 [features]
 doc = []
+_nightly = []
