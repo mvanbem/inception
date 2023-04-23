@@ -3,8 +3,8 @@ use quote::{format_ident, quote};
 use syn::spanned::Spanned;
 use syn::{parse_quote, Error, Path, Result, TypePath};
 
-use crate::ast::{self, AccessorType, Bitfield, Input};
-use crate::pack::{pack, PackDir, Packed};
+use crate::ast::{self, AccessorType, Input};
+use crate::pack::{pack, PackDir, PackedBitfield};
 
 struct Config {
     crate_path: Path,
@@ -182,7 +182,7 @@ fn generate_struct_impl(cfg: &Config, input: ast::Struct) -> Result<TokenStream>
 fn generate_accessors(
     cfg: &Config,
     struct_primitive_type: &TypePath,
-    bitfield: Packed<Bitfield>,
+    bitfield: PackedBitfield,
 ) -> Result<Option<TokenStream>> {
     // Reserved fields do not generate any code.
     let name = bitfield.bitfield.name_to_string();

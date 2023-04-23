@@ -1,45 +1,32 @@
 use proc_macro2::Span;
 use syn::{Error, Result};
 
+use crate::ast::Bitfield;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PackDir {
     LsbFirst,
     MsbFirst,
 }
 
-pub trait Bitfield {
-    fn width(&self) -> Result<Option<u8>>;
-    fn error_span(&self) -> Span;
-}
-
-impl Bitfield for crate::ast::Bitfield {
-    fn width(&self) -> Result<Option<u8>> {
-        self.width()
-    }
-
-    fn error_span(&self) -> Span {
-        self.name_span()
-    }
-}
-
-struct KnownWidth<T> {
-    bitfield: T,
+struct KnownWidthBitfield {
+    bitfield: Bitfield,
     width: usize,
 }
 
-pub struct Packed<T> {
-    pub bitfield: T,
+pub struct PackedBitfield {
+    pub bitfield: Bitfield,
     pub offset: usize,
     pub width: usize,
     pub width_span: Span,
 }
 
-pub fn pack<T: Bitfield, I: Iterator<Item = T> + ExactSizeIterator>(
+pub fn pack<I: Iterator<Item = Bitfield> + ExactSizeIterator>(
     pack_dir: Option<PackDir>,
     struct_error_span: Span,
     struct_width: usize,
     bitfields: impl IntoIterator<IntoIter = I>,
-) -> Result<Vec<Packed<T>>> {
+) -> Result<Vec<PackedBitfield>> {
     let bitfields = bitfields.into_iter();
     let pack_dir = match pack_dir {
         Some(pack_dir) => pack_dir,
@@ -66,7 +53,7 @@ pub fn pack<T: Bitfield, I: Iterator<Item = T> + ExactSizeIterator>(
                 } else {
                     &mut bitfields_after_flexible
                 };
-                dst.push(KnownWidth {
+                dst.push(KnownWidthBitfield {
                     bitfield,
                     width: width as usize,
                 });
@@ -74,7 +61,7 @@ pub fn pack<T: Bitfield, I: Iterator<Item = T> + ExactSizeIterator>(
             None => {
                 if flexible_bitfield.is_some() {
                     return Err(Error::new(
-                        bitfield.error_span(),
+                        bitfield.name_span(),
                         "only up to one flexible bitfield is permitted",
                     ));
                 } else {
@@ -86,7 +73,7 @@ pub fn pack<T: Bitfield, I: Iterator<Item = T> + ExactSizeIterator>(
 
     // Compute available bits after considering all sized bitfields.
     let mut available = struct_width;
-    for &KnownWidth {
+    for &KnownWidthBitfield {
         ref bitfield,
         width,
     } in bitfields_before_flexible
@@ -97,7 +84,7 @@ pub fn pack<T: Bitfield, I: Iterator<Item = T> + ExactSizeIterator>(
             available = new_available;
         } else {
             return Err(Error::new(
-                bitfield.error_span(),
+                bitfield.name_span(),
                 format!("bitfield overflows containing struct; {available} bit(s) available"),
             ));
         }
@@ -105,13 +92,13 @@ pub fn pack<T: Bitfield, I: Iterator<Item = T> + ExactSizeIterator>(
 
     // Size the flexible bitfield, if present.
     let flexible_bitfield = match flexible_bitfield {
-        Some(bitfield) if available > 0 => Some(KnownWidth {
+        Some(bitfield) if available > 0 => Some(KnownWidthBitfield {
             bitfield,
             width: available,
         }),
         Some(bitfield) => {
             return Err(Error::new(
-                bitfield.error_span(),
+                bitfield.name_span(),
                 format!("no bits available for flexible bitfield"),
             ))
         }
@@ -133,13 +120,13 @@ pub fn pack<T: Bitfield, I: Iterator<Item = T> + ExactSizeIterator>(
         PackDir::MsbFirst => struct_width,
     };
     let mut packed = Vec::new();
-    for KnownWidth { bitfield, width } in bitfields_before_flexible
+    for KnownWidthBitfield { bitfield, width } in bitfields_before_flexible
         .into_iter()
         .chain(flexible_bitfield.into_iter())
         .chain(bitfields_after_flexible.into_iter())
     {
-        let width_span = bitfield.error_span();
-        packed.push(Packed {
+        let width_span = bitfield.width_span();
+        packed.push(PackedBitfield {
             bitfield,
             offset: match pack_dir {
                 PackDir::LsbFirst => {

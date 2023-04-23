@@ -107,6 +107,16 @@ impl Bitfield {
         }
     }
 
+    pub fn width_span(&self) -> Span {
+        match &self.variant {
+            BitfieldVariant::Regular { width, .. } => match width {
+                BitfieldWidth::LitInt(lit_int) => lit_int.span(),
+                BitfieldWidth::Placeholder(underscore) => underscore.span(),
+            },
+            BitfieldVariant::DotDot { dot_dot_token } => dot_dot_token.span(),
+        }
+    }
+
     pub fn accessor_type(&self) -> AccessorType {
         match &self.variant {
             BitfieldVariant::Regular { accessor_type, .. } => accessor_type.clone(),
