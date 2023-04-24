@@ -1,6 +1,6 @@
 //! Integer types that have a logical size measured in bits.
 //!
-//! This crate provides the [`BitUint`] trait and 128 types named [`U1`](crate::types::U1) through
+//! This crate provides the [`UBitint`] trait and 128 types named [`U1`](crate::types::U1) through
 //! [`U128`](crate::types::U128) that implement it. Each type wraps the smallest primitive unsigned
 //! integer type that can contain it. The types that are not the same width as a primitive unsigned
 //! integer type impose a validity constraint---the value is represented in the least significant
@@ -8,8 +8,7 @@
 //!
 //! # Features
 //!
-//! * **no_panic** -
-//!  TODO
+//! * **no_panic** - TODO
 
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
@@ -29,23 +28,23 @@ mod sealed {
     pub trait Sealed {}
 }
 
-/// The error type returned when a checked narrow integer constructor fails.
+/// The error type returned when a checked `bitint` conversion fails.
 #[derive(Debug)]
 pub struct RangeError(pub(crate) ());
 
 impl Display for RangeError {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "value out of range for narrow integer type")
+        write!(f, "value out of range for bitint type")
     }
 }
 
-/// A specialized [`Result`] type for narrow integers.
+/// A specialized [`Result`] type for `bitint`s.
 pub type Result<T> = core::result::Result<T, RangeError>;
 
-/// Unsigned integer types that have a logical width measured in bits.
+/// Unsigned `bitint` types.
 ///
-/// There is one type implementing `BitUint` for each bit width from 1 to 128 inclusive.
-pub trait BitUint: Sized + sealed::Sealed {
+/// There is one type implementing `UBitint` for each bit width from 1 to 128 inclusive.
+pub trait UBitint: Sized + sealed::Sealed {
     /// The primitive type that this type wraps.
     type Primitive: From<Self>;
 
@@ -114,8 +113,8 @@ pub trait BitUint: Sized + sealed::Sealed {
     fn one() -> Self;
 }
 
-/// Unsigned integer types that are the same width as a primitive integer type.
-pub trait PrimitiveSizedBitUint: BitUint + From<Self::Primitive> {
+/// `bitint` types that are the same width as a primitive integer type.
+pub trait PrimitiveSizedBitint: UBitint + From<Self::Primitive> {
     /// Creates a bit-sized value from a primitive value of the same width.
     ///
     /// This is a zero-cost conversion.
@@ -127,7 +126,7 @@ pub trait PrimitiveSizedBitUint: BitUint + From<Self::Primitive> {
 /// A `bitint` literal is an integer literal with a suffix consisting of `'u'` followed by an
 /// integer, which must be at least one and at most 128.
 ///
-/// This macro accepts one `bitint` literal which is checked against the corresponding [`BitUint`]
+/// This macro accepts one `bitint` literal which is checked against the corresponding [`UBitint`]
 /// type's range and replaced with either a call to a non-panicking const constructor or a compile
 /// error.
 ///
@@ -157,7 +156,7 @@ macro_rules! lit {
 /// A `bitint` literal is an integer literal with a suffix consisting of `'u'` followed by an
 /// integer, which must be at least one and at most 128.
 ///
-/// `bitint` literals are checked against the corresponding [`BitUint`] type's range and replaced
+/// `bitint` literals are checked against the corresponding [`UBitint`] type's range and replaced
 /// with either a call to a non-panicking const constructor or a compile error. All other tokens are
 /// preserved.
 ///

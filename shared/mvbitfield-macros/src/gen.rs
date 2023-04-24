@@ -172,9 +172,9 @@ fn generate_struct_impl(cfg: &Config, input: ast::Struct) -> Result<TokenStream>
         }
 
         impl #crate_path::Bitfield for #name {
-            type BitInt = #struct_bitint_type;
+            type Bitint = #struct_bitint_type;
 
-            const ZERO: Self = Self { value: #crate_path::bitint::BitUint::ZERO };
+            const ZERO: Self = Self { value: #crate_path::bitint::UBitint::ZERO };
 
             fn from_bitint(value: #struct_bitint_type) -> Self {
                 Self { value }

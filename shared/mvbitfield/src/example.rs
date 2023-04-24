@@ -10,16 +10,17 @@ bitfield! {
     /// ```
     /// # use mvbitfield::prelude::*;
     /// # bitfield! {
-    /// #     struct PrimitiveCustomField: 8 { .. }
+    /// #     struct UserDefinedBitintBitfield: 3 { .. }
+    /// #     struct UserDefinedPrimitiveBitfield: 8 { .. }
     /// # }
     /// bitfield! {
     ///     #[lsb_first]
     ///     pub struct ExampleA: 32 {
     ///         pub bit: 1,
     ///         pub flag: 1 as bool,
-    ///         pub narrow_field: 5,
-    ///         pub primitive_field: 8,
-    ///         pub primitive_custom_field: 8 as PrimitiveCustomField,
+    ///         pub multi_bit: 5,
+    ///         pub user_defined_bitint: 3 as UserDefinedBitintBitfield,
+    ///         pub user_defined_primitive: 8 as UserDefinedPrimitiveBitfield,
     ///         ..
     ///     }
     /// }
@@ -27,30 +28,30 @@ bitfield! {
     pub struct ExampleA: 32 {
         pub bit: 1,
         pub flag: 1 as bool,
-        pub narrow_field: 5,
-        pub primitive_field: 8,
-        pub primitive_custom_field: 8 as PrimitiveCustomField,
-        ..
+        pub multi_bit: 5,
+        pub user_defined_bitint: 3 as UserDefinedBitintBitfield,
+        pub user_defined_primitive: 8 as UserDefinedPrimitiveBitfield,
+    ..
     }
 }
 
-/// A custom field type that wraps a [`u8`] primitive integer.
-pub struct PrimitiveCustomField(pub u8);
+/// A custom bitfield type that wraps a [`u8`] primitive integer.
+pub struct UserDefinedPrimitiveBitfield(pub u8);
 
-impl From<U8> for PrimitiveCustomField {
+impl From<U8> for UserDefinedPrimitiveBitfield {
     fn from(value: U8) -> Self {
         Self::from_bitint(value)
     }
 }
 
-impl From<PrimitiveCustomField> for U8 {
-    fn from(value: PrimitiveCustomField) -> Self {
+impl From<UserDefinedPrimitiveBitfield> for U8 {
+    fn from(value: UserDefinedPrimitiveBitfield) -> Self {
         value.to_bitint()
     }
 }
 
-impl Bitfield for PrimitiveCustomField {
-    type BitInt = U8;
+impl Bitfield for UserDefinedPrimitiveBitfield {
+    type Bitint = U8;
 
     const ZERO: Self = Self(0);
 
@@ -67,17 +68,31 @@ impl Bitfield for PrimitiveCustomField {
     }
 }
 
-/// A custom field type that wraps a [`U3`] narrow integer.
-pub struct NarrowCustomField(pub U3);
+/// A custom bitfield type that wraps a [`U3`] `bitint`.
+pub struct UserDefinedBitintBitfield(pub U3);
 
-impl NarrowCustomField {
-    /// Required method for use as an mvbitfield custom field type.
-    pub const fn as_u3(self) -> U3 {
-        self.0
+impl From<U3> for UserDefinedBitintBitfield {
+    fn from(value: U3) -> Self {
+        Self::from_bitint(value)
+    }
+}
+
+impl From<UserDefinedBitintBitfield> for U3 {
+    fn from(value: UserDefinedBitintBitfield) -> Self {
+        value.to_bitint()
+    }
+}
+
+impl Bitfield for UserDefinedBitintBitfield {
+    type Bitint = U3;
+
+    const ZERO: Self = Self(U3::ZERO);
+
+    fn from_bitint(value: U3) -> Self {
+        Self(value)
     }
 
-    /// Required method for use as an mvbitfield custom field type.
-    pub const fn from_u3(value: U3) -> Self {
-        Self(value)
+    fn to_bitint(self) -> U3 {
+        self.0
     }
 }

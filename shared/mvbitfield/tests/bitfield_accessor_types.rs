@@ -18,7 +18,7 @@ mod custom {
     }
 
     impl Bitfield for PrimitiveCustomField {
-        type BitInt = U8;
+        type Bitint = U8;
 
         const ZERO: Self = Self(0);
 

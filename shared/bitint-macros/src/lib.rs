@@ -41,11 +41,11 @@ fn lit_impl(tokens: TokenStream) -> TokenStream {
         Ok(input) => input,
         Err(e) => return e.into_compile_error(),
     };
-    match rewrite_narrow_integer_literal(&input.crate_path, input.lit.token()) {
+    match rewrite_literal(&input.crate_path, input.lit.token()) {
         RewriteResult::Rewritten(tokens) => tokens,
         RewriteResult::UnrecognizedSuffix(literal) => Error::new(
             literal.span(),
-            "literal must have a suffix: 'u' followed by a narrow integer width",
+            "literal must have a suffix: 'u' followed by an integer in 1..=128",
         )
         .into_compile_error(),
         RewriteResult::ValueError(e) => e.into_compile_error(),
@@ -58,7 +58,7 @@ enum RewriteResult {
     ValueError(Error),
 }
 
-fn rewrite_narrow_integer_literal(crate_path: &Path, literal: Literal) -> RewriteResult {
+fn rewrite_literal(crate_path: &Path, literal: Literal) -> RewriteResult {
     // Only rewrite integer literals with a recognized suffix.
     let Ok(integer_lit) = IntegerLit::try_from(literal.clone()) else {
         return RewriteResult::UnrecognizedSuffix(literal);
@@ -205,13 +205,14 @@ fn bitint_literals_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     let (cfg, cfg_errors) = Config::new(attr);
     let mut result = cfg_errors.into_token_stream();
 
-    result.extend(map_token_stream_literals(item, &mut |literal| {
-        match rewrite_narrow_integer_literal(&cfg.crate_path, literal) {
+    result.extend(map_token_stream_literals(
+        item,
+        &mut |literal| match rewrite_literal(&cfg.crate_path, literal) {
             RewriteResult::Rewritten(tokens) => tokens,
             RewriteResult::UnrecognizedSuffix(literal) => TokenTree::Literal(literal).into(),
             RewriteResult::ValueError(e) => e.into_compile_error(),
-        }
-    }));
+        },
+    ));
 
     result
 }
@@ -259,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn narrow_integer_literals_simple() {
+    fn bitint_literals_simple() {
         assert_eq!(
             syn::parse2::<ParseItems>(bitint_literals_impl(
                 quote! {},
@@ -274,15 +275,15 @@ mod tests {
     }
 
     #[test]
-    fn narrow_integer_literals_with_crate_path() {
+    fn bitint_literals_with_crate_path() {
         assert_eq!(
             syn::parse2::<ParseItems>(bitint_literals_impl(
-                quote! { crate_path = path::to::bit_int_crate },
+                quote! { crate_path = path::to::bitint_crate },
                 quote! { fn foo() { 1234567u24 } },
             ))
             .unwrap(),
             syn::parse2::<ParseItems>(quote! {
-                fn foo() { path::to::bit_int_crate::types::U24::new_masked(1234567) }
+                fn foo() { path::to::bitint_crate::types::U24::new_masked(1234567) }
             })
             .unwrap(),
         );

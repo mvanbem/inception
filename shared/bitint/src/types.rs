@@ -1,26 +1,26 @@
-//! The [`BitUint`] types [`U1`] through [`U128`].
+//! The unsigned `bitint` types [`U1`] through [`U128`].
 
 use paste::paste;
 use seq_macro::seq;
 
-use crate::{BitUint, PrimitiveSizedBitUint, RangeError, Result};
+use crate::{PrimitiveSizedBitint, RangeError, Result, UBitint};
 
-macro_rules! define_bit_uint_type {
+macro_rules! define_ubitint_type {
     ($a:literal..$b:literal: $primitive:ident; $flag:tt) => {
-        seq!(N in $a..$b { define_bit_uint_type!(N: $primitive; $flag); });
+        seq!(N in $a..$b { define_ubitint_type!(N: $primitive; $flag); });
     };
     ($bits:literal: $primitive:ident; $flag:tt) => {
         paste! {
             #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-            #[doc = define_bit_uint_type!(@type_doc $bits $primitive $flag)]
+            #[doc = define_ubitint_type!(@type_doc $bits $primitive $flag)]
             #[repr(transparent)]
             pub struct [<U $bits>]($primitive);
 
             impl [<U $bits>] {
-                /// Creates a narrow integer from a primitive value if it is in range for this type,
-                /// as determined by [`is_in_range`](Self::is_in_range).
+                /// Creates a `bitint` from a primitive value if it is in range for this type, as
+                /// determined by [`is_in_range`](Self::is_in_range).
                 ///
-                /// This method is a `const` variant of [`BitUint::new`].
+                /// This method is a `const` variant of [`UBitint::new`].
                 #[inline(always)]
                 #[must_use]
                 pub const fn new(value: $primitive) -> Option<Self> {
@@ -31,27 +31,27 @@ macro_rules! define_bit_uint_type {
                     }
                 }
 
-                /// Creates a narrow integer by masking off the upper bits of a primitive value.
+                /// Creates a `bitint` by masking off the upper bits of a primitive value.
                 ///
                 /// This conversion is lossless if the value is in range for this type, as
                 /// determined by [`is_in_range`](Self::is_in_range).
                 ///
-                /// This method is a `const` variant of [`BitUint::new_masked`].
+                /// This method is a `const` variant of [`UBitint::new_masked`].
                 #[inline(always)]
                 #[must_use]
                 pub const fn new_masked(value: $primitive) -> Self {
                     Self(value & Self::MASK )
                 }
 
-                /// Creates a narrow integer from a primitive value without checking whether it is
-                /// in range for this type.
+                /// Creates a `bitint` from a primitive value without checking whether it is in
+                /// range for this type.
                 ///
                 /// # Safety
                 ///
                 /// The value must be in range for this type, as determined by
                 /// [`is_in_range`](Self::is_in_range).
                 ///
-                /// This method is a `const` variant of [`BitUint::new_unchecked`].
+                /// This method is a `const` variant of [`UBitint::new_unchecked`].
                 #[inline(always)]
                 #[must_use]
                 pub const unsafe fn new_unchecked(value: $primitive) -> Self {
@@ -63,7 +63,7 @@ macro_rules! define_bit_uint_type {
                 /// The result is in range for this type, as determined by
                 /// [`is_in_range`](Self::is_in_range).
                 ///
-                /// This method is a `const` variant of [`BitUint::to_primitive`].
+                /// This method is a `const` variant of [`UBitint::to_primitive`].
                 #[inline(always)]
                 #[must_use]
                 pub const fn to_primitive(self) -> $primitive {
@@ -78,18 +78,18 @@ macro_rules! define_bit_uint_type {
                 /// - The value is between [`MIN`](Self::MIN) and [`MAX`](Self::MAX), inclusive:
                 ///   `value >= Self::MIN.as_primitive() && value <= Self::MAX.as_primitive()`
                 ///
-                /// This method is a `const` variant of [`BitUint::is_in_range`].
+                /// This method is a `const` variant of [`UBitint::is_in_range`].
                 pub const fn is_in_range(value: $primitive) -> bool {
                     value & !Self::MASK == 0
                 }
 
-                define_bit_uint_type!(@ops $primitive add "addition" +);
-                define_bit_uint_type!(@ops $primitive sub "subtraction" -);
+                define_ubitint_type!(@ops $primitive add "addition" +);
+                define_ubitint_type!(@ops $primitive sub "subtraction" -);
             }
 
             impl crate::sealed::Sealed for [<U $bits>] {}
 
-            impl BitUint for [<U $bits>] {
+            impl UBitint for [<U $bits>] {
                 type Primitive = $primitive;
 
                 const BITS: usize = $bits;
@@ -141,12 +141,12 @@ macro_rules! define_bit_uint_type {
                 }
             }
 
-            define_bit_uint_type!(@flag_impls $bits $primitive $flag);
+            define_ubitint_type!(@flag_impls $bits $primitive $flag);
         }
     };
     (@type_doc $bits:literal $primitive:ident upper_bits_clear) => {
         concat!(
-            "The ", stringify!($bits), "-bit [`BitUint`] type.",
+            "The ", stringify!($bits), "-bit unsigned `bitint` type.",
             "\n\n",
             "# Layout",
             "\n\n",
@@ -162,7 +162,7 @@ macro_rules! define_bit_uint_type {
     };
     (@type_doc $bits:literal $primitive:ident any_bit_pattern) => {
         concat!(
-            "The ", stringify!($bits), "-bit [`BitUint`] type.",
+            "The ", stringify!($bits), "-bit unsigned `bitint` type.",
             "\n\n",
             "# Layout",
             "\n\n",
@@ -213,7 +213,7 @@ macro_rules! define_bit_uint_type {
     };
     (@flag_impls $bits:literal $primitive:ident any_bit_pattern) => {
         paste! {
-            impl PrimitiveSizedBitUint for [<U $bits>] {
+            impl PrimitiveSizedBitint for [<U $bits>] {
                 fn from_primitive(value: $primitive) -> Self {
                     Self(value)
                 }
@@ -241,16 +241,16 @@ macro_rules! define_bit_uint_type {
     };
 }
 
-define_bit_uint_type!(1..8: u8; upper_bits_clear);
-define_bit_uint_type!(8: u8; any_bit_pattern);
-define_bit_uint_type!(9..16: u16; upper_bits_clear);
-define_bit_uint_type!(16: u16; any_bit_pattern);
-define_bit_uint_type!(17..32: u32; upper_bits_clear);
-define_bit_uint_type!(32: u32; any_bit_pattern);
-define_bit_uint_type!(33..64: u64; upper_bits_clear);
-define_bit_uint_type!(64: u64; any_bit_pattern);
-define_bit_uint_type!(65..128: u128; upper_bits_clear);
-define_bit_uint_type!(128: u128; any_bit_pattern);
+define_ubitint_type!(1..8: u8; upper_bits_clear);
+define_ubitint_type!(8: u8; any_bit_pattern);
+define_ubitint_type!(9..16: u16; upper_bits_clear);
+define_ubitint_type!(16: u16; any_bit_pattern);
+define_ubitint_type!(17..32: u32; upper_bits_clear);
+define_ubitint_type!(32: u32; any_bit_pattern);
+define_ubitint_type!(33..64: u64; upper_bits_clear);
+define_ubitint_type!(64: u64; any_bit_pattern);
+define_ubitint_type!(65..128: u128; upper_bits_clear);
+define_ubitint_type!(128: u128; any_bit_pattern);
 
 impl From<bool> for U1 {
     fn from(value: bool) -> Self {
@@ -268,22 +268,22 @@ impl From<U1> for bool {
     }
 }
 
-/// A type-level function returning a [`BitUint`].
-pub trait FnBitUint {
+/// A type-level function returning a [`UBitint`].
+pub trait FnUBitint {
     /// The resulting type.
-    type Type: BitUint;
+    type Type: UBitint;
 }
 
-/// Maps each bit width to its corresponding [`BitUint`] type.
-pub enum BitUintForWidth<const WIDTH: usize> {}
+/// Maps each bit width to its corresponding [`UBitint`] type.
+pub enum UBitintForWidth<const WIDTH: usize> {}
 
-macro_rules! impl_bit_uint_for_width {
+macro_rules! impl_ubitint_for_width {
     ($width:literal) => {
         paste! {
-            impl FnBitUint for BitUintForWidth<$width> {
+            impl FnUBitint for UBitintForWidth<$width> {
                 type Type = [<U $width>];
             }
         }
     };
 }
-seq!(N in 1..=128 { impl_bit_uint_for_width!(N); });
+seq!(N in 1..=128 { impl_ubitint_for_width!(N); });

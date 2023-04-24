@@ -34,11 +34,11 @@ mod sealed {
 ///
 /// There are zero-cost conversions between the `Self` and the `bitint` type, and from `Self` to the
 /// primitive type. There is a zero-cost conversion from the primitive type to `Self` only if the
-/// `bitint` type is [`PrimitiveSizedBitUint`]. Checked conversions from the primitive type to
+/// `bitint` type is [`PrimitiveSizedBitint`]. Checked conversions from the primitive type to
 /// `Self` are always available.
-pub trait Bitfield: From<Self::BitInt> {
-    /// The [`BitUint`] type with zero-cost conversions to and from [`Self`].
-    type BitInt: BitUint + From<Self>;
+pub trait Bitfield: From<Self::Bitint> {
+    /// The [`UBitint`] type with zero-cost conversions to and from [`Self`].
+    type Bitint: UBitint + From<Self>;
 
     /// The type's zero value.
     const ZERO: Self;
@@ -50,65 +50,65 @@ pub trait Bitfield: From<Self::BitInt> {
 
     /// Creates a bitfield value from a primitive value if it is in range for the `bitint` type.
     ///
-    /// This is a convenience alias for [`BitUint::new`] and [`Bitfield::from_bitint`].
-    fn new(value: <Self::BitInt as BitUint>::Primitive) -> Option<Self> {
-        BitUint::new(value).map(Self::from_bitint)
+    /// This is a convenience alias for [`UBitint::new`] and [`Bitfield::from_bitint`].
+    fn new(value: <Self::Bitint as UBitint>::Primitive) -> Option<Self> {
+        UBitint::new(value).map(Self::from_bitint)
     }
 
     /// Creates a bitfield value by masking off the upper bits of a primitive value.
     ///
-    /// This is a convenience alias for [`BitUint::new_masked`] and [`Bitfield::from_bitint`].
-    fn new_masked(value: <Self::BitInt as BitUint>::Primitive) -> Self {
-        Self::from_bitint(BitUint::new_masked(value))
+    /// This is a convenience alias for [`UBitint::new_masked`] and [`Bitfield::from_bitint`].
+    fn new_masked(value: <Self::Bitint as UBitint>::Primitive) -> Self {
+        Self::from_bitint(UBitint::new_masked(value))
     }
 
     /// Creates a bitfield value from a primitive value without checking whether it is in range for
     /// the `bitint` type.
     ///
-    /// This zero-cost conversion is a convenience alias for [`BitUint::new_unchecked`] and
+    /// This zero-cost conversion is a convenience alias for [`UBitint::new_unchecked`] and
     /// [`Bitfield::from_bitint`].
     ///
     /// # Safety
     ///
-    /// The value must be in range for the `bitint` type, as determined by [`BitUint::is_in_range`].
-    unsafe fn new_unchecked(value: <Self::BitInt as BitUint>::Primitive) -> Self {
-        Self::from_bitint(BitUint::new_unchecked(value))
+    /// The value must be in range for the `bitint` type, as determined by [`UBitint::is_in_range`].
+    unsafe fn new_unchecked(value: <Self::Bitint as UBitint>::Primitive) -> Self {
+        Self::from_bitint(UBitint::new_unchecked(value))
     }
 
     /// Creates a bitfield value from an `bitint` value.
     ///
     /// This is a zero-cost conversion.
-    fn from_bitint(value: Self::BitInt) -> Self;
+    fn from_bitint(value: Self::Bitint) -> Self;
 
     /// Creates a bitfield value from a primitive value.
     ///
     /// This zero-cost conversion is a convenience alias for
-    /// [`PrimitiveSizedBitUint::from_primitive`] and [`Bitfield::from_bitint`].
-    fn from_primitive(value: <Self::BitInt as BitUint>::Primitive) -> Self
+    /// [`PrimitiveSizedBitint::from_primitive`] and [`Bitfield::from_bitint`].
+    fn from_primitive(value: <Self::Bitint as UBitint>::Primitive) -> Self
     where
-        Self::BitInt: PrimitiveSizedBitUint,
+        Self::Bitint: PrimitiveSizedBitint,
     {
-        Self::from_bitint(PrimitiveSizedBitUint::from_primitive(value))
+        Self::from_bitint(PrimitiveSizedBitint::from_primitive(value))
     }
 
     /// Converts the value to the `bitint` type.
     ///
     /// This is a zero-cost conversion.
-    fn to_bitint(self) -> Self::BitInt;
+    fn to_bitint(self) -> Self::Bitint;
 
     /// Converts the value to the primitive type.
     ///
-    /// The result is in range for the bitint type, as determined by [`BitUint::is_in_range`].
+    /// The result is in range for the bitint type, as determined by [`UBitint::is_in_range`].
     ///
-    /// This zero-cost conversion is a convenience alias for [`BitUint::to_primitive`] and
+    /// This zero-cost conversion is a convenience alias for [`UBitint::to_primitive`] and
     /// [`Bitfield::to_bitint`].
-    fn to_primitive(self) -> <Self::BitInt as BitUint>::Primitive {
+    fn to_primitive(self) -> <Self::Bitint as UBitint>::Primitive {
         self.to_bitint().to_primitive()
     }
 }
 
 impl Bitfield for bool {
-    type BitInt = U1;
+    type Bitint = U1;
 
     const ZERO: Self = false;
 
@@ -123,8 +123,8 @@ impl Bitfield for bool {
 
 /// Bitfield accessors.
 ///
-/// This trait is implemented by all sized unsigned primitive integer types, all [`BitUint`]s, and
-/// any [`Bitfield`].
+/// This trait is implemented by all sized unsigned primitive integer types, all unsigned `bitint`s,
+/// and any [`Bitfield`].
 ///
 /// Provides methods used in generated bitfield structs. Not intended to be brought into scope
 /// because [`to_primitive`](Self::to_primitive) is ambiguous with [`Bitfield::to_primitive`].
@@ -143,9 +143,10 @@ pub trait Accessor: crate::sealed::Sealed {
     /// # Safety
     ///
     /// * For sized unsigned primitive integer types, always safe.
-    /// * For [`BitUint`]s, the value must be in range, as determined by [`BitUint::is_in_range`].
+    /// * For unsigned `bitint`s, the value must be in range, as determined by
+    ///   [`UBitint::is_in_range`].
     /// * For [`Bitfield`]s, the value must be in range for the `bitint` type, as determined by
-    ///   [`BitUint::is_in_range`].
+    ///   [`UBitint::is_in_range`].
     unsafe fn from_primitive_unchecked(value: Self::Primitive) -> Self;
 
     /// Converts the value to the primitive type.
@@ -178,12 +179,12 @@ macro_rules! impl_accessor {
             )*
         }
     };
-    (bit_uint: $width:literal) => {
+    (ubitint: $width:literal) => {
         paste! {
             impl crate::sealed::Sealed for [<U $width>] {}
 
             impl Accessor for [<U $width>] {
-                type Primitive = <Self as BitUint>::Primitive;
+                type Primitive = <Self as UBitint>::Primitive;
 
                 fn from_primitive_masked(value: Self::Primitive) -> Self {
                     Self::new_masked(value)
@@ -201,12 +202,12 @@ macro_rules! impl_accessor {
     };
 }
 impl_accessor!(primitives: u8, u16, u32, u64, u128);
-seq!(N in 1..=128 { impl_accessor!(bit_uint: N); });
+seq!(N in 1..=128 { impl_accessor!(ubitint: N); });
 
 impl<T: Bitfield> crate::sealed::Sealed for T {}
 
 impl<T: Bitfield> Accessor for T {
-    type Primitive = <T::BitInt as BitUint>::Primitive;
+    type Primitive = <T::Bitint as UBitint>::Primitive;
 
     fn from_primitive_masked(value: Self::Primitive) -> Self {
         Self::new_masked(value)
