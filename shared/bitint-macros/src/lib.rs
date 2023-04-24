@@ -88,7 +88,7 @@ fn rewrite_narrow_integer_literal(crate_path: &Path, literal: Literal) -> Rewrit
     let type_name = format_ident!("U{width}");
     let new_literal = Literal::u128_unsuffixed(value);
     RewriteResult::Rewritten(
-        quote_spanned! {s=> #crate_path::#type_name::new_masked(#new_literal) },
+        quote_spanned! {s=> #crate_path::types::#type_name::new_masked(#new_literal) },
     )
 }
 
@@ -97,13 +97,7 @@ fn parse_suffix(suffix: &str) -> Option<u8> {
         return None;
     }
     let width: u8 = suffix[1..].parse().ok()?;
-    if !(1..=128).contains(&width)
-        || width == 8
-        || width == 16
-        || width == 32
-        || width == 64
-        || width == 128
-    {
+    if !(1..=128).contains(&width) {
         return None;
     }
     Some(width)
@@ -235,7 +229,7 @@ mod tests {
     fn lit_simple() {
         assert_eq!(
             syn::parse2::<Expr>(lit_impl(quote! { (some::path::to, 7_u3) })).unwrap(),
-            syn::parse2::<Expr>(quote! { some::path::to::U3::new_masked(7) }).unwrap(),
+            syn::parse2::<Expr>(quote! { some::path::to::types::U3::new_masked(7) }).unwrap(),
         );
     }
 
@@ -273,7 +267,7 @@ mod tests {
             ))
             .unwrap(),
             syn::parse2::<ParseItems>(quote! {
-                fn foo() { ::bitint::U24::new_masked(1234567) }
+                fn foo() { ::bitint::types::U24::new_masked(1234567) }
             })
             .unwrap(),
         );
@@ -283,12 +277,12 @@ mod tests {
     fn narrow_integer_literals_with_crate_path() {
         assert_eq!(
             syn::parse2::<ParseItems>(bitint_literals_impl(
-                quote! { crate_path = path::to::ni },
+                quote! { crate_path = path::to::bit_int_crate },
                 quote! { fn foo() { 1234567u24 } },
             ))
             .unwrap(),
             syn::parse2::<ParseItems>(quote! {
-                fn foo() { path::to::ni::U24::new_masked(1234567) }
+                fn foo() { path::to::bit_int_crate::types::U24::new_masked(1234567) }
             })
             .unwrap(),
         );

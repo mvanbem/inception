@@ -37,20 +37,20 @@ bitfield! {
 /// A custom field type that wraps a [`u8`] primitive integer.
 pub struct PrimitiveCustomField(pub u8);
 
-impl From<u8> for PrimitiveCustomField {
-    fn from(value: u8) -> Self {
-        Self(value)
+impl From<U8> for PrimitiveCustomField {
+    fn from(value: U8) -> Self {
+        Self::from_underlying(value)
     }
 }
 
-impl From<PrimitiveCustomField> for u8 {
+impl From<PrimitiveCustomField> for U8 {
     fn from(value: PrimitiveCustomField) -> Self {
-        value.0
+        value.to_underlying()
     }
 }
 
 impl Bitfield for PrimitiveCustomField {
-    type Underlying = u8;
+    type Underlying = U8;
 
     const ZERO: Self = Self(0);
 
@@ -58,12 +58,12 @@ impl Bitfield for PrimitiveCustomField {
         Self::ZERO
     }
 
-    fn from_underlying(value: Self::Underlying) -> Self {
-        Self(value)
+    fn from_underlying(value: U8) -> Self {
+        Self(value.to_primitive())
     }
 
-    fn to_underlying(self) -> Self::Underlying {
-        self.0
+    fn to_underlying(self) -> U8 {
+        U8::from_primitive(self.0)
     }
 }
 

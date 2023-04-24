@@ -5,20 +5,20 @@ mod custom {
 
     pub struct PrimitiveCustomField(u8);
 
-    impl From<u8> for PrimitiveCustomField {
-        fn from(value: u8) -> Self {
-            Self(value)
+    impl From<U8> for PrimitiveCustomField {
+        fn from(value: U8) -> Self {
+            Self::from_underlying(value)
         }
     }
 
-    impl From<PrimitiveCustomField> for u8 {
+    impl From<PrimitiveCustomField> for U8 {
         fn from(value: PrimitiveCustomField) -> Self {
-            value.0
+            value.to_underlying()
         }
     }
 
     impl Bitfield for PrimitiveCustomField {
-        type Underlying = u8;
+        type Underlying = U8;
 
         const ZERO: Self = Self(0);
 
@@ -26,12 +26,12 @@ mod custom {
             Self::ZERO
         }
 
-        fn from_underlying(value: Self::Underlying) -> Self {
-            Self(value)
+        fn from_underlying(value: U8) -> Self {
+            Self(value.to_primitive())
         }
 
-        fn to_underlying(self) -> Self::Underlying {
-            self.0
+        fn to_underlying(self) -> U8 {
+            U8::from_primitive(self.0)
         }
     }
 }
@@ -49,7 +49,7 @@ bitfield! {
 #[test]
 fn test_primitive_custom_field() {
     assert_eq!(
-        MyStruct::zero().with_x(255.into()).to_primitive(),
+        MyStruct::zero().with_x(255u8.into()).to_primitive(),
         0b00000_0_11111111_00,
     );
 }

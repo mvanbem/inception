@@ -1,7 +1,12 @@
 //! Integer types that have a logical size measured in bits.
 //!
-//! Each narrow integer type wraps a primitive integer type and imposes a validity constraint. The
-//! value is represented in the least significant bits and the upper bits are always clear.
+//! This crate provides the [`BitUint`] trait and 128 types named [`U1`](crate::types::U1) through
+//! [`U128`](crate::types::U128) that implement it. Each type wraps the smallest primitive unsigned
+//! integer type that can contain it. The types that are not the same width as a primitive unsigned
+//! integer type impose a validity constraint---the value is represented in the least significant
+//! bits and the upper bits are always clear.
+//!
+//! # Features
 
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
@@ -10,14 +15,16 @@
 use core::fmt::{self, Display, Formatter};
 
 pub mod prelude;
-mod types;
+pub mod types;
 
 #[doc(hidden)]
 pub mod __private {
     pub use bitint_macros::lit;
 }
 
-pub use types::*;
+mod sealed {
+    pub trait Sealed {}
+}
 
 /// The error type returned when a checked narrow integer constructor fails.
 #[derive(Debug)]
@@ -33,8 +40,10 @@ impl Display for RangeError {
 pub type Result<T> = core::result::Result<T, RangeError>;
 
 /// Unsigned integer types that have a logical width measured in bits.
-pub trait BitUint: Sized {
-    /// The primitive type that this type wraps. For primitive integers this is `Self`.
+///
+/// There is one type implementing `BitUint` for each bit width from 1 to 128 inclusive.
+pub trait BitUint: Sized + sealed::Sealed {
+    /// The primitive type that this type wraps.
     type Primitive: From<Self>;
 
     /// The bit width of this type.
@@ -102,78 +111,36 @@ pub trait BitUint: Sized {
     fn one() -> Self;
 }
 
-macro_rules! impl_bit_uint_for_primitives {
-    ($($ty:ty),*) => {$(
-        impl BitUint for $ty {
-            type Primitive = Self;
-
-            const BITS: usize = Self::BITS as usize;
-            const MASK: Self = Self::MAX;
-            const MIN: Self = Self::MIN;
-            const MAX: Self = Self::MAX;
-            const ZERO: Self = 0;
-            const ONE: Self = 1;
-
-            fn new(value: Self) -> Option<Self> {
-                Some(value)
-            }
-
-            fn new_masked(value: Self) -> Self {
-                value
-            }
-
-            unsafe fn new_unchecked(value: Self) -> Self {
-                value
-            }
-
-            fn to_primitive(self) -> Self {
-                self
-            }
-
-            fn is_in_range(_value: Self) -> bool {
-                true
-            }
-
-            fn min() -> Self {
-                Self::MIN
-            }
-
-            fn max() -> Self {
-                Self::MAX
-            }
-
-            fn zero() -> Self {
-                Self::ZERO
-            }
-
-            fn one() -> Self {
-                Self::ONE
-            }
-        }
-    )*};
+/// Unsigned integer types that are the same width as a primitive integer type.
+pub trait PrimitiveSizedBitUint: BitUint + From<Self::Primitive> {
+    /// Creates a bit-sized value from a primitive value of the same width.
+    ///
+    /// This is a zero-cost conversion.
+    fn from_primitive(value: Self::Primitive) -> Self;
 }
-impl_bit_uint_for_primitives!(u8, u16, u32, u64, u128);
 
-/// Constructs a narrow integer literal.
+/// Constructs a `bitint` literal.
 ///
-/// This macro accepts an integer literal with a custom suffix. The suffix must be the character
-/// `'u'` followed by an integer, which must be the width of a narrow integer type in this crate.
-/// The literal value is checked against the narrow integer type's range and is replaced with either
-/// a call to a non-panicking const narrow integer constructor or a compile error.
+/// A `bitint` literal is an integer literal with a suffix consisting of `'u'` followed by an
+/// integer, which must be at least one and at most 128.
+///
+/// This macro accepts one `bitint` literal which is checked against the corresponding [`BitUint`]
+/// type's range and replaced with either a call to a non-panicking const constructor or a compile
+/// error.
 ///
 /// # Examples
 ///
 /// ```
 /// # use bitint::prelude::*;
-/// // The suffix `u3` refers to the narrow integer type `U3`.
+/// // The suffix `u3` corresponds to the type `U3`.
 /// let x = lit!(6u3);
 /// assert_eq!(x.to_primitive(), 6);
 ///```
 ///
 /// ```compile_fail
 /// # use bitint::prelude::*;
-/// // This value is out of range for `U9`.
-/// lit!(512u9);
+/// // This value is out of range for `U16`.
+/// lit!(65536u16);
 /// ```
 #[macro_export]
 macro_rules! lit {
@@ -182,13 +149,14 @@ macro_rules! lit {
     };
 }
 
-/// Rewrites narrow integer literals in the item it is attached to.
+/// Rewrites `bitint` literals in the item it is attached to.
 ///
-/// A narrow integer literal is an integer literal with a suffix consisting of `'u'` followed by an
-/// integer, which must be the width of a narrow integer type in this crate.
+/// A `bitint` literal is an integer literal with a suffix consisting of `'u'` followed by an
+/// integer, which must be at least one and at most 128.
 ///
-/// Narrow integer literals are range checked and are replaced with either a call to a non-panicking
-/// const narrow integer constructor or a compile error. All other tokens are preserved.
+/// `bitint` literals are checked against the corresponding [`BitUint`] type's range and replaced
+/// with either a call to a non-panicking const constructor or a compile error. All other tokens are
+/// preserved.
 ///
 /// # Examples
 ///
@@ -196,6 +164,7 @@ macro_rules! lit {
 /// # use bitint::prelude::*;
 /// #[bitint_literals]
 /// fn example() {
+///     // The suffix `u3` corresponds to the type `U3`.
 ///     let x = 6u3;
 ///     assert_eq!(x.to_primitive(), 6);
 /// }
@@ -205,8 +174,8 @@ macro_rules! lit {
 /// # use bitint::prelude::*;
 /// #[bitint_literals]
 /// fn example() {
-///     // This value is out of range for `U9`.
-///     let x = 512u9;
+///     // This value is out of range for `U16`.
+///     let x = 65536u16;
 /// }
 /// ```
 pub use bitint_macros::bitint_literals;

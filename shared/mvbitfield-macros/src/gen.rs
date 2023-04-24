@@ -1,7 +1,7 @@
 use proc_macro2::{Literal, Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::spanned::Spanned;
-use syn::{parse_quote, Error, Path, Result, TypePath};
+use syn::{parse_quote, Error, Path, Result, Type, TypePath};
 
 use crate::ast::{self, AccessorType, Input};
 use crate::pack::{pack, PackDir, PackedBitfield};
@@ -10,8 +10,30 @@ struct Config {
     crate_path: Path,
 }
 
-struct TypeInfo {
-    underlying_type: TypePath,
+struct BitUintTypeInfo {
+    bit_uint_type: TypePath,
+    primitive_type: TypePath,
+}
+
+impl BitUintTypeInfo {
+    fn with_accessor_type(self, accessor_type: AccessorType) -> BitfieldTypeInfo {
+        match accessor_type {
+            AccessorType::Overridden { type_, .. } => match type_ {
+                type_ => BitfieldTypeInfo {
+                    bitfield_type: type_,
+                    primitive_type: self.primitive_type,
+                },
+            },
+            AccessorType::Default => BitfieldTypeInfo {
+                bitfield_type: self.bit_uint_type.into(),
+                primitive_type: self.primitive_type,
+            },
+        }
+    }
+}
+
+struct BitfieldTypeInfo {
+    bitfield_type: Type,
     primitive_type: TypePath,
 }
 
@@ -20,7 +42,7 @@ impl Config {
     ///
     /// This will match the associated types on `mvbitfield::Bitfield` and `bitint::BitUint`, but
     /// are resolved before the macro's output.
-    fn type_info_for_width(&self, width: usize, span: Span) -> Result<TypeInfo> {
+    fn type_info_for_width(&self, width: usize, span: Span) -> Result<BitUintTypeInfo> {
         if !(1..=128).contains(&width) {
             return Err(Error::new(
                 span,
@@ -28,31 +50,18 @@ impl Config {
             ));
         }
 
-        let primitive_widths = [8, 16, 32, 64, 128];
-        match primitive_widths.binary_search(&width) {
-            Ok(_) => {
-                let name = format_ident!("u{width}", span = span);
-                let primitive_type: TypePath = parse_quote! { #name };
-                Ok(TypeInfo {
-                    underlying_type: primitive_type.clone(),
-                    primitive_type,
-                })
-            }
-            Err(index) => {
-                let crate_path = &self.crate_path;
-                let underlying_name = format_ident!("U{width}", span = span);
-                let underlying_type = parse_quote! { #crate_path::bitint::#underlying_name };
+        let crate_path = &self.crate_path;
+        let bit_uint_name = format_ident!("U{width}", span = span);
+        let bit_uint_type = parse_quote! { #crate_path::bitint::types::#bit_uint_name };
 
-                let primitive_width = primitive_widths[index];
-                let primitive_name = format_ident!("u{}", primitive_width, span = span);
-                let primitive_type = parse_quote! { #primitive_name };
+        let primitive_width = width.next_power_of_two().max(8);
+        let primitive_name = format_ident!("u{}", primitive_width, span = span);
+        let primitive_type = parse_quote! { #primitive_name };
 
-                Ok(TypeInfo {
-                    underlying_type,
-                    primitive_type,
-                })
-            }
-        }
+        Ok(BitUintTypeInfo {
+            bit_uint_type,
+            primitive_type,
+        })
     }
 }
 
@@ -114,9 +123,9 @@ fn generate_struct_impl(cfg: &Config, input: ast::Struct) -> Result<TokenStream>
 
     let name = input.name;
     let struct_width = input.width.base10_parse()?;
-    let TypeInfo {
-        underlying_type: struct_underlying_type,
+    let BitUintTypeInfo {
         primitive_type: struct_primitive_type,
+        bit_uint_type: struct_underlying_type,
     } = cfg.type_info_for_width(struct_width, input.width.span())?;
 
     let crate_path = &cfg.crate_path;
@@ -191,22 +200,18 @@ fn generate_accessors(
     }
 
     let crate_path = &cfg.crate_path;
-    let bitfield_trait: Path = parse_quote! { #crate_path::Bitfield };
+    let accessor_trait: Path = parse_quote! { #crate_path::Accessor };
 
     let visibility = &bitfield.bitfield.visibility;
     let name = bitfield.bitfield.name_to_string();
     let name_span = bitfield.bitfield.name_span();
-    let TypeInfo {
-        underlying_type: accessor_underlying_type,
-        primitive_type: accessor_primitive_type,
-    } = cfg.type_info_for_width(bitfield.width, bitfield.width_span)?;
-    let accessor_type = match bitfield.bitfield.accessor_type() {
-        AccessorType::Overridden { type_, .. } => type_,
-        AccessorType::Default => accessor_underlying_type.clone().into(),
-    };
+    let accessor_type_info = cfg
+        .type_info_for_width(bitfield.width, bitfield.width_span)?
+        .with_accessor_type(bitfield.bitfield.accessor_type());
+    let accessor_type = &accessor_type_info.bitfield_type;
+    let accessor_primitive_type = &accessor_type_info.primitive_type;
 
     let shift = Literal::usize_unsuffixed(bitfield.offset);
-    // let lsb_mask = Literal::usize_unsuffixed(lsb_mask(bitfield.width));
     let offset_mask = {
         let mut literal = Literal::u128_unsuffixed(
             if bitfield.width == 128 {
@@ -233,8 +238,8 @@ fn generate_accessors(
             #[inline(always)]
             #[must_use]
             #visibility fn #get_method_name(self) -> #accessor_type {
-                #bitfield_trait::new_masked(
-                    (#bitfield_trait::to_primitive(self) >> #shift) as #accessor_primitive_type,
+                #accessor_trait::from_primitive_masked(
+                    (#accessor_trait::to_primitive(self) >> #shift) as #accessor_primitive_type,
                 )
             }
         }
@@ -247,8 +252,8 @@ fn generate_accessors(
             #[inline(always)]
             #[must_use]
             #visibility fn #with_method_name(self, value: #accessor_type) -> Self {
-                let struct_value = #bitfield_trait::to_primitive(self);
-                let bitfield_value = #bitfield_trait::to_primitive(value) as #struct_primitive_type;
+                let struct_value = #accessor_trait::to_primitive(self);
+                let bitfield_value = #accessor_trait::to_primitive(value) as #struct_primitive_type;
                 // // This is a redundant operation but it helps the compiler emit the `rlwimi`
                 // // instruction on PowerPC.
                 // #[cfg(target_arch = "powerpc")]
@@ -256,7 +261,7 @@ fn generate_accessors(
 
                 let new_value = (struct_value & !#offset_mask) | (bitfield_value << #shift);
                 // SAFETY: Both operands have only in-range bits set, so the result will, too.
-                unsafe { #bitfield_trait::new_unchecked(new_value) }
+                unsafe { #accessor_trait::from_primitive_unchecked(new_value) }
             }
         }
     };
