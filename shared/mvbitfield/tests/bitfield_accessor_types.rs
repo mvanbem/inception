@@ -7,18 +7,18 @@ mod custom {
 
     impl From<U8> for PrimitiveCustomField {
         fn from(value: U8) -> Self {
-            Self::from_underlying(value)
+            Self::from_bitint(value)
         }
     }
 
     impl From<PrimitiveCustomField> for U8 {
         fn from(value: PrimitiveCustomField) -> Self {
-            value.to_underlying()
+            value.to_bitint()
         }
     }
 
     impl Bitfield for PrimitiveCustomField {
-        type Underlying = U8;
+        type BitInt = U8;
 
         const ZERO: Self = Self(0);
 
@@ -26,11 +26,11 @@ mod custom {
             Self::ZERO
         }
 
-        fn from_underlying(value: U8) -> Self {
+        fn from_bitint(value: U8) -> Self {
             Self(value.to_primitive())
         }
 
-        fn to_underlying(self) -> U8 {
+        fn to_bitint(self) -> U8 {
             U8::from_primitive(self.0)
         }
     }

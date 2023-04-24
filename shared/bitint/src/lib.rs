@@ -7,6 +7,9 @@
 //! bits and the upper bits are always clear.
 //!
 //! # Features
+//!
+//! * **no_panic** -
+//!  TODO
 
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]

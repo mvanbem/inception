@@ -10,39 +10,39 @@ struct Config {
     crate_path: Path,
 }
 
-struct BitUintTypeInfo {
-    bit_uint_type: TypePath,
+struct BitintTypeInfo {
+    bitint_type: TypePath,
     primitive_type: TypePath,
 }
 
-impl BitUintTypeInfo {
-    fn with_accessor_type(self, accessor_type: AccessorType) -> BitfieldTypeInfo {
+impl BitintTypeInfo {
+    fn with_accessor_type(self, accessor_type: AccessorType) -> AccessorTypeInfo {
         match accessor_type {
             AccessorType::Overridden { type_, .. } => match type_ {
-                type_ => BitfieldTypeInfo {
-                    bitfield_type: type_,
+                type_ => AccessorTypeInfo {
+                    accessor_type: type_,
                     primitive_type: self.primitive_type,
                 },
             },
-            AccessorType::Default => BitfieldTypeInfo {
-                bitfield_type: self.bit_uint_type.into(),
+            AccessorType::Default => AccessorTypeInfo {
+                accessor_type: self.bitint_type.into(),
                 primitive_type: self.primitive_type,
             },
         }
     }
 }
 
-struct BitfieldTypeInfo {
-    bitfield_type: Type,
+struct AccessorTypeInfo {
+    accessor_type: Type,
     primitive_type: TypePath,
 }
 
 impl Config {
-    /// Names the underlying and primitive types for a bitfield of the given width.
+    /// Names the bitint and primitive types for the given width.
     ///
-    /// This will match the associated types on `mvbitfield::Bitfield` and `bitint::BitUint`, but
-    /// are resolved before the macro's output.
-    fn type_info_for_width(&self, width: usize, span: Span) -> Result<BitUintTypeInfo> {
+    /// This will match the associated types on `mvbitfield::Accessor`, but are resolved before the
+    /// macro's output to provide clearer rustdoc and editor metadata.
+    fn type_info_for_width(&self, width: usize, span: Span) -> Result<BitintTypeInfo> {
         if !(1..=128).contains(&width) {
             return Err(Error::new(
                 span,
@@ -51,15 +51,15 @@ impl Config {
         }
 
         let crate_path = &self.crate_path;
-        let bit_uint_name = format_ident!("U{width}", span = span);
-        let bit_uint_type = parse_quote! { #crate_path::bitint::types::#bit_uint_name };
+        let bitint_name = format_ident!("U{width}", span = span);
+        let bitint_type = parse_quote! { #crate_path::bitint::types::#bitint_name };
 
         let primitive_width = width.next_power_of_two().max(8);
         let primitive_name = format_ident!("u{}", primitive_width, span = span);
         let primitive_type = parse_quote! { #primitive_name };
 
-        Ok(BitUintTypeInfo {
-            bit_uint_type,
+        Ok(BitintTypeInfo {
+            bitint_type,
             primitive_type,
         })
     }
@@ -123,13 +123,12 @@ fn generate_struct_impl(cfg: &Config, input: ast::Struct) -> Result<TokenStream>
 
     let name = input.name;
     let struct_width = input.width.base10_parse()?;
-    let BitUintTypeInfo {
+    let BitintTypeInfo {
         primitive_type: struct_primitive_type,
-        bit_uint_type: struct_underlying_type,
+        bitint_type: struct_bitint_type,
     } = cfg.type_info_for_width(struct_width, input.width.span())?;
 
     let crate_path = &cfg.crate_path;
-    let bit_uint: Path = parse_quote! { #crate_path::bitint::BitUint };
 
     // Collect bitfield items.
     let mut bitfield_items = Vec::new();
@@ -152,7 +151,7 @@ fn generate_struct_impl(cfg: &Config, input: ast::Struct) -> Result<TokenStream>
         #[repr(transparent)]
         #(#other_attrs)*
         #visibility struct #name {
-            value: #struct_underlying_type,
+            value: #struct_bitint_type,
         }
 
         #[allow(dead_code)]
@@ -160,28 +159,28 @@ fn generate_struct_impl(cfg: &Config, input: ast::Struct) -> Result<TokenStream>
             #(#bitfield_items)*
         }
 
-        impl ::core::convert::From<#struct_underlying_type> for #name {
-            fn from(value: #struct_underlying_type) -> Self {
-                Self { value }
+        impl ::core::convert::From<#struct_bitint_type> for #name {
+            fn from(value: #struct_bitint_type) -> Self {
+                Self::from_bitint(value)
             }
         }
 
-        impl ::core::convert::From<#name> for #struct_underlying_type {
+        impl ::core::convert::From<#name> for #struct_bitint_type {
             fn from(value: #name) -> Self {
-                value.value
+                value.to_bitint()
             }
         }
 
         impl #crate_path::Bitfield for #name {
-            type Underlying = #struct_underlying_type;
+            type BitInt = #struct_bitint_type;
 
-            const ZERO: Self = Self { value: #bit_uint::ZERO };
+            const ZERO: Self = Self { value: #crate_path::bitint::BitUint::ZERO };
 
-            fn from_underlying(value: #struct_underlying_type) -> Self {
+            fn from_bitint(value: #struct_bitint_type) -> Self {
                 Self { value }
             }
 
-            fn to_underlying(self) -> #struct_underlying_type {
+            fn to_bitint(self) -> #struct_bitint_type {
                 self.value
             }
         }
@@ -205,11 +204,12 @@ fn generate_accessors(
     let visibility = &bitfield.bitfield.visibility;
     let name = bitfield.bitfield.name_to_string();
     let name_span = bitfield.bitfield.name_span();
-    let accessor_type_info = cfg
+    let AccessorTypeInfo {
+        accessor_type,
+        primitive_type: accessor_primitive_type,
+    } = cfg
         .type_info_for_width(bitfield.width, bitfield.width_span)?
         .with_accessor_type(bitfield.bitfield.accessor_type());
-    let accessor_type = &accessor_type_info.bitfield_type;
-    let accessor_primitive_type = &accessor_type_info.primitive_type;
 
     let shift = Literal::usize_unsuffixed(bitfield.offset);
     let offset_mask = {

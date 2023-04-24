@@ -30,7 +30,7 @@ An `mvbitfield!` macro invocation must receive one _Input_ declaring zero or mor
 Each _Struct_ declares a bitfield struct and specifies its attributes, visibility, name,
 width, and bitfields.
 
-A bitfield struct's underlying type must have the same width as the sum of its bitfields. The `..`
+A bitfield struct's width must match the sum of the widths of its bitfields. The `..`
 _StructElement_ may appear zero or one times in a bitfield struct; if present, it declares a
 reserved bitfield with the unique positive width that satisfies the overall width constraint.
 

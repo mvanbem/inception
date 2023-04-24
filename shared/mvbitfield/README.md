@@ -14,8 +14,8 @@ The generated bitfield structs are:
 # Demo
 
 ```
-use mvbitfield::prelude::*;  // Not required, but nice
-// The mvbitfield prelude includes the bitint prelude.
+// Recommended, but not required. The mvbitfield prelude includes the bitint prelude.
+use mvbitfield::prelude::*;
 
 bitfield! {
     #[lsb_first]                      // Field packing order
@@ -33,23 +33,19 @@ let x = MyBitfieldStruct::zero()
     .with_some_number(lit!(6u3))
     .with_high_bit_flag(true);
 
-// bitint getters for fields with default accessors.
+// Default accessors always return bitints.
 assert_eq!(x.some_number(), lit!(6u3));
-// Use BitUint trait methods to manipulate these values.
 assert_eq!(x.some_number().to_primitive(), 6u8);
 
-// Custom getters for fields with accessor type overrides.
+// Custom accessors always return types that impl Bitfield.
 assert_eq!(x.high_bit_flag(), true);
-// Use Bitfield trait methods to manipulate these values.
-assert_eq!(x.high_bit_flag().to_underlying(), lit!(1u1));
+assert_eq!(x.high_bit_flag().to_bitint(), lit!(1u1));
 assert_eq!(x.high_bit_flag().to_primitive(), 1u8);
 
-// Zero-cost conversions between bitfield structs and bitints.
-assert_eq!(x.to_underlying(), lit!(0b1_000_110_0u8));
-assert_eq!(x, MyBitfieldStruct::from_underlying(lit!(0b1_000_110_0u8)));
-
-// Zero-cost conversion from bitfield struct to primitive.
+// Zero-cost conversions involving bitfield structs.
+assert_eq!(x.to_bitint(), lit!(0b1_000_110_0u8));
 assert_eq!(x.to_primitive(), 0b1_000_110_0u8);
+assert_eq!(x, MyBitfieldStruct::from_bitint(lit!(0b1_000_110_0u8)));
 
 // Zero-cost conversion from primitive to primitive-sized bitfield struct.
 assert_eq!(x, MyBitfieldStruct::from_primitive(0b1_000_110_0u8));
