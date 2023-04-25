@@ -8,3 +8,6 @@ license = "MIT"
 bitint-macros = { path = "../bitint-macros" }
 paste = "1"
 seq-macro = "0.3"
+
+[dev-dependencies]
+trybuild = "1"

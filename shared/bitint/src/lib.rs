@@ -146,8 +146,8 @@ pub trait PrimitiveSizedBitint: UBitint + From<Self::Primitive> {
 /// ```
 #[macro_export]
 macro_rules! lit {
-    ($lit:literal) => {
-        $crate::__private::lit! { ($crate, $lit) }
+    ($($tt:tt)*) => {
+        $crate::__private::lit! { ($crate, $($tt)*) }
     };
 }
 
@@ -181,3 +181,9 @@ macro_rules! lit {
 /// }
 /// ```
 pub use bitint_macros::bitint_literals;
+
+#[test]
+fn trybuild_tests() {
+    let t = trybuild::TestCases::new();
+    t.compile_fail("tests_error/*.rs");
+}

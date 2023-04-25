@@ -119,11 +119,14 @@ fn map_token_tree_literals(
     f: &mut impl FnMut(Literal) -> TokenStream,
 ) -> TokenStream {
     match tt {
-        TokenTree::Group(group) => TokenTree::Group(Group::new(
-            group.delimiter(),
-            map_token_stream_literals(group.stream(), f),
-        ))
-        .into(),
+        TokenTree::Group(group) => {
+            let mut new_group = Group::new(
+                group.delimiter(),
+                map_token_stream_literals(group.stream(), f),
+            );
+            new_group.set_span(group.span());
+            TokenTree::Group(new_group).into()
+        }
         TokenTree::Ident(_) => tt.into(),
         TokenTree::Punct(_) => tt.into(),
         TokenTree::Literal(lit) => f(lit),

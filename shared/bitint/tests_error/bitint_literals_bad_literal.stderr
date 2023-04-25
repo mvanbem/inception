@@ -1,0 +1,55 @@
+error: unexpected end of input, expected integer literal
+ --> tests_error/bitint_literals_bad_literal.rs:4:13
+  |
+4 |     let _ = lit!();
+  |             ^^^^^^
+  |
+  = note: this error originates in the macro `lit` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: expected integer literal
+ --> tests_error/bitint_literals_bad_literal.rs:5:18
+  |
+5 |     let _ = lit!(multiple idents);
+  |                  ^^^^^^^^
+
+error: unexpected token
+ --> tests_error/bitint_literals_bad_literal.rs:6:22
+  |
+6 |     let _ = lit!(0u8 0);
+  |                      ^
+
+error: unexpected token
+ --> tests_error/bitint_literals_bad_literal.rs:7:22
+  |
+7 |     let _ = lit!(0u8 some_ident);
+  |                      ^^^^^^^^^^
+
+error: literal must have a suffix: 'u' followed by an integer in 1..=128
+ --> tests_error/bitint_literals_bad_literal.rs:8:18
+  |
+8 |     let _ = lit!(0);
+  |                  ^
+
+error: literal must have a suffix: 'u' followed by an integer in 1..=128
+ --> tests_error/bitint_literals_bad_literal.rs:9:18
+  |
+9 |     let _ = lit!(0q);
+  |                  ^^
+
+error: literal must have a suffix: 'u' followed by an integer in 1..=128
+  --> tests_error/bitint_literals_bad_literal.rs:10:18
+   |
+10 |     let _ = lit!(0uq);
+   |                  ^^^
+
+error: literal must have a suffix: 'u' followed by an integer in 1..=128
+  --> tests_error/bitint_literals_bad_literal.rs:11:18
+   |
+11 |     let _ = lit!(0u0);
+   |                  ^^^
+
+error: literal must have a suffix: 'u' followed by an integer in 1..=128
+  --> tests_error/bitint_literals_bad_literal.rs:12:18
+   |
+12 |     let _ = lit!(0u129);
+   |                  ^^^^^
