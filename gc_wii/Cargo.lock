@@ -134,6 +134,7 @@ name = "bitint"
 version = "0.1.0"
 dependencies = [
  "bitint-macros",
+ "num-traits",
  "paste",
  "seq-macro",
 ]

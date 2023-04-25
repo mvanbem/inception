@@ -49,7 +49,7 @@ bitfield! {
 #[test]
 fn test_primitive_custom_field() {
     assert_eq!(
-        MyStruct::zero().with_x(255u8.into()).to_primitive(),
+        MyStruct::zero().with_x(255_U8.into()).to_primitive(),
         0b00000_0_11111111_00,
     );
 }

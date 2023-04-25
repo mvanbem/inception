@@ -1,34 +1,28 @@
-//! Integer types that have a logical size measured in bits.
-//!
-//! This crate provides the [`UBitint`] trait and 128 types named [`U1`](crate::types::U1) through
-//! [`U128`](crate::types::U128) that implement it. Each type wraps the smallest primitive unsigned
-//! integer type that can contain it. The types that are not the same width as a primitive unsigned
-//! integer type impose a validity constraint---the value is represented in the least significant
-//! bits and the upper bits are always clear.
-//!
-//! # Features
-//!
-//! * **no_panic** - TODO
-
+#![cfg_attr(not(test), no_std)]
+#![cfg_attr(feature = "unchecked_math", feature(unchecked_math))]
+#![cfg_attr(feature = "_nightly", feature(doc_cfg))]
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
-#![no_std]
+#![doc = include_str!("../README.md")]
 
 use core::fmt::{self, Display, Formatter};
+use core::num::ParseIntError;
 
 pub mod prelude;
+mod traits;
 pub mod types;
 
+// For macro access via `$crate`.
 #[doc(hidden)]
 pub mod __private {
-    pub use bitint_macros::lit;
+    pub use bitint_macros::bitint;
 }
 
 mod sealed {
     pub trait Sealed {}
 }
 
-/// The error type returned when a checked `bitint` conversion fails.
+/// The error type returned when a [`TryFrom`] conversion to a `bitint` fails.
 #[derive(Debug)]
 pub struct RangeError(pub(crate) ());
 
@@ -38,127 +32,78 @@ impl Display for RangeError {
     }
 }
 
-/// A specialized [`Result`] type for `bitint`s.
-pub type Result<T> = core::result::Result<T, RangeError>;
-
-/// Unsigned `bitint` types.
-///
-/// There is one type implementing `UBitint` for each bit width from 1 to 128 inclusive.
-pub trait UBitint: Sized + sealed::Sealed {
-    /// The primitive type that this type wraps.
-    type Primitive: From<Self>;
-
-    /// The bit width of this type.
-    const BITS: usize;
-    /// The bit mask for the bits that may be set in values of this type.
-    const MASK: Self::Primitive;
-
-    /// The smallest value of this type.
-    const MIN: Self;
-    /// The largest value of this type.
-    const MAX: Self;
-
-    /// The value `0` represented in this type.
-    const ZERO: Self;
-    /// The value `1` represented in this type.
-    const ONE: Self;
-
-    /// Creates a bit-sized value from a primitive value if it is in range for this type, as
-    /// determined by [`is_in_range`](Self::is_in_range).
-    fn new(value: Self::Primitive) -> Option<Self>;
-
-    /// Creates a bit-sized value by masking off the upper bits of a primitive value.
-    ///
-    /// This conversion is lossless if the value is in range for this type, as determined by
-    /// [`is_in_range`](Self::is_in_range).
-    fn new_masked(value: Self::Primitive) -> Self;
-
-    /// Creates a bit-sized value from a primitive value without checking whether it is in range for
-    /// this type.
-    ///
-    /// This is a zero-cost conversion.
-    ///
-    /// # Safety
-    ///
-    /// The value must be in range for this type, as determined by
-    /// [`is_in_range`](Self::is_in_range).
-    unsafe fn new_unchecked(value: Self::Primitive) -> Self;
-
-    /// Converts the value to a primitive type.
-    ///
-    /// This is a zero-cost conversion. The result is in range for this type, as determined by
-    /// [`is_in_range`](Self::is_in_range).
-    fn to_primitive(self) -> Self::Primitive;
-
-    /// Checks whether a primitive value is in range for this type.
-    ///
-    /// There are a few equivalent ways to express this check.
-    ///
-    /// - The unused most significant bits are clear: `(value & !Self::MASK) == 0`
-    /// - The value is between [`MIN`](Self::MIN) and [`MAX`](Self::MAX), inclusive: `value >=
-    ///   Self::MIN.as_primitive() && value <= Self::MAX.as_primitive()`
-    ///
-    fn is_in_range(value: Self::Primitive) -> bool;
-
-    /// The smallest value of this type.
-    fn min() -> Self;
-
-    /// The largest value of this type.
-    fn max() -> Self;
-
-    /// The value `0` represented in this type.
-    fn zero() -> Self;
-
-    /// The value `1` represented in this type.
-    fn one() -> Self;
+/// The error type returned when parsing a string to a `bitint` fails.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum ParseBitintError {
+    /// Parsing failed because parsing to the primitive type failed.
+    Parse(ParseIntError),
+    /// Parsing failed because the primitive value was out of range.
+    Range(RangeError),
 }
 
-/// `bitint` types that are the same width as a primitive integer type.
-pub trait PrimitiveSizedBitint: UBitint + From<Self::Primitive> {
-    /// Creates a bit-sized value from a primitive value of the same width.
-    ///
-    /// This is a zero-cost conversion.
-    fn from_primitive(value: Self::Primitive) -> Self;
+impl Display for ParseBitintError {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            Self::Parse(e) => write!(f, "{e}"),
+            Self::Range(e) => write!(f, "{e}"),
+        }
+    }
 }
+
+impl From<ParseIntError> for ParseBitintError {
+    fn from(value: ParseIntError) -> Self {
+        Self::Parse(value)
+    }
+}
+
+impl From<RangeError> for ParseBitintError {
+    fn from(value: RangeError) -> Self {
+        Self::Range(value)
+    }
+}
+
+pub use traits::*;
 
 /// Constructs a `bitint` literal.
 ///
-/// A `bitint` literal is an integer literal with a suffix consisting of `'u'` followed by an
-/// integer, which must be at least one and at most 128.
+/// A `bitint` literal is an integer literal with a suffix consisting of `'U'`
+/// followed by an integer, which must be at least one and at most 128.
 ///
-/// This macro accepts one `bitint` literal which is checked against the corresponding [`UBitint`]
-/// type's range and replaced with either a call to a non-panicking const constructor or a compile
-/// error.
+/// This macro accepts one `bitint` literal which is checked against the
+/// corresponding [`UBitint`] type's range and replaced with either a call to a
+/// non-panicking const constructor or a compile error.
 ///
 /// # Examples
 ///
 /// ```
 /// # use bitint::prelude::*;
-/// // The suffix `u3` corresponds to the type `U3`.
-/// let x = lit!(6u3);
+/// // The suffix `U3` corresponds to the type `U3`. Underscores are permitted
+/// // anywhere in a Rust literal and are encouraged for readability.
+/// let x = bitint!(6_U3);
 /// assert_eq!(x.to_primitive(), 6);
 ///```
 ///
 /// ```compile_fail
 /// # use bitint::prelude::*;
 /// // This value is out of range for `U16`.
-/// lit!(65536u16);
+/// bitint!(65536_U16);
 /// ```
 #[macro_export]
-macro_rules! lit {
+macro_rules! bitint {
     ($($tt:tt)*) => {
-        $crate::__private::lit! { ($crate, $($tt)*) }
+        $crate::__private::bitint! { ($crate, $($tt)*) }
     };
 }
 
 /// Rewrites `bitint` literals in the item it is attached to.
 ///
-/// A `bitint` literal is an integer literal with a suffix consisting of `'u'` followed by an
-/// integer, which must be at least one and at most 128.
+/// A `bitint` literal is an integer literal with a suffix consisting of `'U'`
+/// followed by an integer, which must be at least one and at most 128.
 ///
-/// `bitint` literals are checked against the corresponding [`UBitint`] type's range and replaced
-/// with either a call to a non-panicking const constructor or a compile error. All other tokens are
-/// preserved.
+/// `bitint` literals are checked against the corresponding [`UBitint`] type's
+/// range and replaced with either a call to a non-panicking const constructor
+/// or a compile error. All other tokens are preserved.
 ///
 /// # Examples
 ///
@@ -166,8 +111,10 @@ macro_rules! lit {
 /// # use bitint::prelude::*;
 /// #[bitint_literals]
 /// fn example() {
-///     // The suffix `u3` corresponds to the type `U3`.
-///     let x = 6u3;
+///     // The suffix `U3` corresponds to the type `U3`. Underscores are
+///     // permitted anywhere in a Rust literal and are encouraged for
+///     // readability.
+///     let x = 6_U3;
 ///     assert_eq!(x.to_primitive(), 6);
 /// }
 /// ```
@@ -177,13 +124,32 @@ macro_rules! lit {
 /// #[bitint_literals]
 /// fn example() {
 ///     // This value is out of range for `U16`.
-///     let x = 65536u16;
+///     let x = 65536_U16;
 /// }
 /// ```
 pub use bitint_macros::bitint_literals;
 
-#[test]
-fn trybuild_tests() {
-    let t = trybuild::TestCases::new();
-    t.compile_fail("tests_error/*.rs");
+#[cfg(test)]
+mod tests {
+    use crate::prelude::*;
+
+    #[test]
+    fn test_debug() {
+        assert_eq!(format!("{:?}", U1::new(1).unwrap()), "U1(1)");
+        assert_eq!(format!("{:?}", U12::new(1234).unwrap()), "U12(1234)");
+        assert_eq!(format!("{:?}", U16::new(65535).unwrap()), "U16(65535)");
+    }
+
+    #[test]
+    fn test_display() {
+        assert_eq!(format!("{}", U1::new(1).unwrap()), "1");
+        assert_eq!(format!("{}", U12::new(1234).unwrap()), "1234");
+        assert_eq!(format!("{}", U16::new(65535).unwrap()), "65535");
+    }
+
+    #[test]
+    fn trybuild_tests() {
+        let t = trybuild::TestCases::new();
+        t.compile_fail("tests_error/*.rs");
+    }
 }

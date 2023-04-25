@@ -40,8 +40,9 @@ struct AccessorTypeInfo {
 impl Config {
     /// Names the bitint and primitive types for the given width.
     ///
-    /// This will match the associated types on `mvbitfield::Accessor`, but are resolved before the
-    /// macro's output to provide clearer rustdoc and editor metadata.
+    /// This will match the associated types on `mvbitfield::Accessor`, but are
+    /// resolved before the macro's output to provide clearer rustdoc and editor
+    /// metadata.
     fn type_info_for_width(&self, width: usize, span: Span) -> Result<BitintTypeInfo> {
         if !(1..=128).contains(&width) {
             return Err(Error::new(

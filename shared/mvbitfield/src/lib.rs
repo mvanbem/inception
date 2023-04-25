@@ -1,7 +1,7 @@
+#![cfg_attr(feature = "_nightly", feature(doc_cfg))]
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 #![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]
-#![cfg_attr(feature = "_nightly", feature(doc_cfg))]
 #![no_std]
 
 use bitint::prelude::*;
@@ -29,12 +29,13 @@ mod sealed {
 
 /// Bitfield struct types.
 ///
-/// Bitfields have a `bitint` type and a primitive type. The `bitint` type represents the canonical
-/// integer representation of this type.
+/// Bitfields have a `bitint` type and a primitive type. The `bitint` type
+/// represents the canonical integer representation of this type.
 ///
-/// There are zero-cost conversions between the `Self` and the `bitint` type, and from `Self` to the
-/// primitive type. There is a zero-cost conversion from the primitive type to `Self` only if the
-/// `bitint` type is [`PrimitiveSizedBitint`]. Checked conversions from the primitive type to
+/// There are zero-cost conversions between the `Self` and the `bitint` type,
+/// and from `Self` to the primitive type. There is a zero-cost conversion from
+/// the primitive type to `Self` only if the `bitint` type is
+/// [`PrimitiveSizedBitint`]. Checked conversions from the primitive type to
 /// `Self` are always available.
 pub trait Bitfield: From<Self::Bitint> {
     /// The [`UBitint`] type with zero-cost conversions to and from [`Self`].
@@ -48,29 +49,34 @@ pub trait Bitfield: From<Self::Bitint> {
         Self::ZERO
     }
 
-    /// Creates a bitfield value from a primitive value if it is in range for the `bitint` type.
+    /// Creates a bitfield value from a primitive value if it is in range for
+    /// the `bitint` type.
     ///
-    /// This is a convenience alias for [`UBitint::new`] and [`Bitfield::from_bitint`].
+    /// This is a convenience alias for [`UBitint::new`] and
+    /// [`Bitfield::from_bitint`].
     fn new(value: <Self::Bitint as UBitint>::Primitive) -> Option<Self> {
         UBitint::new(value).map(Self::from_bitint)
     }
 
-    /// Creates a bitfield value by masking off the upper bits of a primitive value.
+    /// Creates a bitfield value by masking off the upper bits of a primitive
+    /// value.
     ///
-    /// This is a convenience alias for [`UBitint::new_masked`] and [`Bitfield::from_bitint`].
+    /// This is a convenience alias for [`UBitint::new_masked`] and
+    /// [`Bitfield::from_bitint`].
     fn new_masked(value: <Self::Bitint as UBitint>::Primitive) -> Self {
         Self::from_bitint(UBitint::new_masked(value))
     }
 
-    /// Creates a bitfield value from a primitive value without checking whether it is in range for
-    /// the `bitint` type.
+    /// Creates a bitfield value from a primitive value without checking whether
+    /// it is in range for the `bitint` type.
     ///
-    /// This zero-cost conversion is a convenience alias for [`UBitint::new_unchecked`] and
-    /// [`Bitfield::from_bitint`].
+    /// This zero-cost conversion is a convenience alias for
+    /// [`UBitint::new_unchecked`] and [`Bitfield::from_bitint`].
     ///
     /// # Safety
     ///
-    /// The value must be in range for the `bitint` type, as determined by [`UBitint::is_in_range`].
+    /// The value must be in range for the `bitint` type, as determined by
+    /// [`UBitint::is_in_range`].
     unsafe fn new_unchecked(value: <Self::Bitint as UBitint>::Primitive) -> Self {
         Self::from_bitint(UBitint::new_unchecked(value))
     }
@@ -98,10 +104,11 @@ pub trait Bitfield: From<Self::Bitint> {
 
     /// Converts the value to the primitive type.
     ///
-    /// The result is in range for the bitint type, as determined by [`UBitint::is_in_range`].
+    /// The result is in range for the bitint type, as determined by
+    /// [`UBitint::is_in_range`].
     ///
-    /// This zero-cost conversion is a convenience alias for [`UBitint::to_primitive`] and
-    /// [`Bitfield::to_bitint`].
+    /// This zero-cost conversion is a convenience alias for
+    /// [`UBitint::to_primitive`] and [`Bitfield::to_bitint`].
     fn to_primitive(self) -> <Self::Bitint as UBitint>::Primitive {
         self.to_bitint().to_primitive()
     }
@@ -123,11 +130,12 @@ impl Bitfield for bool {
 
 /// Bitfield accessors.
 ///
-/// This trait is implemented by all sized unsigned primitive integer types, all unsigned `bitint`s,
-/// and any [`Bitfield`].
+/// Provides methods used in generated bitfield structs. Not intended to be
+/// brought into scope because [`to_primitive`](Self::to_primitive) is ambiguous
+/// with [`Bitfield::to_primitive`].
 ///
-/// Provides methods used in generated bitfield structs. Not intended to be brought into scope
-/// because [`to_primitive`](Self::to_primitive) is ambiguous with [`Bitfield::to_primitive`].
+/// This trait is implemented by all sized unsigned primitive integer types, all
+/// unsigned `bitint`s, and any [`Bitfield`].
 pub trait Accessor: crate::sealed::Sealed {
     /// The primitive type that this type wraps.
     type Primitive;
@@ -135,8 +143,8 @@ pub trait Accessor: crate::sealed::Sealed {
     /// Creates an accessor value by masking off the upper bits of a primitive value.
     fn from_primitive_masked(value: Self::Primitive) -> Self;
 
-    /// Creates an accessor value from a primitive value without checking whether it is in range for
-    /// the `bitint` type.
+    /// Creates an accessor value from a primitive value without checking
+    /// whether it is in range for the `bitint` type.
     ///
     /// This is a zero-cost conversion.
     ///
@@ -145,8 +153,8 @@ pub trait Accessor: crate::sealed::Sealed {
     /// * For sized unsigned primitive integer types, always safe.
     /// * For unsigned `bitint`s, the value must be in range, as determined by
     ///   [`UBitint::is_in_range`].
-    /// * For [`Bitfield`]s, the value must be in range for the `bitint` type, as determined by
-    ///   [`UBitint::is_in_range`].
+    /// * For [`Bitfield`]s, the value must be in range for the `bitint` type,
+    ///   as determined by [`UBitint::is_in_range`].
     unsafe fn from_primitive_unchecked(value: Self::Primitive) -> Self;
 
     /// Converts the value to the primitive type.

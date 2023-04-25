@@ -30,7 +30,10 @@ pub fn pack<I: Iterator<Item = Bitfield> + ExactSizeIterator>(
     let bitfields = bitfields.into_iter();
     let pack_dir = match pack_dir {
         Some(pack_dir) => pack_dir,
-        None if bitfields.len() < 2 => PackDir::LsbFirst, // Doesn't matter, just pick one.
+        None if bitfields.len() < 2 => {
+            // Doesn't matter, just pick one.
+            PackDir::LsbFirst
+        }
         None => {
             return Err(Error::new(
                 struct_error_span,
@@ -43,8 +46,8 @@ pub fn pack<I: Iterator<Item = Bitfield> + ExactSizeIterator>(
     let mut flexible_bitfield = None;
     let mut bitfields_after_flexible = Vec::new();
 
-    // Initial pass: Collect placeholders into each list of fields in the order they will be packed.
-    // Verify there are zero or one flexible bitfields.
+    // Initial pass: Collect placeholders into each list of fields in the order
+    // they will be packed. Verify there are zero or one flexible bitfields.
     for bitfield in bitfields {
         match bitfield.width()? {
             Some(width) => {

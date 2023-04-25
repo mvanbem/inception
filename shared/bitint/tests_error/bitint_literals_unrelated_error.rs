@@ -2,7 +2,7 @@ use bitint::prelude::*;
 
 #[bitint_literals]
 fn main() {
-    let _x: U23 = 1234u23;
+    let _x: U23 = 1234_U23;
 
     unresolved_function_name();
 

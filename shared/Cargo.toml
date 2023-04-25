@@ -2,6 +2,8 @@
 members = [
     "bitint",
     "bitint-macros",
+    "bitint-test-checked",
+    "bitint-test-unchecked",
     "fully-occupied",
     "gx",
     "inception-render-common",
@@ -15,3 +17,7 @@ members = [
     "texture-atlas",
     "texture-format",
 ]
+
+[profile.test-unchecked]
+inherits = "test"
+overflow-checks = false

@@ -5,8 +5,8 @@ use syn::parse::{Parse, ParseBuffer, Parser};
 use syn::{parenthesized, parse_quote, token, Error, LitInt, Path, Result, Token};
 
 #[proc_macro]
-pub fn lit(tokens: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    lit_impl(tokens.into()).into()
+pub fn bitint(tokens: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    bitint_impl(tokens.into()).into()
 }
 
 #[proc_macro_attribute]
@@ -17,14 +17,14 @@ pub fn bitint_literals(
     bitint_literals_impl(attr.into(), item.into()).into()
 }
 
-struct LitInput {
+struct BitintInput {
     _paren_token: token::Paren,
     crate_path: Path,
     _comma_token: Token![,],
     lit: LitInt,
 }
 
-impl Parse for LitInput {
+impl Parse for BitintInput {
     fn parse(input: &ParseBuffer) -> Result<Self> {
         let content;
         Ok(Self {
@@ -36,8 +36,8 @@ impl Parse for LitInput {
     }
 }
 
-fn lit_impl(tokens: TokenStream) -> TokenStream {
-    let input: LitInput = match syn::parse2(tokens) {
+fn bitint_impl(tokens: TokenStream) -> TokenStream {
+    let input: BitintInput = match syn::parse2(tokens) {
         Ok(input) => input,
         Err(e) => return e.into_compile_error(),
     };
@@ -45,7 +45,7 @@ fn lit_impl(tokens: TokenStream) -> TokenStream {
         RewriteResult::Rewritten(tokens) => tokens,
         RewriteResult::UnrecognizedSuffix(literal) => Error::new(
             literal.span(),
-            "literal must have a suffix: 'u' followed by an integer in 1..=128",
+            "literal must have a suffix: 'U' followed by an integer in 1..=128",
         )
         .into_compile_error(),
         RewriteResult::ValueError(e) => e.into_compile_error(),
@@ -68,36 +68,37 @@ fn rewrite_literal(crate_path: &Path, literal: Literal) -> RewriteResult {
     };
 
     // Parse the value and enforce bounds.
-    let s = literal.span();
+    let span = literal.span();
     let Some(value) = integer_lit.value::<u128>() else {
         return RewriteResult::ValueError(
-            Error::new(literal.span(), "could not parse integer literal")
+            Error::new(span, "could not parse integer literal")
         );
     };
     if width < 128 {
         let max: u128 = (1 << width) - 1;
         if value > max {
             return RewriteResult::ValueError(Error::new(
-                literal.span(),
-                format!("integer literal value {value} out of range for u{width}"),
+                span,
+                format!("integer literal value {value} out of range for U{width}"),
             ));
         }
     }
 
     // Build the rewritten literal.
-    let type_name = format_ident!("U{width}");
-    let new_literal = Literal::u128_unsuffixed(value);
+    let type_name = format_ident!("U{width}", span = span);
+    let mut new_literal = Literal::u128_unsuffixed(value);
+    new_literal.set_span(span);
     RewriteResult::Rewritten(
-        quote_spanned! {s=> #crate_path::types::#type_name::new_masked(#new_literal) },
+        quote_spanned! {span=> #crate_path::types::#type_name::new_masked(#new_literal) },
     )
 }
 
 fn parse_suffix(suffix: &str) -> Option<u8> {
-    if !suffix.starts_with('u') {
+    if !suffix.starts_with('U') {
         return None;
     }
     let width: u8 = suffix[1..].parse().ok()?;
-    if !(1..=128).contains(&width) {
+    if width < 1 || width > 128 {
         return None;
     }
     Some(width)
@@ -227,12 +228,12 @@ mod tests {
     use syn::parse::{Parse, ParseStream};
     use syn::{Expr, Item, Result};
 
-    use super::{bitint_literals_impl, lit_impl};
+    use super::{bitint_impl, bitint_literals_impl};
 
     #[test]
-    fn lit_simple() {
+    fn bitint_simple() {
         assert_eq!(
-            syn::parse2::<Expr>(lit_impl(quote! { (some::path::to, 7_u3) })).unwrap(),
+            syn::parse2::<Expr>(bitint_impl(quote! { (some::path::to, 7_U3) })).unwrap(),
             syn::parse2::<Expr>(quote! { some::path::to::types::U3::new_masked(7) }).unwrap(),
         );
     }
@@ -267,7 +268,7 @@ mod tests {
         assert_eq!(
             syn::parse2::<ParseItems>(bitint_literals_impl(
                 quote! {},
-                quote! { fn foo() { 1234567u24 } },
+                quote! { fn foo() { 1234567_U24 } },
             ))
             .unwrap(),
             syn::parse2::<ParseItems>(quote! {
@@ -282,7 +283,7 @@ mod tests {
         assert_eq!(
             syn::parse2::<ParseItems>(bitint_literals_impl(
                 quote! { crate_path = path::to::bitint_crate },
-                quote! { fn foo() { 1234567u24 } },
+                quote! { fn foo() { 1234567_U24 } },
             ))
             .unwrap(),
             syn::parse2::<ParseItems>(quote! {

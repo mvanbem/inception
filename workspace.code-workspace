@@ -18,6 +18,7 @@
 		],
 		"rust-analyzer.cargo.features": [
 			"doc",
+			"unchecked_math",
 			"_nightly",
 		]
 	}
