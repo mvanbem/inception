@@ -10,5 +10,4 @@ bench = false
 
 [features]
 doc = []
-unchecked_math = []
 _nightly = []

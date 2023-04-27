@@ -132,6 +132,7 @@ checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 [[package]]
 name = "bitint"
 version = "0.1.0"
+source = "git+https://github.com/mvanbem/bitint#b27e74ba622fd01470b535ff3974a6865413d09a"
 dependencies = [
  "bitint-macros",
  "num-traits",
@@ -142,6 +143,7 @@ dependencies = [
 [[package]]
 name = "bitint-macros"
 version = "0.1.0"
+source = "git+https://github.com/mvanbem/bitint#b27e74ba622fd01470b535ff3974a6865413d09a"
 dependencies = [
  "litrs",
  "proc-macro2",

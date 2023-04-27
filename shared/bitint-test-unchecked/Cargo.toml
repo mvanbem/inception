@@ -1,8 +1,0 @@
-[package]
-name = "bitint-test-unchecked"
-version = "0.1.0"
-edition = "2021"
-license = "MIT"
-
-[dependencies]
-bitint = { path = "../bitint" }

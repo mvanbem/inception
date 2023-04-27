@@ -6,5 +6,4 @@ license = "MIT"
 
 [features]
 doc = []
-unchecked_math = []
 _nightly = []

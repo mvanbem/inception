@@ -1,9 +1,5 @@
 [workspace]
 members = [
-    "bitint",
-    "bitint-macros",
-    "bitint-test-checked",
-    "bitint-test-unchecked",
     "fully-occupied",
     "gx",
     "inception-render-common",
