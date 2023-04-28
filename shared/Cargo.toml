@@ -3,8 +3,6 @@ members = [
     "fully-occupied",
     "gx",
     "inception-render-common",
-    "mvbitfield",
-    "mvbitfield-macros",
     "no-std-ftp",
     "no-std-io",
     "recursive-iter",
@@ -14,6 +12,3 @@ members = [
     "texture-format",
 ]
 
-[profile.test-unchecked]
-inherits = "test"
-overflow-checks = false

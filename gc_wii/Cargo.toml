@@ -3,7 +3,6 @@ members = [
     "apploader",
     "bsp-loader-gx",
     "kernel",
-    "use-unused-features",
 ]
 
 [profile.release]

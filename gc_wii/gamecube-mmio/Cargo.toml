@@ -11,6 +11,6 @@ bench = false
 [dependencies]
 gamecube-cpu = { path = "../gamecube-cpu" }
 memoffset = "0.8"
-mvbitfield = { path = "../../shared/mvbitfield" }
+mvbitfield = { git = "https://github.com/mvanbem/mvbitfield" }
 paste = "1"
 seq-macro = "0.3"

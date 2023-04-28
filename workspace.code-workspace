@@ -16,9 +16,5 @@
 			"pc/Cargo.toml",
 			"shared/Cargo.toml",
 		],
-		"rust-analyzer.cargo.features": [
-			"doc",
-			"_nightly",
-		]
 	}
 }
